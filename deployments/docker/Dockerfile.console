@@ -1,0 +1,18 @@
+# RAVEN Console — static SPA served by nginx.
+# Build context is web/console/ itself (not the repo root), so the root
+# .dockerignore does not apply here; this dir has its own.
+
+# Stage 1: build the production bundle with Vite.
+FROM node:24-alpine AS build
+WORKDIR /app
+COPY package.json package-lock.json* ./
+RUN npm ci --no-audit --no-fund || npm install --no-audit --no-fund
+COPY . .
+RUN npm run build
+
+# Stage 2: serve the static bundle. Hash-based routing means nginx never
+# sees client routes, but try_files keeps deep links safe anyway.
+FROM nginx:1.27-alpine
+COPY --from=build /app/dist /usr/share/nginx/html
+COPY nginx.conf /etc/nginx/conf.d/default.conf
+EXPOSE 80
