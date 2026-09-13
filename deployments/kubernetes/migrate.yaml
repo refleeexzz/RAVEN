@@ -1,0 +1,47 @@
+# RAVEN migrate — one-shot Job that applies SQL migrations before the
+# app services roll out. Run it again anytime: it is idempotent.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: migrate
+  namespace: raven
+  labels:
+    app: migrate
+    app.kubernetes.io/part-of: raven
+spec:
+  backoffLimit: 10
+  template:
+    metadata:
+      labels:
+        app: migrate
+    spec:
+      restartPolicy: OnFailure
+      initContainers:
+        # Wait for postgres to accept connections before running migrations.
+        - name: wait-for-postgres
+          image: busybox:1.37
+          command:
+            - sh
+            - -c
+            - |
+              until nc -z postgres 5432; do
+                echo "waiting for postgres..."; sleep 2;
+              done
+      containers:
+        - name: migrate
+          image: raven/migrate:latest
+          imagePullPolicy: IfNotPresent   # local build, never pushed
+          args: ["up"]
+          envFrom:
+            - configMapRef:
+                name: raven-config
+            - secretRef:
+                name: raven-secrets
+                optional: true
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 250m
+              memory: 256Mi
