@@ -3,7 +3,7 @@ package auth
 import (
 	"github.com/prometheus/client_golang/prometheus"
 
-	"github.com/raven/platform/pkg/metrics"
+	"github.com/refleeexzz/RAVEN/pkg/metrics"
 )
 
 // ServiceMetrics bundles the auth-specific Prometheus collectors. HTTP RED

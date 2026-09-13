@@ -145,7 +145,7 @@ const file_common_common_proto_rawDesc = "" +
 	"\fPageResponse\x12\x12\n" +
 	"\x04page\x18\x01 \x01(\x05R\x04page\x12\x1b\n" +
 	"\tpage_size\x18\x02 \x01(\x05R\bpageSize\x12\x14\n" +
-	"\x05total\x18\x03 \x01(\x03R\x05totalB/Z-github.com/raven/platform/internal/gen/commonb\x06proto3"
+	"\x05total\x18\x03 \x01(\x03R\x05totalB1Z/github.com/refleeexzz/RAVEN/internal/gen/commonb\x06proto3"
 
 var (
 	file_common_common_proto_rawDescOnce sync.Once

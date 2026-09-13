@@ -9,7 +9,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 
-	"github.com/raven/platform/pkg/errors"
+	"github.com/refleeexzz/RAVEN/pkg/errors"
 )
 
 // querier is satisfied by both *pgxpool.Pool and pgx.Tx, so store functions

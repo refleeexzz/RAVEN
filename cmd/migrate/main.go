@@ -24,8 +24,8 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
-	"github.com/raven/platform/internal/config"
-	"github.com/raven/platform/pkg/logger"
+	"github.com/refleeexzz/RAVEN/internal/config"
+	"github.com/refleeexzz/RAVEN/pkg/logger"
 )
 
 // migrationFile is one parsed file name from the migrations directory.

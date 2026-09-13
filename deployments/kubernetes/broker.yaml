@@ -44,6 +44,12 @@ spec:
             # /data is the PVC mount below — commit logs survive restarts.
             - name: BROKER_DATA_DIR
               value: /data
+            # New topics get 12 partitions: consumer-group parallelism is
+            # capped by partition count, and 3 was the drain bottleneck we
+            # measured in the 2026-09 load test (16 msg/s with 3 active
+            # consumers out of 8 members).
+            - name: BROKER_DEFAULT_PARTITIONS
+              value: "12"
           envFrom:
             - configMapRef:
                 name: raven-config

@@ -10,8 +10,8 @@ import (
 	"os/signal"
 	"syscall"
 
-	"github.com/raven/platform/internal/config"
-	"github.com/raven/platform/services/gateway"
+	"github.com/refleeexzz/RAVEN/internal/config"
+	"github.com/refleeexzz/RAVEN/services/gateway"
 )
 
 func main() {

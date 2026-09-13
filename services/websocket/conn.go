@@ -9,7 +9,7 @@ import (
 	"github.com/google/uuid"
 	gws "github.com/gorilla/websocket"
 
-	ravenerrors "github.com/raven/platform/pkg/errors"
+	ravenerrors "github.com/refleeexzz/RAVEN/pkg/errors"
 )
 
 const (

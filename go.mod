@@ -1,4 +1,4 @@
-module github.com/raven/platform
+module github.com/refleeexzz/RAVEN
 
 go 1.27
 

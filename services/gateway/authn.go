@@ -14,8 +14,8 @@ import (
 	"sync"
 	"time"
 
-	genauth "github.com/raven/platform/internal/gen/auth"
-	"github.com/raven/platform/pkg/errors"
+	genauth "github.com/refleeexzz/RAVEN/internal/gen/auth"
+	"github.com/refleeexzz/RAVEN/pkg/errors"
 )
 
 // Cache tuning: entries live 30 s (a revoked token stays accepted for at

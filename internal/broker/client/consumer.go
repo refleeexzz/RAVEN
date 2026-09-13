@@ -10,7 +10,7 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/raven/platform/internal/broker/protocol"
+	"github.com/refleeexzz/RAVEN/internal/broker/protocol"
 )
 
 // Message is one consumed record.

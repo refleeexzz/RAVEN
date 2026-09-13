@@ -20,11 +20,11 @@ import (
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/peer"
 
-	ravenauth "github.com/raven/platform/internal/auth"
-	"github.com/raven/platform/internal/database"
-	genauth "github.com/raven/platform/internal/gen/auth"
-	"github.com/raven/platform/pkg/errors"
-	"github.com/raven/platform/pkg/logger"
+	ravenauth "github.com/refleeexzz/RAVEN/internal/auth"
+	"github.com/refleeexzz/RAVEN/internal/database"
+	genauth "github.com/refleeexzz/RAVEN/internal/gen/auth"
+	"github.com/refleeexzz/RAVEN/pkg/errors"
+	"github.com/refleeexzz/RAVEN/pkg/logger"
 )
 
 // Redis keys (documented in the service README section of the code):

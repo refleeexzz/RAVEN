@@ -7,7 +7,7 @@ import (
 	"encoding/hex"
 	"time"
 
-	"github.com/raven/platform/pkg/errors"
+	"github.com/refleeexzz/RAVEN/pkg/errors"
 )
 
 // RefreshTokenTTL is the lifetime of a refresh session.

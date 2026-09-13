@@ -13,8 +13,8 @@ import (
 
 	"github.com/google/uuid"
 
-	genjobs "github.com/raven/platform/internal/gen/jobs"
-	"github.com/raven/platform/pkg/errors"
+	genjobs "github.com/refleeexzz/RAVEN/internal/gen/jobs"
+	"github.com/refleeexzz/RAVEN/pkg/errors"
 )
 
 // Job statuses. These exact strings live in the database CHECK constraint

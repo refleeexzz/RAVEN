@@ -7,7 +7,7 @@
 package users
 
 import (
-	common "github.com/raven/platform/internal/gen/common"
+	common "github.com/refleeexzz/RAVEN/internal/gen/common"
 	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
 	protoimpl "google.golang.org/protobuf/runtime/protoimpl"
 	reflect "reflect"
@@ -542,7 +542,7 @@ const file_users_users_proto_rawDesc = "" +
 	"\n" +
 	"UpdateUser\x12!.raven.users.v1.UpdateUserRequest\x1a\x14.raven.users.v1.User\x12S\n" +
 	"\n" +
-	"DeleteUser\x12!.raven.users.v1.DeleteUserRequest\x1a\".raven.users.v1.DeleteUserResponseB.Z,github.com/raven/platform/internal/gen/usersb\x06proto3"
+	"DeleteUser\x12!.raven.users.v1.DeleteUserRequest\x1a\".raven.users.v1.DeleteUserResponseB0Z.github.com/refleeexzz/RAVEN/internal/gen/usersb\x06proto3"
 
 var (
 	file_users_users_proto_rawDescOnce sync.Once

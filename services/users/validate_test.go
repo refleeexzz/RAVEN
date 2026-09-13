@@ -6,8 +6,8 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
-	gencommon "github.com/raven/platform/internal/gen/common"
-	"github.com/raven/platform/pkg/errors"
+	gencommon "github.com/refleeexzz/RAVEN/internal/gen/common"
+	"github.com/refleeexzz/RAVEN/pkg/errors"
 )
 
 func TestNormalizePage(t *testing.T) {

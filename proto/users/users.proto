@@ -4,7 +4,7 @@ package raven.users.v1;
 
 import "common/common.proto";
 
-option go_package = "github.com/raven/platform/internal/gen/users";
+option go_package = "github.com/refleeexzz/RAVEN/internal/gen/users";
 
 // UserService manages user profiles: CRUD, pagination, filters,
 // soft delete. Credentials themselves stay in the auth service.

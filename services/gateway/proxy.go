@@ -14,8 +14,8 @@ import (
 	"net/url"
 	"time"
 
-	"github.com/raven/platform/pkg/errors"
-	"github.com/raven/platform/pkg/logger"
+	"github.com/refleeexzz/RAVEN/pkg/errors"
+	"github.com/refleeexzz/RAVEN/pkg/logger"
 )
 
 // newWSProxy builds a reverse proxy to the websocket service at wsAddr

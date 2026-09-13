@@ -3,7 +3,7 @@ package broker
 import (
 	"time"
 
-	"github.com/raven/platform/internal/config"
+	"github.com/refleeexzz/RAVEN/internal/config"
 )
 
 // Config holds every broker knob. All of it comes from env vars

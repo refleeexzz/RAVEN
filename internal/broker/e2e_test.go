@@ -10,8 +10,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/raven/platform/internal/broker"
-	"github.com/raven/platform/internal/broker/client"
+	"github.com/refleeexzz/RAVEN/internal/broker"
+	"github.com/refleeexzz/RAVEN/internal/broker/client"
 )
 
 func quietLogger() *slog.Logger {

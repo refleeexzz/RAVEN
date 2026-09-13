@@ -11,8 +11,8 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/raven/platform/internal/config"
-	"github.com/raven/platform/services/worker"
+	"github.com/refleeexzz/RAVEN/internal/config"
+	"github.com/refleeexzz/RAVEN/services/worker"
 )
 
 func main() {

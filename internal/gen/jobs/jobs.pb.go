@@ -7,7 +7,7 @@
 package jobs
 
 import (
-	common "github.com/raven/platform/internal/gen/common"
+	common "github.com/refleeexzz/RAVEN/internal/gen/common"
 	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
 	protoimpl "google.golang.org/protobuf/runtime/protoimpl"
 	reflect "reflect"
@@ -596,7 +596,7 @@ const file_jobs_jobs_proto_rawDesc = "" +
 	"\bListJobs\x12\x1e.raven.jobs.v1.ListJobsRequest\x1a\x1f.raven.jobs.v1.ListJobsResponse\x12@\n" +
 	"\tCancelJob\x12\x1f.raven.jobs.v1.CancelJobRequest\x1a\x12.raven.jobs.v1.Job\x12B\n" +
 	"\n" +
-	"RequeueJob\x12 .raven.jobs.v1.RequeueJobRequest\x1a\x12.raven.jobs.v1.JobB-Z+github.com/raven/platform/internal/gen/jobsb\x06proto3"
+	"RequeueJob\x12 .raven.jobs.v1.RequeueJobRequest\x1a\x12.raven.jobs.v1.JobB/Z-github.com/refleeexzz/RAVEN/internal/gen/jobsb\x06proto3"
 
 var (
 	file_jobs_jobs_proto_rawDescOnce sync.Once

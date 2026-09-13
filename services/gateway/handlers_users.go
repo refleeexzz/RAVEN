@@ -8,8 +8,8 @@ import (
 	"net/http"
 	"strconv"
 
-	gencommon "github.com/raven/platform/internal/gen/common"
-	genusers "github.com/raven/platform/internal/gen/users"
+	gencommon "github.com/refleeexzz/RAVEN/internal/gen/common"
+	genusers "github.com/refleeexzz/RAVEN/internal/gen/users"
 )
 
 // usersHandlers serves /api/users/*.

@@ -743,7 +743,7 @@ const file_auth_auth_proto_rawDesc = "" +
 	"\x06Logout\x12\x1c.raven.auth.v1.LogoutRequest\x1a\x1d.raven.auth.v1.LogoutResponse\x12Z\n" +
 	"\rValidateToken\x12#.raven.auth.v1.ValidateTokenRequest\x1a$.raven.auth.v1.ValidateTokenResponse\x12T\n" +
 	"\vRevokeToken\x12!.raven.auth.v1.RevokeTokenRequest\x1a\".raven.auth.v1.RevokeTokenResponse\x12`\n" +
-	"\x0fCheckPermission\x12%.raven.auth.v1.CheckPermissionRequest\x1a&.raven.auth.v1.CheckPermissionResponseB-Z+github.com/raven/platform/internal/gen/authb\x06proto3"
+	"\x0fCheckPermission\x12%.raven.auth.v1.CheckPermissionRequest\x1a&.raven.auth.v1.CheckPermissionResponseB/Z-github.com/refleeexzz/RAVEN/internal/gen/authb\x06proto3"
 
 var (
 	file_auth_auth_proto_rawDescOnce sync.Once

@@ -6,8 +6,8 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/raven/platform/internal/broker/client"
-	"github.com/raven/platform/internal/broker/protocol"
+	"github.com/refleeexzz/RAVEN/internal/broker/client"
+	"github.com/refleeexzz/RAVEN/internal/broker/protocol"
 )
 
 // Producer wraps the broker client with job-aware helpers. Safe for

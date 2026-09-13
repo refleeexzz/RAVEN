@@ -4,7 +4,7 @@ package raven.jobs.v1;
 
 import "common/common.proto";
 
-option go_package = "github.com/raven/platform/internal/gen/jobs";
+option go_package = "github.com/refleeexzz/RAVEN/internal/gen/jobs";
 
 // JobService accepts work, tracks its lifecycle and exposes status.
 // Execution itself happens in workers, fed by the message broker.

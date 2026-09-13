@@ -7,7 +7,7 @@ import (
 
 	"github.com/golang-jwt/jwt/v5"
 
-	"github.com/raven/platform/pkg/errors"
+	"github.com/refleeexzz/RAVEN/pkg/errors"
 )
 
 const testSecret = "test-secret-do-not-use-in-prod"

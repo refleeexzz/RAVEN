@@ -6,7 +6,7 @@ package group
 import (
 	"sort"
 
-	"github.com/raven/platform/internal/broker/protocol"
+	"github.com/refleeexzz/RAVEN/internal/broker/protocol"
 )
 
 // memberInfo is the assignor's view of one member.

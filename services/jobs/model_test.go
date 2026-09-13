@@ -4,9 +4,9 @@ import (
 	"strings"
 	"testing"
 
-	gencommon "github.com/raven/platform/internal/gen/common"
-	genjobs "github.com/raven/platform/internal/gen/jobs"
-	"github.com/raven/platform/pkg/errors"
+	gencommon "github.com/refleeexzz/RAVEN/internal/gen/common"
+	genjobs "github.com/refleeexzz/RAVEN/internal/gen/jobs"
+	"github.com/refleeexzz/RAVEN/pkg/errors"
 )
 
 // The state machine guards are the pure form of the SQL fences. These tables

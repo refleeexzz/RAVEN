@@ -6,9 +6,9 @@ package gateway
 import (
 	"net/http"
 
-	ravenauth "github.com/raven/platform/internal/auth"
-	"github.com/raven/platform/internal/middleware"
-	"github.com/raven/platform/pkg/errors"
+	ravenauth "github.com/refleeexzz/RAVEN/internal/auth"
+	"github.com/refleeexzz/RAVEN/internal/middleware"
+	"github.com/refleeexzz/RAVEN/pkg/errors"
 )
 
 // permAuthenticated marks routes that need a valid token but no specific

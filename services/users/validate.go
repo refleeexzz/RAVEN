@@ -3,7 +3,7 @@ package users
 import (
 	"strings"
 
-	gencommon "github.com/raven/platform/internal/gen/common"
+	gencommon "github.com/refleeexzz/RAVEN/internal/gen/common"
 )
 
 const (

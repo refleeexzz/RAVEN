@@ -12,8 +12,8 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"github.com/raven/platform/internal/health"
-	"github.com/raven/platform/pkg/errors"
+	"github.com/refleeexzz/RAVEN/internal/health"
+	"github.com/refleeexzz/RAVEN/pkg/errors"
 )
 
 // Pool defaults. Small on purpose: this is a learning platform, and a small

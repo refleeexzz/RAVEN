@@ -2,7 +2,7 @@ syntax = "proto3";
 
 package raven.common.v1;
 
-option go_package = "github.com/raven/platform/internal/gen/common";
+option go_package = "github.com/refleeexzz/RAVEN/internal/gen/common";
 
 // PageRequest is the standard cursor-free pagination input.
 message PageRequest {

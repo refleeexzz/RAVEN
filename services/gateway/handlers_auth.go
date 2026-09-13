@@ -8,8 +8,8 @@ import (
 	"encoding/json"
 	"net/http"
 
-	genauth "github.com/raven/platform/internal/gen/auth"
-	"github.com/raven/platform/pkg/errors"
+	genauth "github.com/refleeexzz/RAVEN/internal/gen/auth"
+	"github.com/refleeexzz/RAVEN/pkg/errors"
 )
 
 // maxJSONBody caps request bodies at 1 MiB. Everything the API accepts is

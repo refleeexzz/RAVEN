@@ -15,8 +15,8 @@ import (
 	"github.com/redis/go-redis/v9"
 	"golang.org/x/sync/semaphore"
 
-	"github.com/raven/platform/internal/broker/client"
-	"github.com/raven/platform/services/jobs"
+	"github.com/refleeexzz/RAVEN/internal/broker/client"
+	"github.com/refleeexzz/RAVEN/services/jobs"
 )
 
 // Worker consumes the jobs topic and executes jobs with bounded concurrency.

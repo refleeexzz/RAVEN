@@ -12,7 +12,7 @@ import (
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/google/uuid"
 
-	"github.com/raven/platform/pkg/errors"
+	"github.com/refleeexzz/RAVEN/pkg/errors"
 )
 
 // AccessTokenTTL is the fixed lifetime of a minted access token. Short on

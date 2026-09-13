@@ -9,7 +9,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
 
-	ravenerrors "github.com/raven/platform/pkg/errors"
+	ravenerrors "github.com/refleeexzz/RAVEN/pkg/errors"
 )
 
 const (

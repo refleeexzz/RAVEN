@@ -9,8 +9,8 @@ import (
 	"os/signal"
 	"syscall"
 
-	"github.com/raven/platform/internal/config"
-	"github.com/raven/platform/services/jobs"
+	"github.com/refleeexzz/RAVEN/internal/config"
+	"github.com/refleeexzz/RAVEN/services/jobs"
 )
 
 func main() {

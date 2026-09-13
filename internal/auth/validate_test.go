@@ -6,7 +6,7 @@ import (
 
 	"golang.org/x/crypto/bcrypt"
 
-	"github.com/raven/platform/pkg/errors"
+	"github.com/refleeexzz/RAVEN/pkg/errors"
 )
 
 func TestValidateEmail(t *testing.T) {

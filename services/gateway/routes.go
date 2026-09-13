@@ -6,7 +6,7 @@ package gateway
 import (
 	"net/http"
 
-	ravenauth "github.com/raven/platform/internal/auth"
+	ravenauth "github.com/refleeexzz/RAVEN/internal/auth"
 )
 
 // route is one row of the public route table.

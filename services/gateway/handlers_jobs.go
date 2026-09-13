@@ -11,8 +11,8 @@ import (
 
 	"github.com/redis/go-redis/v9"
 
-	genjobs "github.com/raven/platform/internal/gen/jobs"
-	"github.com/raven/platform/pkg/errors"
+	genjobs "github.com/refleeexzz/RAVEN/internal/gen/jobs"
+	"github.com/refleeexzz/RAVEN/pkg/errors"
 )
 
 // jobsHandlers serves /api/jobs/* and /api/workers.

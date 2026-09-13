@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	ravenauth "github.com/raven/platform/internal/auth"
+	ravenauth "github.com/refleeexzz/RAVEN/internal/auth"
 )
 
 // expectedRoutes is the contract route table from

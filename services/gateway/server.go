@@ -20,12 +20,12 @@ import (
 
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 
-	"github.com/raven/platform/internal/health"
-	"github.com/raven/platform/internal/httpserver"
-	"github.com/raven/platform/internal/middleware"
-	"github.com/raven/platform/pkg/logger"
-	"github.com/raven/platform/pkg/metrics"
-	"github.com/raven/platform/pkg/tracing"
+	"github.com/refleeexzz/RAVEN/internal/health"
+	"github.com/refleeexzz/RAVEN/internal/httpserver"
+	"github.com/refleeexzz/RAVEN/internal/middleware"
+	"github.com/refleeexzz/RAVEN/pkg/logger"
+	"github.com/refleeexzz/RAVEN/pkg/metrics"
+	"github.com/refleeexzz/RAVEN/pkg/tracing"
 )
 
 // apiTimeout bounds every API request (the /ws proxy is exempt — websockets
@@ -172,7 +172,9 @@ func (s *server) handler() http.Handler {
 	mux.Handle("GET /ws", ws)
 	mux.Handle("GET /ws/", ws)
 
-	return mux
+	// Outermost layer: CORS for the console's browser fetches. Header-only
+	// (no ResponseWriter wrapping), so /ws hijacking still works.
+	return cors(mux)
 }
 
 // wrapAPI applies the API middleware chain to one route:

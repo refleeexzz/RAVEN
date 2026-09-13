@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/raven/platform/internal/broker/protocol"
-	"github.com/raven/platform/internal/broker/server"
+	"github.com/refleeexzz/RAVEN/internal/broker/protocol"
+	"github.com/refleeexzz/RAVEN/internal/broker/server"
 )
 
 // fakeBackend implements server.Backend with canned responses.
