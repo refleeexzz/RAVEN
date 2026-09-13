@@ -10,6 +10,7 @@ import { JobsPage } from "@/pages/Jobs";
 import { WorkersPage } from "@/pages/Workers";
 import { BrokerPage } from "@/pages/Broker";
 import { ObservabilityPage } from "@/pages/Observability";
+import { TestLabPage } from "@/pages/TestLab";
 
 export default function App() {
   const route = useHashRoute();
@@ -44,6 +45,9 @@ export default function App() {
       break;
     case "/observability":
       page = <ObservabilityPage />;
+      break;
+    case "/testlab":
+      page = <TestLabPage route={route} />;
       break;
     default:
       page = <OverviewPage />;

@@ -76,6 +76,12 @@ const ERRORS = [
   "dns: lookup failed for callback host",
 ];
 
+/** Payloads that can never succeed (the Test Lab "Fail on purpose" scenario). */
+function isDoomedPayload(payload: Record<string, unknown>): boolean {
+  const url = typeof payload.url === "string" ? payload.url : "";
+  return url.includes("never-works") || url.includes("localhost:9");
+}
+
 interface TopicState extends TopicInfo {
   baseRate: number;
 }
@@ -153,6 +159,9 @@ export class DemoWorld {
       worker_id: null,
       idempotency_key: input.idempotency_key,
     };
+    // A doomed payload fails every attempt, like the real worker hitting a
+    // dead endpoint — so the Test Lab DLQ scenario behaves the same offline.
+    if (isDoomedPayload(input.payload)) this.poison.add(job.id);
     this.jobs.unshift(job);
     this.emit(job, "QUEUED");
     return job;
@@ -174,7 +183,9 @@ export class DemoWorld {
     const job = this.jobs.find((j) => j.id === id);
     if (!job) throw new Error(`Job ${id} not found`);
     if (job.status !== "DEAD") throw new Error("Only dead-letter jobs can be requeued");
-    this.poison.delete(id); // operator requeue implies the underlying issue is fixed
+    // Operator requeue implies the underlying issue is fixed — unless the
+    // payload is doomed, in which case it will fail again (that's the point).
+    if (!isDoomedPayload(job.payload)) this.poison.delete(id);
     job.status = "QUEUED";
     job.error = null;
     job.finished_at = null;

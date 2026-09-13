@@ -10,6 +10,7 @@ import {
   LogOut,
   Plus,
   Waypoints,
+  Wrench,
   type LucideIcon,
 } from "lucide-react";
 import type { Route } from "@/lib/router";
@@ -44,6 +45,7 @@ export function CommandPalette({ route }: { route: Route }) {
       { path: "/workers", label: "Go to Workers", icon: Cpu },
       { path: "/broker", label: "Go to Broker", icon: Waypoints },
       { path: "/observability", label: "Go to Observability", icon: BarChart3 },
+      { path: "/testlab", label: "Go to Test Lab", icon: Wrench },
     ].map((n) => ({
       id: n.path,
       label: n.label,

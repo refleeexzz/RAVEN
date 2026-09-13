@@ -75,10 +75,12 @@ export async function postJson<T>(
   });
 }
 
-/** Quick reachability check used to decide live vs demo mode. */
+/** Quick reachability check used to decide live vs demo mode.
+ *  Uses /health: it is public, so a fresh visitor without a token still
+ *  detects a running gateway instead of falling into demo mode. */
 export async function probeGateway(): Promise<boolean> {
   try {
-    const res = await fetch(`${config.gatewayUrl}/api/jobs?limit=1`, {
+    const res = await fetch(`${config.gatewayUrl}/health`, {
       signal: AbortSignal.timeout(2500),
     });
     return res.ok;

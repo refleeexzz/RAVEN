@@ -1,0 +1,8 @@
+
+  VITE v5.4.21  ready in 364 ms
+
+  ➜  Local:   http://localhost:7100/
+  ➜  Network: use --host to expose
+17:56:07 [vite] page reload .verify/testlab-live-e2e.html
+17:56:08 [vite] page reload .verify/testlab-live-e2e.html
+17:59:06 [vite] hmr update /src/features/testlab/FailOnPurpose.tsx, /src/index.css

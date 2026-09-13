@@ -10,6 +10,7 @@ import {
   Menu,
   Search,
   Waypoints,
+  Wrench,
   X,
 } from "lucide-react";
 import type { Route } from "@/lib/router";
@@ -24,6 +25,7 @@ const NAV = [
   { path: "/workers", label: "Workers", icon: Cpu },
   { path: "/broker", label: "Broker", icon: Waypoints },
   { path: "/observability", label: "Observability", icon: BarChart3 },
+  { path: "/testlab", label: "Test Lab", icon: Wrench },
 ] as const;
 
 function pageTitle(path: string): string {

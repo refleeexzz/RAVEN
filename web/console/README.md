@@ -59,6 +59,43 @@ Override endpoints with env vars if your stack runs elsewhere:
 `VITE_GATEWAY_URL`, `VITE_BROKER_URL`, `VITE_REALTIME_URL`, `VITE_WS_URL`,
 `VITE_GRAFANA_URL`, `VITE_JAEGER_URL`, `VITE_PROMETHEUS_URL`.
 
+## Test Lab
+
+The **Test Lab** page (`#/testlab`, wrench icon in the sidebar) lets you drive
+the platform yourself instead of just watching it. Every scenario works in both
+modes: live mode hits the real gateway, demo mode runs the same flows against
+the simulator.
+
+Four cards:
+
+- **Quick E2E check** — one button runs the whole pipeline as a step timeline:
+  reach the gateway (`GET /health`), check the session token, create a
+  `send_email` job (fresh idempotency key per run), then poll it to a terminal
+  status. You get per-step durations, the observed status transitions, and a
+  final verdict. Not signed in? You get a small inline hint, not a wall — in
+  live mode the create step will 401 without a session.
+- **Mini load test** — pick the job count (10–500), the type (`send_email` /
+  `resize_image`) and a concurrency (1–40). It creates the jobs through a small
+  promise pool, shows a live progress bar with created / in-flight / success /
+  failed counters and a per-second rate, then a summary with wall time, jobs/s
+  and a status breakdown. In live mode statuses are polled per id through a
+  rotating window (bounded requests per second).
+- **Fail on purpose** — creates a `webhook` job pointing at
+  `http://localhost:9/never-works`. Nothing listens there, so every attempt
+  fails; watch it go RETRYING → DEAD. Once it is in the DLQ, a **Requeue from
+  DLQ** button appears — requeue it and watch it die again. That is the point:
+  a requeue retries the same payload, so fix the cause first.
+- **Break it yourself** — copy-paste chaos (`kubectl` kill/scale commands) plus
+  the Jaeger and Grafana links where the effects show up. Chaos needs kubectl
+  access, so this card is an honest guide, not a button.
+
+Every run lands in the **run log** at the bottom (timestamp, scenario,
+outcome), kept for the life of the page.
+
+Tip for headless smoke-testing: `#/testlab?autorun=e2e` (or `load`, `fail`)
+starts a scenario on mount — handy with
+`msedge --headless --virtual-time-budget=45000 --dump-dom`.
+
 ## Auth
 
 The console is usable without an account — you land on the dashboard

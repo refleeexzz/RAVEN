@@ -25,6 +25,7 @@ func main() {
 		email       = flag.String("email", "e2e@raven.dev", "login email")
 		password    = flag.String("password", "supersecret123", "login password")
 		jobType     = flag.String("type", "send_email", "job type: send_email (io-bound) or resize_image (cpu-bound)")
+		nonce       = flag.String("nonce", fmt.Sprint(time.Now().Unix()), "unique run id — idempotency keys are load-<nonce>-<client>-<seq>, so rounds never replay each other")
 		concurrency = flag.Int("c", 50, "concurrent clients")
 		duration    = flag.Duration("d", 60*time.Second, "test duration")
 	)
@@ -64,13 +65,15 @@ func main() {
 						listed.Add(1)
 					}
 				} else {
-					err = createJob(client, *baseURL, token, *jobType, n, seq)
+					err = createJob(client, *baseURL, token, *jobType, *nonce, n, seq)
 					if err == nil {
 						created.Add(1)
 					}
 				}
 				if err != nil {
-					failed.Add(1)
+					if n := failed.Add(1); n <= 3 {
+						fmt.Printf("  ! failure sample #%d: %v\n", n, err)
+					}
 				} else {
 					lat.add(time.Since(start))
 				}
@@ -120,21 +123,24 @@ func login(c *http.Client, base, email, pass string) (string, error) {
 	return out.AccessToken, nil
 }
 
-func createJob(c *http.Client, base, token, jobType string, client, seq int) error {
+func createJob(c *http.Client, base, token, jobType, nonce string, client, seq int) error {
 	payload := fmt.Sprintf(`{"type":%q,"payload":{"to":"load-%d-%d@raven.dev","subject":"load","image":"%d bytes of fake image data for resize jobs"},"priority":5}`, jobType, client, seq, seq%97)
 	req, _ := http.NewRequest(http.MethodPost, base+"/api/jobs", bytes.NewReader([]byte(payload)))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+token)
-	req.Header.Set("Idempotency-Key", fmt.Sprintf("load-%d-%d", client, seq))
+	req.Header.Set("Idempotency-Key", fmt.Sprintf("load-%s-%d-%d", nonce, client, seq))
 	resp, err := c.Do(req)
 	if err != nil {
 		return err
 	}
 	defer resp.Body.Close()
-	io.Copy(io.Discard, resp.Body)
 	if resp.StatusCode >= 400 {
-		return fmt.Errorf("status %d", resp.StatusCode)
+		// Sample the error body: the first failures tell you WHY (429? 503?
+		// breaker open?) instead of leaving you guessing from counters.
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 200))
+		return fmt.Errorf("status %d: %s", resp.StatusCode, bytes.TrimSpace(body))
 	}
+	io.Copy(io.Discard, resp.Body)
 	return nil
 }
 
