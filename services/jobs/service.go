@@ -32,6 +32,12 @@ type Config struct {
 	BrokerAddr  string
 	LogLevel    string
 
+	// SweepInterval is how often the stranded-job sweeper runs
+	// (JOBS_SWEEP_INTERVAL, default 15s). <= 0 disables the sweeper (tests,
+	// single-purpose debug deployments); disabling it reopens the kill -9
+	// stranding window, so production should always run it.
+	SweepInterval time.Duration
+
 	// Tracing (OTel). Disabled by default locally; enabled in k8s via
 	// the raven-config ConfigMap.
 	OtelEndpoint string
@@ -79,6 +85,15 @@ func Run(ctx context.Context, cfg Config) error {
 	healthReg.Register("postgres", database.Checker(pool))
 	healthReg.Register("redis", redisChecker(rdb))
 	healthReg.Register("broker", BrokerChecker(cfg.BrokerAddr))
+
+	// Stranded-job sweeper: one goroutine per replica, exactly one active at
+	// a time across replicas via the advisory lock inside SweepOnce.
+	if cfg.SweepInterval > 0 {
+		sweeper := NewSweeper(pool, producer, rdb, log, sm, cfg.SweepInterval)
+		go sweeper.Run(ctx)
+	} else {
+		log.Warn("job sweeper disabled; kill -9 can strand jobs in PROCESSING/RETRYING")
+	}
 
 	srv := NewServer(pool, rdb, producer, log, sm)
 

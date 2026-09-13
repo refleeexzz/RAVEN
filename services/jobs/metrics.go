@@ -13,9 +13,11 @@ import (
 // ServiceMetrics bundles the jobs-specific Prometheus collectors. HTTP RED
 // metrics come from pkg/metrics; these cover the job lifecycle.
 type ServiceMetrics struct {
-	jobsTotal  *prometheus.CounterVec // raven_jobs_total{type,status}
-	created    prometheus.Counter     // raven_jobs_created_total
-	processing prometheus.GaugeFunc   // raven_jobs_processing
+	jobsTotal        *prometheus.CounterVec // raven_jobs_total{type,status}
+	created          prometheus.Counter     // raven_jobs_created_total
+	processing       prometheus.GaugeFunc   // raven_jobs_processing
+	sweeperRuns      prometheus.Counter     // raven_jobs_sweeper_runs_total
+	sweeperRecovered *prometheus.CounterVec // raven_jobs_sweeper_recovered_total{outcome}
 }
 
 // NewServiceMetrics registers the collectors. processing is measured at
@@ -47,8 +49,20 @@ func NewServiceMetrics(reg *metrics.Registry, countProcessing func() (int64, err
 			}
 			return float64(n)
 		}),
+		sweeperRuns: prometheus.NewCounter(prometheus.CounterOpts{
+			Namespace: "raven",
+			Subsystem: "jobs",
+			Name:      "sweeper_runs_total",
+			Help:      "Sweeper passes that held the advisory lock and scanned for expired leases.",
+		}),
+		sweeperRecovered: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Namespace: "raven",
+			Subsystem: "jobs",
+			Name:      "sweeper_recovered_total",
+			Help:      "Stranded jobs taken over by the sweeper, by outcome (retry|dead).",
+		}, []string{"outcome"}),
 	}
-	reg.Register(m.jobsTotal, m.created, m.processing)
+	reg.Register(m.jobsTotal, m.created, m.processing, m.sweeperRuns, m.sweeperRecovered)
 	return m
 }
 

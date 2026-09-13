@@ -56,6 +56,11 @@ const (
 	defaultMaxAttempts = 4
 	maxMaxAttempts     = 25
 	defaultPriority    = 5
+
+	// initialGeneration is the fencing token a job starts with. It matches
+	// the execution_generation column default in migration 000003; the
+	// sweeper bumps it every time it takes a stranded job over.
+	initialGeneration = 1
 )
 
 // Job mirrors a row of the jobs table. Nullable columns use pointers.
@@ -74,6 +79,15 @@ type Job struct {
 	FinishedAt     *time.Time
 	Error          string
 	WorkerID       string
+
+	// Lease fields (migration 000003). HeartbeatAt is the last sign of life
+	// from the executing worker; LeaseUntil is the moment after which the
+	// sweeper may declare the worker dead and take the job over.
+	// ExecutionGeneration is the fencing token: every write that mutates an
+	// execution must carry the current generation or it is rejected.
+	HeartbeatAt         *time.Time
+	LeaseUntil          *time.Time
+	ExecutionGeneration int
 }
 
 // NewID builds a job id: "job_" + uuid. The prefix makes ids greppable in
@@ -227,23 +241,29 @@ type jobMessage struct {
 	FinishedAt  *time.Time      `json:"finished_at,omitempty"`
 	Error       string          `json:"error,omitempty"`
 	WorkerID    string          `json:"worker_id,omitempty"`
+	// ExecutionGeneration is the fencing token the worker must present back
+	// to the database. Messages written before leases existed decode with 0,
+	// which the claim fence treats as "unknown, accept the row's current
+	// generation" — the upgrade path stays safe.
+	ExecutionGeneration int `json:"execution_generation"`
 }
 
 // message renders the job as the broker payload.
 func (j *Job) message() ([]byte, error) {
 	m := jobMessage{
-		ID:          j.ID,
-		Type:        j.Type,
-		Payload:     json.RawMessage(j.Payload),
-		Status:      j.Status,
-		Priority:    j.Priority,
-		Attempts:    j.Attempts,
-		MaxAttempts: j.MaxAttempts,
-		CreatedAt:   j.CreatedAt.UTC(),
-		StartedAt:   j.StartedAt,
-		FinishedAt:  j.FinishedAt,
-		Error:       j.Error,
-		WorkerID:    j.WorkerID,
+		ID:                  j.ID,
+		Type:                j.Type,
+		Payload:             json.RawMessage(j.Payload),
+		Status:              j.Status,
+		Priority:            j.Priority,
+		Attempts:            j.Attempts,
+		MaxAttempts:         j.MaxAttempts,
+		CreatedAt:           j.CreatedAt.UTC(),
+		StartedAt:           j.StartedAt,
+		FinishedAt:          j.FinishedAt,
+		Error:               j.Error,
+		WorkerID:            j.WorkerID,
+		ExecutionGeneration: j.ExecutionGeneration,
 	}
 	if j.OwnerID != nil {
 		m.OwnerID = *j.OwnerID
@@ -255,17 +275,29 @@ func (j *Job) message() ([]byte, error) {
 // only need the id: after the fence update they trust the Postgres row, not
 // the (possibly stale) message contents.
 func ParseJobMessageID(raw []byte) (string, error) {
+	id, _, err := ParseJobMessage(raw)
+	return id, err
+}
+
+// ParseJobMessage extracts the job id and the execution generation from a
+// broker message. Generation 0 means "the producer did not know the
+// generation" (pre-lease messages, hand-built payloads); the claim fence
+// accepts the row's current generation in that case. A non-zero generation
+// that no longer matches the row means the message is stale — the sweeper
+// already bumped the row and republished a newer message.
+func ParseJobMessage(raw []byte) (id string, generation int, err error) {
 	var m struct {
-		ID string `json:"id"`
+		ID                  string `json:"id"`
+		ExecutionGeneration int    `json:"execution_generation"`
 	}
 	if err := json.Unmarshal(raw, &m); err != nil {
-		return "", err
+		return "", 0, err
 	}
 	if m.ID == "" {
-		return "", errors.E(errors.KindInvalid, "job_message_no_id",
+		return "", 0, errors.E(errors.KindInvalid, "job_message_no_id",
 			"broker message has no job id", nil)
 	}
-	return m.ID, nil
+	return m.ID, m.ExecutionGeneration, nil
 }
 
 // MarshalMessage renders the job as the broker payload. Exported so the

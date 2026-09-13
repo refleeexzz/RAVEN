@@ -27,6 +27,8 @@ func main() {
 		LogLevel:    config.Get("LOG_LEVEL", "info"),
 		Concurrency: config.GetInt("WORKER_CONCURRENCY", 8),
 		JobTimeout:  config.GetDuration("WORKER_JOB_TIMEOUT", 30*time.Second),
+		// Milliseconds, not a Go duration string: the name says so.
+		JobLease: time.Duration(config.GetInt("WORKER_JOB_LEASE_MS", 30000)) * time.Millisecond,
 	}
 
 	if err := worker.Run(ctx, cfg); err != nil {

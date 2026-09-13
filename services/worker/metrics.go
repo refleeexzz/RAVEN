@@ -9,9 +9,10 @@ import (
 // ServiceMetrics bundles the worker-specific Prometheus collectors. HTTP RED
 // metrics come from pkg/metrics; these cover job execution.
 type ServiceMetrics struct {
-	processed *prometheus.CounterVec   // raven_worker_jobs_processed_total{result}
-	duration  *prometheus.HistogramVec // raven_worker_job_duration_seconds{type}
-	inFlight  prometheus.Gauge         // raven_worker_in_flight
+	processed    *prometheus.CounterVec   // raven_worker_jobs_processed_total{result}
+	duration     *prometheus.HistogramVec // raven_worker_job_duration_seconds{type}
+	inFlight     prometheus.Gauge         // raven_worker_in_flight
+	fencedWrites *prometheus.CounterVec   // raven_worker_fenced_writes_total{op}
 }
 
 // NewServiceMetrics registers the collectors on reg.
@@ -21,7 +22,7 @@ func NewServiceMetrics(reg *metrics.Registry) *ServiceMetrics {
 			Namespace: "raven",
 			Subsystem: "worker",
 			Name:      "jobs_processed_total",
-			Help:      "Job executions by result (success|retry|dead|skipped|poison).",
+			Help:      "Job executions by result (success|retry|dead|skipped|poison|fenced|lease_lost).",
 		}, []string{"result"}),
 		duration: prometheus.NewHistogramVec(prometheus.HistogramOpts{
 			Namespace: "raven",
@@ -36,7 +37,13 @@ func NewServiceMetrics(reg *metrics.Registry) *ServiceMetrics {
 			Name:      "in_flight",
 			Help:      "Jobs currently executing in this worker.",
 		}),
+		fencedWrites: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Namespace: "raven",
+			Subsystem: "worker",
+			Name:      "fenced_writes_total",
+			Help:      "Finish writes rejected by the generation fence (a newer generation owns the job), by op (success|failure|dead).",
+		}, []string{"op"}),
 	}
-	reg.Register(m.processed, m.duration, m.inFlight)
+	reg.Register(m.processed, m.duration, m.inFlight, m.fencedWrites)
 	return m
 }

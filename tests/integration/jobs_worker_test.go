@@ -42,13 +42,17 @@ func TestJobsWorkerLifecycle(t *testing.T) {
 	log := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn}))
 
 	// Apply migration 000002 on top of the 000001 schema the shared env
-	// already applied.
+	// already applied, then 000003 (job leases) — the worker's claim fence
+	// reads the lease columns.
 	dsn, err := env.pgContainer.ConnectionString(ctx, "sslmode=disable")
 	if err != nil {
 		t.Fatalf("postgres dsn: %v", err)
 	}
 	if err := applyMigrationFile(ctx, dsn, "000002_jobs.up.sql"); err != nil {
 		t.Fatalf("apply migration 000002: %v", err)
+	}
+	if err := applyMigrationFile(ctx, dsn, "000003_job_leases.up.sql"); err != nil {
+		t.Fatalf("apply migration 000003: %v", err)
 	}
 
 	redisURL, err := env.redisContainer.ConnectionString(ctx)

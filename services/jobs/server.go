@@ -59,6 +59,9 @@ func (s *Server) CreateJob(ctx context.Context, req *genjobs.CreateJobRequest) (
 		Priority:    priority,
 		MaxAttempts: maxAttempts,
 		CreatedAt:   time.Now().UTC(),
+		// Matches the execution_generation column default; the broker message
+		// must carry the real token, not the struct's zero value.
+		ExecutionGeneration: initialGeneration,
 	}
 	if idemKey != "" {
 		j.IdempotencyKey = &idemKey

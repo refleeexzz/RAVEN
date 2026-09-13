@@ -22,7 +22,7 @@ type querier interface {
 const jobColumns = `
 	id, type, payload::text, status, priority, attempts, max_attempts,
 	idempotency_key, owner_id::text, created_at, started_at, finished_at,
-	error, worker_id`
+	error, worker_id, heartbeat_at, lease_until, execution_generation`
 
 // scanJob reads one row of jobColumns.
 func scanJob(row pgx.Row) (*Job, error) {
@@ -31,6 +31,7 @@ func scanJob(row pgx.Row) (*Job, error) {
 		&j.ID, &j.Type, &j.Payload, &j.Status, &j.Priority, &j.Attempts,
 		&j.MaxAttempts, &j.IdempotencyKey, &j.OwnerID, &j.CreatedAt,
 		&j.StartedAt, &j.FinishedAt, &j.Error, &j.WorkerID,
+		&j.HeartbeatAt, &j.LeaseUntil, &j.ExecutionGeneration,
 	)
 	if err != nil {
 		return nil, err
@@ -160,11 +161,15 @@ func cancelJob(ctx context.Context, q querier, id string) (*Job, error) {
 
 // requeueJob moves DEAD -> QUEUED atomically, resetting the execution fields
 // so the job looks freshly created (job_attempts history is kept untouched).
+// The generation is bumped: a zombie writer holding the pre-requeue token
+// must not be able to finish the resurrected job.
 func requeueJob(ctx context.Context, q querier, id string) (*Job, error) {
 	j, err := scanJob(q.QueryRow(ctx, `
 		UPDATE jobs
 		SET status = $2, attempts = 0, error = '', worker_id = '',
-		    started_at = NULL, finished_at = NULL
+		    started_at = NULL, finished_at = NULL,
+		    heartbeat_at = NULL, lease_until = NULL,
+		    execution_generation = execution_generation + 1
 		WHERE id = $1 AND status = 'DEAD'
 		RETURNING `+jobColumns, id, StatusQueued))
 	if err == nil {
@@ -201,17 +206,27 @@ func markQueuedFailed(ctx context.Context, q querier, id, errMsg string) error {
 // ---------------------------------------------------------------------------
 // Worker-side writes. The worker service calls these; they live here because
 // the jobs table has exactly one owner.
+//
+// Lease discipline (ADR 009): claiming a job writes heartbeat_at and
+// lease_until = now() + lease; the worker renews both while executing; finish
+// writes carry the execution_generation fencing token so a dead worker's late
+// write matches zero rows and is rejected.
 // ---------------------------------------------------------------------------
 
-// StartJobFence is the at-least-once dedup fence: it moves the job to
-// PROCESSING only when it is still QUEUED/RETRYING. A cancelled, finished or
-// already-running job makes the update match nothing, and the worker skips
-// the message. Returns (nil, nil) in that case.
-func StartJobFence(ctx context.Context, q querier, id, workerID string) (*Job, error) {
+// StartJobFence is the at-least-once dedup fence and the lease claim: it moves
+// the job to PROCESSING only when it is still QUEUED/RETRYING and the
+// message's generation still matches the row (msgGeneration 0 = unknown, for
+// pre-lease messages: accept whatever the row has). A cancelled, finished,
+// already-running or stale-generation message matches nothing, and the worker
+// skips it. Returns (nil, nil) in that case.
+func StartJobFence(ctx context.Context, q querier, id, workerID string, msgGeneration int, lease time.Duration) (*Job, error) {
 	j, err := scanJob(q.QueryRow(ctx, `
-		UPDATE jobs SET status = $2, started_at = now(), worker_id = $3
+		UPDATE jobs
+		SET status = $2, started_at = now(), worker_id = $3,
+		    heartbeat_at = now(), lease_until = now() + make_interval(secs => $4)
 		WHERE id = $1 AND status IN ('QUEUED', 'RETRYING')
-		RETURNING `+jobColumns, id, StatusProcessing, workerID))
+		  AND ($5 = 0 OR execution_generation = $5)
+		RETURNING `+jobColumns, id, StatusProcessing, workerID, lease.Seconds(), msgGeneration))
 	if err != nil {
 		if stderrors.Is(err, pgx.ErrNoRows) {
 			return nil, nil
@@ -222,10 +237,30 @@ func StartJobFence(ctx context.Context, q querier, id, workerID string) (*Job, e
 	return j, nil
 }
 
+// RenewJobLease extends the lease of a running job. Returns false when the
+// lease is lost — the sweeper bumped the generation (worker declared dead) or
+// the job left PROCESSING — in which case the worker must abandon the handler
+// and must not write any result: the finish fence would reject it anyway.
+func RenewJobLease(ctx context.Context, q querier, id string, generation int, lease time.Duration) (bool, error) {
+	tag, err := q.Exec(ctx, `
+		UPDATE jobs
+		SET heartbeat_at = now(), lease_until = now() + make_interval(secs => $3)
+		WHERE id = $1 AND execution_generation = $2 AND status = 'PROCESSING'`,
+		id, generation, lease.Seconds())
+	if err != nil {
+		return false, errors.E(errors.KindUnknown, "job_renew_failed",
+			"could not renew the job lease", err)
+	}
+	return tag.RowsAffected() == 1, nil
+}
+
 // FinishJobSuccess records a successful attempt and moves the job to SUCCESS
 // in one transaction. attempt is the 1-based number of the attempt that ran.
-// Returns the updated job, or (nil, nil) when the job moved on under us.
-func FinishJobSuccess(ctx context.Context, q querier, id string, attempt int, workerID string, startedAt, finishedAt time.Time) (*Job, error) {
+// generation is the fencing token the worker claimed the job with: when a
+// newer generation owns the job (the sweeper took over) the update matches
+// zero rows and the write is rejected. Returns the updated job, or (nil, nil)
+// when the write was fenced — the caller treats that as a no-op success.
+func FinishJobSuccess(ctx context.Context, q querier, id string, generation, attempt int, workerID string, startedAt, finishedAt time.Time) (*Job, error) {
 	var j *Job
 	err := withTx(ctx, q, func(tx pgx.Tx) error {
 		if err := insertAttempt(ctx, tx, id, attempt, startedAt, &finishedAt, "", workerID); err != nil {
@@ -234,13 +269,15 @@ func FinishJobSuccess(ctx context.Context, q querier, id string, attempt int, wo
 		var err error
 		j, err = scanJob(tx.QueryRow(ctx, `
 			UPDATE jobs
-			SET status = $2, attempts = $3, error = '', finished_at = $4
-			WHERE id = $1 AND status = 'PROCESSING'
-			RETURNING `+jobColumns, id, StatusSuccess, attempt, finishedAt))
+			SET status = $2, attempts = $3, error = '', finished_at = $4,
+			    lease_until = NULL
+			WHERE id = $1 AND status = 'PROCESSING' AND execution_generation = $5
+			RETURNING `+jobColumns, id, StatusSuccess, attempt, finishedAt, generation))
 		if err != nil {
 			if stderrors.Is(err, pgx.ErrNoRows) {
-				// Someone moved the job under us (e.g. cancel raced us). The
-				// attempt row above stays: it really ran.
+				// Fenced: a newer generation took over (or the job moved on
+				// under us, e.g. cancel raced us). The attempt row above
+				// stays: the attempt really ran.
 				return nil
 			}
 			return errors.E(errors.KindUnknown, "job_finish_failed",
@@ -251,13 +288,16 @@ func FinishJobSuccess(ctx context.Context, q querier, id string, attempt int, wo
 	if err != nil {
 		return nil, err
 	}
-	return j, nil // j may be nil when the race above happened
+	return j, nil // j may be nil when the write was fenced
 }
 
 // FinishJobFailure records a failed attempt and moves the job to RETRYING or
-// DEAD in one transaction. Returns the updated job (nil when the job moved on
-// under us).
-func FinishJobFailure(ctx context.Context, q querier, id string, attempt int, workerID, errMsg string, dead bool, startedAt, finishedAt time.Time) (*Job, error) {
+// DEAD in one transaction, fenced by generation exactly like
+// FinishJobSuccess. For RETRYING, retryLease (backoff delay + lease) keeps
+// the job sweepable: a worker that dies before its retry timer fires leaves
+// an expired lease behind for the sweeper. Returns the updated job (nil when
+// the write was fenced).
+func FinishJobFailure(ctx context.Context, q querier, id string, generation, attempt int, workerID, errMsg string, dead bool, startedAt, finishedAt time.Time, retryLease time.Duration) (*Job, error) {
 	next := StatusRetrying
 	if dead {
 		next = StatusDead
@@ -268,15 +308,29 @@ func FinishJobFailure(ctx context.Context, q querier, id string, attempt int, wo
 			return err
 		}
 		var err error
-		j, err = scanJob(tx.QueryRow(ctx, `
-			UPDATE jobs
-			SET status = $2, attempts = $3, error = $4, finished_at = $5
-			WHERE id = $1 AND status = 'PROCESSING'
-			RETURNING `+jobColumns, id, next, attempt, errMsg,
-			finishedAtOrNil(dead, finishedAt)))
+		if dead {
+			// Terminal: nothing left to recover, clear the lease.
+			j, err = scanJob(tx.QueryRow(ctx, `
+				UPDATE jobs
+				SET status = $2, attempts = $3, error = $4, finished_at = $5,
+				    lease_until = NULL
+				WHERE id = $1 AND status = 'PROCESSING' AND execution_generation = $6
+				RETURNING `+jobColumns, id, next, attempt, errMsg, finishedAt, generation))
+		} else {
+			// RETRYING keeps a lease so the sweeper recovers the job when the
+			// worker dies before republishing. finished_at stays NULL: the
+			// job is not done, it will run again.
+			j, err = scanJob(tx.QueryRow(ctx, `
+				UPDATE jobs
+				SET status = $2, attempts = $3, error = $4, finished_at = NULL,
+				    heartbeat_at = now(), lease_until = now() + make_interval(secs => $5)
+				WHERE id = $1 AND status = 'PROCESSING' AND execution_generation = $6
+				RETURNING `+jobColumns, id, next, attempt, errMsg,
+				retryLease.Seconds(), generation))
+		}
 		if err != nil {
 			if stderrors.Is(err, pgx.ErrNoRows) {
-				return nil // moved under us; attempt row stays
+				return nil // fenced; attempt row stays
 			}
 			return errors.E(errors.KindUnknown, "job_finish_failed",
 				"could not record the failed attempt", err)
@@ -287,15 +341,6 @@ func FinishJobFailure(ctx context.Context, q querier, id string, attempt int, wo
 		return nil, err
 	}
 	return j, nil
-}
-
-// finishedAtOrNil keeps finished_at NULL for RETRYING (the job is not done,
-// it will run again) and sets it for DEAD (terminal).
-func finishedAtOrNil(dead bool, t time.Time) *time.Time {
-	if !dead {
-		return nil
-	}
-	return &t
 }
 
 // insertAttempt appends one row to job_attempts.

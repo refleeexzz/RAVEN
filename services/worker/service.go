@@ -30,6 +30,7 @@ type Config struct {
 	LogLevel    string
 	Concurrency int           // WORKER_CONCURRENCY, default 8
 	JobTimeout  time.Duration // WORKER_JOB_TIMEOUT, default 30s
+	JobLease    time.Duration // WORKER_JOB_LEASE_MS, default 30s
 }
 
 // shutdownDrain bounds how long we wait for in-flight jobs at shutdown.
@@ -79,9 +80,20 @@ func Run(ctx context.Context, cfg Config) error {
 		Metrics:     sm,
 		Concurrency: cfg.Concurrency,
 		JobTimeout:  cfg.JobTimeout,
+		JobLease:    cfg.JobLease,
 	})
+	if cfg.JobTimeout >= cfg.JobLease {
+		// Renewals keep the lease alive, but a handler running right up to a
+		// timeout that exceeds the lease leaves no margin for the finish
+		// write: the sweeper could take the job over first. Keep
+		// WORKER_JOB_TIMEOUT well below WORKER_JOB_LEASE_MS.
+		log.Warn("job timeout >= lease: long jobs risk fencing by the sweeper",
+			slog.Duration("job_timeout", cfg.JobTimeout),
+			slog.Duration("job_lease", cfg.JobLease))
+	}
 	log.Info("worker starting", slog.String("worker_id", w.ID()),
-		slog.Int("concurrency", cfg.Concurrency))
+		slog.Int("concurrency", cfg.Concurrency),
+		slog.Duration("job_lease", cfg.JobLease))
 
 	healthReg := health.NewRegistry(3 * time.Second)
 	healthReg.Register("postgres", database.Checker(pool))

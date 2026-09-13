@@ -33,49 +33,73 @@ docker compose stop worker    # during the ~200-800ms of "sending"
 docker compose logs worker --tail=20
 ```
 
-## Worker `kill -9` (the stranding window)
+## Worker `kill -9` (the stranding window — now closed)
 
-**What happens.** This is the one to understand. The worker commits the
-broker offset **at dispatch** — when the handler goroutine starts, not when
-it finishes. That keeps the consumer loop hot (offset commits don't wait on
-30 s jobs), but it means a hard kill can leave up to `concurrency` (8)
-dispatched-but-unfinished jobs in `PROCESSING` (or a scheduled retry in
+**What happens.** The worker commits the broker offset **at dispatch** — when
+the handler goroutine starts, not when it finishes. That keeps the consumer
+loop hot, but a hard kill used to leave up to `concurrency` (8)
+dispatched-but-unfinished jobs stuck in `PROCESSING` (or a scheduled retry in
 `RETRYING` whose timer died with the process) with no message in flight.
-The broker notices the dead member after the 10 s session timeout,
-rebalances, and its partitions move to the surviving workers — but the
-committed offsets mean those messages are **not** redelivered.
+That gap is now closed by **job leases** (migration 000003, ADR 009):
 
-The honest status: a sweeper that rescans for jobs stuck in
-`PROCESSING`/`RETRYING` past a deadline and republishes them is a
-**documented TODO** (`services/worker/worker.go`), not a built feature.
-Postgres is the source of truth, so nothing is lost — the rows are right
-there with `status='PROCESSING'` — but today an operator (or the DLQ
-requeue endpoint, after marking them) has to nudge them.
+- Every claim stamps `heartbeat_at` and `lease_until = now() + lease`
+  (`WORKER_JOB_LEASE_MS`, default 30 s). While the handler runs, the worker
+  renews the lease every `lease/3`.
+- A killed worker stops renewing. Once `lease_until` passes, the **sweeper**
+  in the jobs service (every `JOBS_SWEEP_INTERVAL`, default 15 s; exactly one
+  replica sweeps per pass via a Postgres advisory lock) takes the job over in
+  one transaction: `execution_generation++`, status back to `RETRYING` (or
+  `DEAD` when attempts are gone), `worker_id`/lease cleared, a
+  `job_attempts` row written with `error = 'lease expired (worker lost)'`,
+  and a fresh message republished to the `jobs` topic with the new
+  generation. Attempts are preserved — the interrupted try does not burn
+  one.
+- If the "dead" worker was actually just stuck (GC pause, network partition)
+  and comes back to finish the job, its write carries the old generation and
+  matches zero rows: **fenced**, logged, counted in
+  `raven_worker_fenced_writes_total`, and treated as a no-op. A worker that
+  notices the takeover mid-execution (its renewal updates 0 rows) cancels the
+  handler context and writes nothing at all.
 
-Two sub-cases are handled:
+Net effect: a SIGKILLed worker's jobs self-heal within roughly
+`lease + 2 × sweep interval` with no human in the loop.
+
+Two sub-cases were already handled and still are:
 
 - Died **before** the offset commit (fetch in flight, handler not yet
   dispatched): the rebalance moves the partition, the surviving worker
   refetches from the last committed offset, the message **is** redelivered,
   and the fence dedups it if the dead worker somehow already started it.
-- Died **after** dispatch: stranded, as above.
+- Died **after** dispatch: recovered by the sweeper, as above.
 
-**What you observe.** `raven_broker_messages_pending` for the dead worker's
-partitions stops moving. Broker logs show the member being expelled and the
-group rebalancing. `GET /api/workers` drops the entry after ~15 s (TTL).
-Stuck jobs show up as rows in `PROCESSING` with an old `started_at`:
+**What you observe.** `raven_jobs_sweeper_recovered_total{outcome="retry"}`
+ticks up (one per recovered job). jobs-service logs show `sweeper recovered
+job` with the new generation. The job's events show
+`PROCESSING → RETRYING → PROCESSING → SUCCESS`, and `job_attempts` shows the
+interrupted attempt next to the winning one. If a zombie worker tries a late
+write, its log shows `finish write rejected by fence`. Broker logs still show
+the member being expelled and the group rebalancing, and `GET /api/workers`
+drops the dead entry after ~15 s (TTL) — but none of that is load-bearing for
+recovery anymore; the lease is. Still-visible query:
 
 ```bash
 docker compose exec postgres psql -U raven -d raven \
-  -c "select id, status, started_at from jobs where status='PROCESSING';"
+  -c "select id, status, lease_until, execution_generation from jobs where status in ('PROCESSING','RETRYING');"
 ```
 
 **Reproduce.**
 
 ```bash
 docker kill raven-worker-1          # SIGKILL — no drain, no flush
-docker compose logs broker --tail=20 | grep -i rebalance
+docker compose logs jobs --tail=20 | grep "sweeper recovered"
+# the job comes back to RETRYING within ~lease+sweep interval, another
+# worker finishes it, and job_attempts shows the 'lease expired' audit row
 ```
+
+The end-to-end version of this scenario is an integration test:
+`tests/integration/job_recovery_test.go` kills a worker mid-job (hard stop,
+no drain), watches the sweeper requeue it within ~2 intervals, has a second
+worker finish it, and proves the dead worker's late write is fenced.
 
 ## Redis down
 
@@ -143,8 +167,9 @@ most — and it is loud, not silent:
   after 2 s. It keeps doing that until the database is back — the offset was
   already committed, so this republish loop is the compensating action.
 - Completion writes can fail too (`could not record success`). The job then
-  sits in `PROCESSING` — same stranding story as the kill -9 section, same
-  sweeper TODO.
+  sits in `PROCESSING` until its lease expires and the sweeper requeues it —
+  same machinery as the kill -9 section (which also needs Postgres back,
+  since the sweeper and the fence both live in the database).
 
 **What you observe.** `raven_gateway_circuit_breaker_state{upstream="auth"}`
 flips to `1`, then `2` during the probe, then `0` when Postgres is back.
@@ -176,7 +201,9 @@ docker compose start postgres
 - Running workers lose their consumer connection and reconnect with
   exponential backoff (50 ms doubling to 2 s, bounded by context). Scheduled
   retry republishes fail and are logged loudly (`retry republish failed; job
-  stays RETRYING until requeued`) — those jobs wait for the sweeper/requeue.
+  stays RETRYING until the sweeper recovers it`) — the lease written when the
+  job went RETRYING expires, and the sweeper republishes once the broker is
+  back.
 - jobs and worker `/ready` report 503 (`broker` checker).
 
 **What you observe.** `curl http://localhost:8080/ready` stays green at the
@@ -217,9 +244,14 @@ before committing, or a rebalance at the wrong moment, delivers a message
 twice. Two layers absorb this:
 
 1. **The fence.** Before executing, the worker runs
-   `UPDATE jobs SET status='PROCESSING' ... WHERE status IN ('QUEUED','RETRYING')`.
-   The second delivery matches zero rows and is skipped
-   (`job skipped by fence (cancelled, duplicate or finished)` in the logs).
+   `UPDATE jobs SET status='PROCESSING' ... WHERE status IN ('QUEUED','RETRYING')`
+   plus a generation check — the broker message carries the
+   `execution_generation` it was published with, and a stale one (the job was
+   already requeued by the sweeper) matches zero rows and is skipped
+   (`job skipped by fence (cancelled, duplicate, finished or stale
+   generation)` in the logs). Finish writes carry the same token, so a
+   duplicate that slips past the start fence still cannot overwrite the
+   outcome.
 2. **Idempotency keys on create.** Same `Idempotency-Key` header → same job
    returned, never a second row. Redis claim first (24 h), Postgres unique
    index as the backstop.
