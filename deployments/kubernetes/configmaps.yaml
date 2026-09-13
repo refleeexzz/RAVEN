@@ -1,0 +1,24 @@
+# Non-secret configuration shared by every RAVEN service.
+# Anything here must be safe to print in a `kubectl describe`.
+# Values are the k8s edition of docs/contracts/ports-and-env.md —
+# hosts are Service DNS names inside the raven namespace.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: raven-config
+  namespace: raven
+  labels:
+    app.kubernetes.io/part-of: raven
+data:
+  LOG_LEVEL: "info"
+  # Infrastructure endpoints (Service names resolve cluster-wide).
+  REDIS_ADDR: "redis:6379"
+  BROKER_ADDR: "broker:9100"
+  # Tracing: every service ships spans to the jaeger Service via OTLP gRPC.
+  OTEL_ENABLED: "true"
+  OTEL_ENDPOINT: "jaeger:4317"
+  # Gateway upstreams — service discovery is just DNS here.
+  AUTH_GRPC_ADDR: "auth:9081"
+  USERS_GRPC_ADDR: "users:9082"
+  JOBS_GRPC_ADDR: "jobs:9083"
+  WEBSOCKET_ADDR: "websocket:8084"

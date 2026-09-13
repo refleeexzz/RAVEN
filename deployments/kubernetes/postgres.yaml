@@ -1,0 +1,92 @@
+# Postgres for local k8s dev. One replica with a PVC — good enough for a
+# laptop, not for anything real.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: postgres
+  namespace: raven
+  labels:
+    app: postgres
+    app.kubernetes.io/part-of: raven
+spec:
+  replicas: 1
+  # Recreate (not RollingUpdate): a second pod would attach the same RWO
+  # volume and deadlock the rollout.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: postgres
+  template:
+    metadata:
+      labels:
+        app: postgres
+    spec:
+      containers:
+        - name: postgres
+          image: postgres:17-alpine
+          ports:
+            - containerPort: 5432
+          env:
+            # Dev-only credentials — they match the DATABASE_URL in the
+            # secrets template. Never reuse outside Docker Desktop.
+            - name: POSTGRES_USER
+              value: raven
+            - name: POSTGRES_PASSWORD
+              value: raven
+            - name: POSTGRES_DB
+              value: raven
+          readinessProbe:
+            exec:
+              command: ["pg_isready", "-U", "raven", "-d", "raven"]
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            exec:
+              command: ["pg_isready", "-U", "raven", "-d", "raven"]
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          volumeMounts:
+            - name: pgdata
+              mountPath: /var/lib/postgresql/data
+      volumes:
+        - name: pgdata
+          persistentVolumeClaim:
+            claimName: pgdata
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: pgdata
+  namespace: raven
+  labels:
+    app.kubernetes.io/part-of: raven
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: 5Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+  namespace: raven
+  labels:
+    app: postgres
+    app.kubernetes.io/part-of: raven
+spec:
+  type: ClusterIP
+  selector:
+    app: postgres
+  ports:
+    - name: postgres
+      port: 5432
+      targetPort: 5432

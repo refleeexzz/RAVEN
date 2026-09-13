@@ -1,0 +1,80 @@
+# RAVEN users — gRPC :9082 for other services, ops HTTP :8082.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: users
+  namespace: raven
+  labels:
+    app: users
+    app.kubernetes.io/part-of: raven
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: users
+  template:
+    metadata:
+      labels:
+        app: users
+    spec:
+      containers:
+        - name: users
+          image: raven/users:latest
+          imagePullPolicy: IfNotPresent   # local build, never pushed
+          ports:
+            - name: ops
+              containerPort: 8082
+            - name: grpc
+              containerPort: 9082
+          env:
+            - name: HTTP_ADDR
+              value: ":8082"
+            - name: GRPC_ADDR
+              value: ":9082"
+          envFrom:
+            - configMapRef:
+                name: raven-config
+            # optional: pods still start (with dev defaults) if you have
+            # not applied secrets.yaml yet.
+            - secretRef:
+                name: raven-secrets
+                optional: true
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: ops
+            initialDelaySeconds: 3
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: ops
+            initialDelaySeconds: 10
+            periodSeconds: 15
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: users
+  namespace: raven
+  labels:
+    app: users
+    app.kubernetes.io/part-of: raven
+spec:
+  type: ClusterIP
+  selector:
+    app: users
+  ports:
+    - name: ops
+      port: 8082
+      targetPort: ops
+    - name: grpc
+      port: 9082
+      targetPort: grpc

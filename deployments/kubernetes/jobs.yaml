@@ -1,0 +1,81 @@
+# RAVEN jobs — gRPC :9083 for the gateway, ops HTTP :8083.
+# Publishes job messages onto the broker and owns the job state machine.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: jobs
+  namespace: raven
+  labels:
+    app: jobs
+    app.kubernetes.io/part-of: raven
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: jobs
+  template:
+    metadata:
+      labels:
+        app: jobs
+    spec:
+      containers:
+        - name: jobs
+          image: raven/jobs:latest
+          imagePullPolicy: IfNotPresent   # local build, never pushed
+          ports:
+            - name: ops
+              containerPort: 8083
+            - name: grpc
+              containerPort: 9083
+          env:
+            - name: HTTP_ADDR
+              value: ":8083"
+            - name: GRPC_ADDR
+              value: ":9083"
+          envFrom:
+            - configMapRef:
+                name: raven-config
+            # optional: pods still start (with dev defaults) if you have
+            # not applied secrets.yaml yet.
+            - secretRef:
+                name: raven-secrets
+                optional: true
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: ops
+            initialDelaySeconds: 3
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: ops
+            initialDelaySeconds: 10
+            periodSeconds: 15
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: jobs
+  namespace: raven
+  labels:
+    app: jobs
+    app.kubernetes.io/part-of: raven
+spec:
+  type: ClusterIP
+  selector:
+    app: jobs
+  ports:
+    - name: ops
+      port: 8083
+      targetPort: ops
+    - name: grpc
+      port: 9083
+      targetPort: grpc

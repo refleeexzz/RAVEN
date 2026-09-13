@@ -1,0 +1,78 @@
+# RAVEN worker — pulls jobs from the broker, executes them, heartbeats
+# into Redis. Ops HTTP :8085 only; nothing routes inbound traffic here.
+# 5 replicas: workers are the horizontal scaling muscle of the platform
+# (and the HPA in hpa.yaml can push this up to 20).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: worker
+  namespace: raven
+  labels:
+    app: worker
+    app.kubernetes.io/part-of: raven
+spec:
+  replicas: 5
+  selector:
+    matchLabels:
+      app: worker
+  template:
+    metadata:
+      labels:
+        app: worker
+    spec:
+      containers:
+        - name: worker
+          image: raven/worker:latest
+          imagePullPolicy: IfNotPresent   # local build, never pushed
+          ports:
+            - name: ops
+              containerPort: 8085
+          env:
+            - name: HTTP_ADDR
+              value: ":8085"
+          envFrom:
+            - configMapRef:
+                name: raven-config
+            # optional: pods still start (with dev defaults) if you have
+            # not applied secrets.yaml yet.
+            - secretRef:
+                name: raven-secrets
+                optional: true
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: ops
+            initialDelaySeconds: 3
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: ops
+            initialDelaySeconds: 10
+            periodSeconds: 15
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: worker
+  namespace: raven
+  labels:
+    app: worker
+    app.kubernetes.io/part-of: raven
+spec:
+  # No inbound traffic besides ops (metrics/health), but a Service keeps
+  # Prometheus target DNS simple and uniform with the other services.
+  type: ClusterIP
+  selector:
+    app: worker
+  ports:
+    - name: ops
+      port: 8085
+      targetPort: ops

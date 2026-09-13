@@ -1,0 +1,32 @@
+# syntax=docker/dockerfile:1
+# RAVEN broker — custom binary TCP :9100, ops HTTP :9101.
+# This is the only image that needs a writable data dir (/data),
+# because the broker persists its commit logs on disk.
+
+# ---------- build stage ----------
+FROM golang:1.27-alpine AS build
+WORKDIR /src
+
+# Copy module files first so `go mod download` is cached and only
+# re-runs when dependencies change — not on every code edit.
+COPY go.mod go.sum ./
+RUN go mod download
+
+COPY . .
+# CGO off + trimpath + stripped symbols = a small, static, portable binary.
+RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/app ./cmd/broker
+
+# ---------- runtime stage ----------
+FROM alpine:3.21
+# ca-certificates: TLS to outside world. tzdata: sane log timestamps.
+RUN apk add --no-cache ca-certificates tzdata \
+    && adduser -D -u 10001 raven \
+    && mkdir -p /data && chown raven:raven /data
+WORKDIR /home/raven
+COPY --from=build /out/app /app
+# Pre-created + chowned so a named volume mounted on /data inherits
+# non-root ownership on first use.
+VOLUME ["/data"]
+# Never run as root, even in dev.
+USER 10001
+ENTRYPOINT ["/app"]

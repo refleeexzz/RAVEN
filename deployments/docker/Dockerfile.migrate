@@ -1,0 +1,32 @@
+# syntax=docker/dockerfile:1
+# RAVEN migrate — one-shot DB migration runner (`/app up` | `/app down`).
+# Ships the SQL files inside the image so compose and k8s don't need
+# to mount the repo.
+
+# ---------- build stage ----------
+FROM golang:1.27-alpine AS build
+WORKDIR /src
+
+# Copy module files first so `go mod download` is cached and only
+# re-runs when dependencies change — not on every code edit.
+COPY go.mod go.sum ./
+RUN go mod download
+
+COPY . .
+# CGO off + trimpath + stripped symbols = a small, static, portable binary.
+RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/app ./cmd/migrate
+
+# ---------- runtime stage ----------
+FROM alpine:3.21
+# ca-certificates: TLS to outside world. tzdata: sane log timestamps.
+RUN apk add --no-cache ca-certificates tzdata \
+    && adduser -D -u 10001 raven
+WORKDIR /home/raven
+COPY --from=build /out/app /app
+# Migrations travel with the binary; MIGRATIONS_DIR points at them.
+COPY migrations /migrations
+ENV MIGRATIONS_DIR=/migrations
+# Never run as root, even in dev.
+USER 10001
+# Direction comes from `command:` in compose / `args:` in k8s.
+ENTRYPOINT ["/app"]

@@ -1,0 +1,74 @@
+# RAVEN gateway — the public entrypoint. 3 replicas behind a ClusterIP;
+# reach it from the host with `kubectl port-forward svc/gateway 8080:8080`.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gateway
+  namespace: raven
+  labels:
+    app: gateway
+    app.kubernetes.io/part-of: raven
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: gateway
+  template:
+    metadata:
+      labels:
+        app: gateway
+    spec:
+      containers:
+        - name: gateway
+          image: raven/gateway:latest
+          imagePullPolicy: IfNotPresent   # local build, never pushed
+          ports:
+            - name: http
+              containerPort: 8080
+          env:
+            - name: HTTP_ADDR
+              value: ":8080"
+          envFrom:
+            - configMapRef:
+                name: raven-config
+            # optional: pods still start (with dev defaults) if you have
+            # not applied secrets.yaml yet.
+            - secretRef:
+                name: raven-secrets
+                optional: true
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: http
+            initialDelaySeconds: 3
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 15
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: gateway
+  namespace: raven
+  labels:
+    app: gateway
+    app.kubernetes.io/part-of: raven
+spec:
+  type: ClusterIP
+  selector:
+    app: gateway
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http

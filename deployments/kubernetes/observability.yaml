@@ -1,0 +1,484 @@
+# RAVEN observability for Docker Desktop k8s — Prometheus + Grafana +
+# Jaeger in a single apply. Mirrors the compose setup: same scrape config
+# (Service DNS names match compose service names), same provisioning,
+# same dashboard. UIs via port-forward:
+#   kubectl -n raven port-forward svc/grafana 3000:3000
+#   kubectl -n raven port-forward svc/jaeger 16686:16686
+---
+# Prometheus scrape config as a ConfigMap so it can be edited with a
+# plain `kubectl edit` + pod restart.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: prometheus-config
+  namespace: raven
+  labels:
+    app.kubernetes.io/part-of: raven
+data:
+  prometheus.yml: |
+    global:
+      scrape_interval: 15s
+      evaluation_interval: 15s
+    scrape_configs:
+      # Prometheus watches itself so the stack is never a black box.
+      - job_name: prometheus
+        static_configs:
+          - targets: ["localhost:9090"]
+      - job_name: gateway
+        static_configs:
+          - targets: ["gateway:8080"]
+      - job_name: auth
+        static_configs:
+          - targets: ["auth:8081"]
+      - job_name: users
+        static_configs:
+          - targets: ["users:8082"]
+      - job_name: jobs
+        static_configs:
+          - targets: ["jobs:8083"]
+      - job_name: websocket
+        static_configs:
+          - targets: ["websocket:8084"]
+      - job_name: worker
+        static_configs:
+          - targets: ["worker:8085"]
+      - job_name: broker
+        static_configs:
+          - targets: ["broker:9101"]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: prometheus
+  namespace: raven
+  labels:
+    app: prometheus
+    app.kubernetes.io/part-of: raven
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: prometheus
+  template:
+    metadata:
+      labels:
+        app: prometheus
+    spec:
+      containers:
+        - name: prometheus
+          image: prom/prometheus:v3.4.1
+          ports:
+            - containerPort: 9090
+          # Dev only: no PVC. Losing metrics history on restart is fine
+          # on a laptop and keeps the setup simple.
+          readinessProbe:
+            httpGet:
+              path: /-/ready
+              port: 9090
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /-/healthy
+              port: 9090
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          volumeMounts:
+            - name: config
+              mountPath: /etc/prometheus/prometheus.yml
+              subPath: prometheus.yml
+      volumes:
+        - name: config
+          configMap:
+            name: prometheus-config
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: prometheus
+  namespace: raven
+  labels:
+    app: prometheus
+    app.kubernetes.io/part-of: raven
+spec:
+  type: ClusterIP
+  selector:
+    app: prometheus
+  ports:
+    - name: http
+      port: 9090
+      targetPort: 9090
+---
+# Grafana provisioning, embedded: datasources + dashboard provider.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-provisioning
+  namespace: raven
+  labels:
+    app.kubernetes.io/part-of: raven
+data:
+  datasources.yaml: |
+    apiVersion: 1
+    datasources:
+      - name: Prometheus
+        uid: prometheus
+        type: prometheus
+        access: proxy
+        url: http://prometheus:9090
+        isDefault: true
+      - name: Jaeger
+        uid: jaeger
+        type: jaeger
+        access: proxy
+        url: http://jaeger:16686
+  dashboards.yaml: |
+    apiVersion: 1
+    providers:
+      - name: raven
+        orgId: 1
+        folder: RAVEN
+        type: file
+        disableDeletion: false
+        updateIntervalSeconds: 10
+        allowUiUpdates: true
+        options:
+          path: /etc/grafana/dashboards
+          foldersFromFilesStructure: false
+---
+# The RAVEN Platform Status dashboard, embedded from
+# deployments/grafana/dashboards/raven-platform.json (single source of
+# truth — regenerate this file with deployments/gen-observability-k8s.py).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-dashboard-raven
+  namespace: raven
+  labels:
+    app.kubernetes.io/part-of: raven
+data:
+  raven-platform.json: |
+    {
+      "title": "RAVEN Platform Status",
+      "uid": "raven-platform",
+      "schemaVersion": 39,
+      "version": 1,
+      "editable": true,
+      "refresh": "5s",
+      "time": { "from": "now-30m", "to": "now" },
+      "timezone": "browser",
+      "tags": ["raven"],
+      "panels": [
+        {
+          "id": 1,
+          "type": "stat",
+          "title": "Gateway requests/sec",
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "gridPos": { "h": 4, "w": 4, "x": 0, "y": 0 },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "sum(rate(raven_gateway_http_requests_total[1m]))"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": { "unit": "reqps", "color": { "mode": "thresholds" }, "thresholds": { "steps": [ { "color": "green", "value": null } ] } },
+            "overrides": []
+          },
+          "options": { "colorMode": "value", "graphMode": "area", "justifyMode": "auto", "orientation": "auto", "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "textMode": "auto" }
+        },
+        {
+          "id": 2,
+          "type": "stat",
+          "title": "Gateway error rate (5xx)",
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "gridPos": { "h": 4, "w": 4, "x": 4, "y": 0 },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "sum(rate(raven_gateway_http_requests_total{status=~\"5..\"}[5m])) / sum(rate(raven_gateway_http_requests_total[5m]))"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "percentunit",
+              "color": { "mode": "thresholds" },
+              "thresholds": { "steps": [ { "color": "green", "value": null }, { "color": "yellow", "value": 0.01 }, { "color": "red", "value": 0.05 } ] }
+            },
+            "overrides": []
+          },
+          "options": { "colorMode": "value", "graphMode": "none", "justifyMode": "auto", "orientation": "auto", "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "textMode": "auto" }
+        },
+        {
+          "id": 3,
+          "type": "stat",
+          "title": "Gateway P99 latency",
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "gridPos": { "h": 4, "w": 4, "x": 8, "y": 0 },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "histogram_quantile(0.99, sum(rate(raven_gateway_http_request_duration_seconds_bucket[5m])) by (le))"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "s",
+              "color": { "mode": "thresholds" },
+              "thresholds": { "steps": [ { "color": "green", "value": null }, { "color": "yellow", "value": 0.5 }, { "color": "red", "value": 1 } ] }
+            },
+            "overrides": []
+          },
+          "options": { "colorMode": "value", "graphMode": "area", "justifyMode": "auto", "orientation": "auto", "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "textMode": "auto" }
+        },
+        {
+          "id": 4,
+          "type": "stat",
+          "title": "Jobs processing now",
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "gridPos": { "h": 4, "w": 4, "x": 12, "y": 0 },
+          "targets": [
+            { "refId": "A", "expr": "raven_jobs_processing" }
+          ],
+          "fieldConfig": {
+            "defaults": { "unit": "short", "color": { "mode": "thresholds" }, "thresholds": { "steps": [ { "color": "blue", "value": null } ] } },
+            "overrides": []
+          },
+          "options": { "colorMode": "value", "graphMode": "area", "justifyMode": "auto", "orientation": "auto", "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "textMode": "auto" }
+        },
+        {
+          "id": 5,
+          "type": "stat",
+          "title": "Broker queue depth",
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "gridPos": { "h": 4, "w": 4, "x": 16, "y": 0 },
+          "targets": [
+            { "refId": "A", "expr": "sum(raven_broker_messages_pending)" }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "short",
+              "color": { "mode": "thresholds" },
+              "thresholds": { "steps": [ { "color": "green", "value": null }, { "color": "yellow", "value": 100 }, { "color": "red", "value": 1000 } ] }
+            },
+            "overrides": []
+          },
+          "options": { "colorMode": "value", "graphMode": "area", "justifyMode": "auto", "orientation": "auto", "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "textMode": "auto" }
+        },
+        {
+          "id": 6,
+          "type": "stat",
+          "title": "WebSocket connections",
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "gridPos": { "h": 4, "w": 4, "x": 20, "y": 0 },
+          "targets": [
+            { "refId": "A", "expr": "raven_websocket_connections" }
+          ],
+          "fieldConfig": {
+            "defaults": { "unit": "short", "color": { "mode": "thresholds" }, "thresholds": { "steps": [ { "color": "purple", "value": null } ] } },
+            "overrides": []
+          },
+          "options": { "colorMode": "value", "graphMode": "area", "justifyMode": "auto", "orientation": "auto", "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "textMode": "auto" }
+        },
+        {
+          "id": 7,
+          "type": "timeseries",
+          "title": "HTTP request rate per service (ops port)",
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "gridPos": { "h": 8, "w": 24, "x": 0, "y": 4 },
+          "targets": [
+            { "refId": "A", "expr": "sum(rate(raven_gateway_http_requests_total[1m]))", "legendFormat": "gateway" },
+            { "refId": "B", "expr": "sum(rate(raven_auth_http_requests_total[1m]))", "legendFormat": "auth" },
+            { "refId": "C", "expr": "sum(rate(raven_users_http_requests_total[1m]))", "legendFormat": "users" },
+            { "refId": "D", "expr": "sum(rate(raven_jobs_http_requests_total[1m]))", "legendFormat": "jobs" },
+            { "refId": "E", "expr": "sum(rate(raven_websocket_http_requests_total[1m]))", "legendFormat": "websocket" },
+            { "refId": "F", "expr": "sum(rate(raven_worker_http_requests_total[1m]))", "legendFormat": "worker" },
+            { "refId": "G", "expr": "sum(rate(raven_broker_http_requests_total[1m]))", "legendFormat": "broker" }
+          ],
+          "fieldConfig": {
+            "defaults": { "unit": "reqps", "custom": { "drawStyle": "line", "fillOpacity": 10, "showPoints": "never" } },
+            "overrides": []
+          },
+          "options": { "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true }, "tooltip": { "mode": "multi", "sort": "desc" } }
+        },
+        {
+          "id": 8,
+          "type": "timeseries",
+          "title": "Broker throughput (produced vs fetched)",
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "gridPos": { "h": 8, "w": 24, "x": 0, "y": 12 },
+          "targets": [
+            { "refId": "A", "expr": "sum(rate(raven_broker_messages_produced_total[1m]))", "legendFormat": "produced/s" },
+            { "refId": "B", "expr": "sum(rate(raven_broker_messages_fetched_total[1m]))", "legendFormat": "fetched/s" }
+          ],
+          "fieldConfig": {
+            "defaults": { "unit": "ops", "custom": { "drawStyle": "line", "fillOpacity": 10, "showPoints": "never" } },
+            "overrides": []
+          },
+          "options": { "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true }, "tooltip": { "mode": "multi", "sort": "desc" } }
+        }
+      ]
+    }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: grafana
+  namespace: raven
+  labels:
+    app: grafana
+    app.kubernetes.io/part-of: raven
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: grafana
+  template:
+    metadata:
+      labels:
+        app: grafana
+    spec:
+      containers:
+        - name: grafana
+          image: grafana/grafana:11.6.0
+          ports:
+            - containerPort: 3000
+          env:
+            # Dev-only login. Change it if you expose this beyond localhost.
+            - name: GF_SECURITY_ADMIN_USER
+              value: admin
+            - name: GF_SECURITY_ADMIN_PASSWORD
+              value: admin
+          readinessProbe:
+            httpGet:
+              path: /api/health
+              port: 3000
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /api/health
+              port: 3000
+            initialDelaySeconds: 20
+            periodSeconds: 20
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          volumeMounts:
+            - name: provisioning
+              mountPath: /etc/grafana/provisioning
+            - name: dashboards
+              mountPath: /etc/grafana/dashboards
+      volumes:
+        - name: provisioning
+          configMap:
+            name: grafana-provisioning
+            items:
+              - key: datasources.yaml
+                path: datasources/datasources.yaml
+              - key: dashboards.yaml
+                path: dashboards/dashboards.yaml
+        - name: dashboards
+          configMap:
+            name: grafana-dashboard-raven
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: grafana
+  namespace: raven
+  labels:
+    app: grafana
+    app.kubernetes.io/part-of: raven
+spec:
+  type: ClusterIP
+  selector:
+    app: grafana
+  ports:
+    - name: http
+      port: 3000
+      targetPort: 3000
+---
+# Jaeger all-in-one: collector + query + UI in one pod. Perfect for dev,
+# not for production.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: jaeger
+  namespace: raven
+  labels:
+    app: jaeger
+    app.kubernetes.io/part-of: raven
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: jaeger
+  template:
+    metadata:
+      labels:
+        app: jaeger
+    spec:
+      containers:
+        - name: jaeger
+          image: jaegertracing/all-in-one:1.67.0
+          ports:
+            - name: ui
+              containerPort: 16686
+            - name: otlp-grpc
+              containerPort: 4317
+          env:
+            # Without this the all-in-one image doesn't open the OTLP
+            # receiver and our traces would have nowhere to go.
+            - name: COLLECTOR_OTLP_ENABLED
+              value: "true"
+          readinessProbe:
+            httpGet:
+              path: /
+              port: ui
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /
+              port: ui
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: jaeger
+  namespace: raven
+  labels:
+    app: jaeger
+    app.kubernetes.io/part-of: raven
+spec:
+  type: ClusterIP
+  selector:
+    app: jaeger
+  ports:
+    - name: ui
+      port: 16686
+      targetPort: ui
+    - name: otlp-grpc
+      port: 4317
+      targetPort: otlp-grpc

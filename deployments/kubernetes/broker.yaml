@@ -1,0 +1,93 @@
+# RAVEN broker — StatefulSet because it owns on-disk commit logs:
+# stable identity + its own PVC, exactly one replica (no clustering yet).
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: broker
+  namespace: raven
+  labels:
+    app: broker
+    app.kubernetes.io/part-of: raven
+spec:
+  serviceName: broker
+  replicas: 1
+  selector:
+    matchLabels:
+      app: broker
+  volumeClaimTemplates:
+    - metadata:
+        name: brokerdata
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 5Gi
+  template:
+    metadata:
+      labels:
+        app: broker
+    spec:
+      containers:
+        - name: broker
+          image: raven/broker:latest
+          imagePullPolicy: IfNotPresent   # local build, never pushed
+          ports:
+            - name: tcp
+              containerPort: 9100
+            - name: ops
+              containerPort: 9101
+          env:
+            - name: BROKER_TCP_ADDR
+              value: ":9100"
+            - name: HTTP_ADDR
+              value: ":9101"
+            # /data is the PVC mount below — commit logs survive restarts.
+            - name: BROKER_DATA_DIR
+              value: /data
+          envFrom:
+            - configMapRef:
+                name: raven-config
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: ops
+            initialDelaySeconds: 3
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: ops
+            initialDelaySeconds: 10
+            periodSeconds: 15
+          # Bigger slice than the other services: the broker does disk I/O
+          # and fsync on the hot path.
+          resources:
+            requests:
+              cpu: 200m
+              memory: 256Mi
+            limits:
+              cpu: "1"
+              memory: 1Gi
+          volumeMounts:
+            - name: brokerdata
+              mountPath: /data
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: broker
+  namespace: raven
+  labels:
+    app: broker
+    app.kubernetes.io/part-of: raven
+spec:
+  type: ClusterIP
+  selector:
+    app: broker
+  ports:
+    - name: tcp
+      port: 9100
+      targetPort: tcp
+    - name: ops
+      port: 9101
+      targetPort: ops

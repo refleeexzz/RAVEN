@@ -1,0 +1,43 @@
+# RAVEN scrape config — Docker Compose edition.
+# Targets use compose service names + ops ports from
+# docs/contracts/ports-and-env.md. Every service exposes /metrics on
+# its ops HTTP port. The k8s edition lives in observability.yaml as a
+# ConfigMap; keep the two in sync.
+
+global:
+  scrape_interval: 15s   # tight enough for dev dashboards, cheap for 8 targets
+  evaluation_interval: 15s
+
+scrape_configs:
+  # Prometheus watches itself so the stack is never a black box.
+  - job_name: prometheus
+    static_configs:
+      - targets: ["localhost:9090"]
+
+  - job_name: gateway
+    static_configs:
+      - targets: ["gateway:8080"]
+
+  - job_name: auth
+    static_configs:
+      - targets: ["auth:8081"]
+
+  - job_name: users
+    static_configs:
+      - targets: ["users:8082"]
+
+  - job_name: jobs
+    static_configs:
+      - targets: ["jobs:8083"]
+
+  - job_name: websocket
+    static_configs:
+      - targets: ["websocket:8084"]
+
+  - job_name: worker
+    static_configs:
+      - targets: ["worker:8085"]
+
+  - job_name: broker
+    static_configs:
+      - targets: ["broker:9101"]

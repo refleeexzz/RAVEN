@@ -1,0 +1,16 @@
+# Dashboard provider: any *.json under /etc/grafana/dashboards is loaded
+# into the "RAVEN" folder and refreshed from disk every 10 s, so you can
+# edit raven-platform.json and just reload the browser tab.
+apiVersion: 1
+
+providers:
+  - name: raven
+    orgId: 1
+    folder: RAVEN
+    type: file
+    disableDeletion: false
+    updateIntervalSeconds: 10
+    allowUiUpdates: true
+    options:
+      path: /etc/grafana/dashboards
+      foldersFromFilesStructure: false

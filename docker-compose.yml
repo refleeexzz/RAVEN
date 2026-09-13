@@ -1,0 +1,296 @@
+# RAVEN — full local stack.
+# One command brings up infra + all services + observability:
+#   cp .env.example .env   (optional — every var has a dev default)
+#   docker compose up -d
+#
+# Ports and env var names are fixed by docs/contracts/ports-and-env.md.
+# Only the gateway (8080) and the observability UIs are published on the
+# host — everything else stays inside the `raven` network.
+
+name: raven
+
+networks:
+  raven:
+
+volumes:
+  pgdata:      # postgres data survives `compose down`
+  brokerdata:  # broker commit logs survive `compose down`
+
+services:
+
+  # ---------------- infrastructure ----------------
+
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      # Dev-only credentials; the DATABASE_URLs below must match these.
+      POSTGRES_USER: raven
+      POSTGRES_PASSWORD: raven
+      POSTGRES_DB: raven
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "raven", "-d", "raven"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    networks: [raven]
+
+  redis:
+    image: redis:8-alpine
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    networks: [raven]
+
+  migrate:
+    build:
+      context: .
+      dockerfile: deployments/docker/Dockerfile.migrate
+    image: raven/migrate:latest
+    # Runs once and exits. Apps wait for service_completed_successfully,
+    # so the schema is always in place before they boot.
+    command: ["up"]
+    restart: "no"
+    environment:
+      DATABASE_URL: postgres://raven:raven@postgres:5432/raven?sslmode=disable
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks: [raven]
+
+  # ---------------- platform services ----------------
+
+  broker:
+    build:
+      context: .
+      dockerfile: deployments/docker/Dockerfile.broker
+    image: raven/broker:latest
+    environment:
+      BROKER_TCP_ADDR: ":9100"
+      HTTP_ADDR: ":9101"          # ops port
+      BROKER_DATA_DIR: /data      # matches the mounted volume below
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      OTEL_ENABLED: "true"
+      OTEL_ENDPOINT: jaeger:4317
+    volumes:
+      - brokerdata:/data
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:9101/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+    networks: [raven]
+
+  auth:
+    build:
+      context: .
+      dockerfile: deployments/docker/Dockerfile.auth
+    image: raven/auth:latest
+    environment:
+      HTTP_ADDR: ":8081"          # ops port
+      GRPC_ADDR: ":9081"
+      DATABASE_URL: postgres://raven:raven@postgres:5432/raven?sslmode=disable
+      REDIS_ADDR: redis:6379
+      JWT_SECRET: ${JWT_SECRET:-dev-only-secret-change-me}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      OTEL_ENABLED: "true"
+      OTEL_ENDPOINT: jaeger:4317
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8081/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+    networks: [raven]
+
+  users:
+    build:
+      context: .
+      dockerfile: deployments/docker/Dockerfile.users
+    image: raven/users:latest
+    environment:
+      HTTP_ADDR: ":8082"          # ops port
+      GRPC_ADDR: ":9082"
+      DATABASE_URL: postgres://raven:raven@postgres:5432/raven?sslmode=disable
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      OTEL_ENABLED: "true"
+      OTEL_ENDPOINT: jaeger:4317
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8082/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+    networks: [raven]
+
+  jobs:
+    build:
+      context: .
+      dockerfile: deployments/docker/Dockerfile.jobs
+    image: raven/jobs:latest
+    environment:
+      HTTP_ADDR: ":8083"          # ops port
+      GRPC_ADDR: ":9083"
+      DATABASE_URL: postgres://raven:raven@postgres:5432/raven?sslmode=disable
+      BROKER_ADDR: broker:9100
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      OTEL_ENABLED: "true"
+      OTEL_ENDPOINT: jaeger:4317
+    depends_on:
+      postgres:
+        condition: service_healthy
+      broker:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8083/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+    networks: [raven]
+
+  worker:
+    build:
+      context: .
+      dockerfile: deployments/docker/Dockerfile.worker
+    image: raven/worker:latest
+    # 3 replicas locally so you can watch work spread across workers.
+    deploy:
+      replicas: 3
+    environment:
+      HTTP_ADDR: ":8085"          # ops port
+      DATABASE_URL: postgres://raven:raven@postgres:5432/raven?sslmode=disable
+      REDIS_ADDR: redis:6379
+      BROKER_ADDR: broker:9100
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      OTEL_ENABLED: "true"
+      OTEL_ENDPOINT: jaeger:4317
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      broker:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8085/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+    networks: [raven]
+
+  websocket:
+    build:
+      context: .
+      dockerfile: deployments/docker/Dockerfile.websocket
+    image: raven/websocket:latest
+    environment:
+      HTTP_ADDR: ":8084"
+      REDIS_ADDR: redis:6379      # subscribes to raven:events:jobs
+      JWT_SECRET: ${JWT_SECRET:-dev-only-secret-change-me}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      OTEL_ENABLED: "true"
+      OTEL_ENDPOINT: jaeger:4317
+    depends_on:
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8084/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+    networks: [raven]
+
+  gateway:
+    build:
+      context: .
+      dockerfile: deployments/docker/Dockerfile.gateway
+    image: raven/gateway:latest
+    # The ONLY application port exposed to the host.
+    ports:
+      - "8080:8080"
+    environment:
+      HTTP_ADDR: ":8080"
+      REDIS_ADDR: redis:6379      # worker registry lives here
+      JWT_SECRET: ${JWT_SECRET:-dev-only-secret-change-me}
+      # Service discovery overrides — inside the network, services are
+      # reached by their compose service names.
+      AUTH_GRPC_ADDR: auth:9081
+      USERS_GRPC_ADDR: users:9082
+      JOBS_GRPC_ADDR: jobs:9083
+      WEBSOCKET_ADDR: websocket:8084
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      OTEL_ENABLED: "true"
+      OTEL_ENDPOINT: jaeger:4317
+    depends_on:
+      auth:
+        condition: service_healthy
+      users:
+        condition: service_healthy
+      jobs:
+        condition: service_healthy
+      websocket:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8080/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+    networks: [raven]
+
+  # ---------------- observability ----------------
+
+  prometheus:
+    image: prom/prometheus:v3.4.1
+    volumes:
+      # Same scrape config k8s uses, with compose DNS names.
+      - ./deployments/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    ports:
+      - "9090:9090"
+    networks: [raven]
+
+  grafana:
+    image: grafana/grafana:11.6.0
+    environment:
+      # Dev-only login. Change it if you expose this beyond localhost.
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+    volumes:
+      # Provisioning = datasources + dashboards appear with zero clicks.
+      - ./deployments/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./deployments/grafana/dashboards:/etc/grafana/dashboards:ro
+    ports:
+      - "3000:3000"
+    depends_on:
+      - prometheus
+    networks: [raven]
+
+  jaeger:
+    image: jaegertracing/all-in-one:1.67.0
+    environment:
+      # Without this the all-in-one image doesn't open the OTLP receiver
+      # and our traces would have nowhere to go.
+      COLLECTOR_OTLP_ENABLED: "true"
+    ports:
+      - "16686:16686"   # UI
+      - "4317:4317"     # OTLP gRPC — lets host-run services send traces too
+    networks: [raven]

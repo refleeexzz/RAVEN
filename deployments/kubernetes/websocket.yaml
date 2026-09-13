@@ -1,0 +1,75 @@
+# RAVEN websocket — :8084, reached from outside only through the
+# gateway's /ws proxy. Subscribes to Redis raven:events:jobs and fans
+# events out to connected clients.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: websocket
+  namespace: raven
+  labels:
+    app: websocket
+    app.kubernetes.io/part-of: raven
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: websocket
+  template:
+    metadata:
+      labels:
+        app: websocket
+    spec:
+      containers:
+        - name: websocket
+          image: raven/websocket:latest
+          imagePullPolicy: IfNotPresent   # local build, never pushed
+          ports:
+            - name: http
+              containerPort: 8084
+          env:
+            - name: HTTP_ADDR
+              value: ":8084"
+          envFrom:
+            - configMapRef:
+                name: raven-config
+            # optional: pods still start (with dev defaults) if you have
+            # not applied secrets.yaml yet.
+            - secretRef:
+                name: raven-secrets
+                optional: true
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: http
+            initialDelaySeconds: 3
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 15
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: websocket
+  namespace: raven
+  labels:
+    app: websocket
+    app.kubernetes.io/part-of: raven
+spec:
+  type: ClusterIP
+  selector:
+    app: websocket
+  ports:
+    - name: http
+      port: 8084
+      targetPort: http

@@ -1,0 +1,26 @@
+# RAVEN namespace for Docker Desktop's local Kubernetes.
+#
+# BEFORE you apply anything, build the images locally. Docker Desktop's
+# cluster shares the Docker daemon's image store, so a local build is
+# enough — no registry, no push (that's why every manifest says
+# imagePullPolicy: IfNotPresent).
+#
+#   docker build -f deployments/docker/Dockerfile.gateway   -t raven/gateway:latest   .
+#   docker build -f deployments/docker/Dockerfile.auth      -t raven/auth:latest      .
+#   docker build -f deployments/docker/Dockerfile.users     -t raven/users:latest     .
+#   docker build -f deployments/docker/Dockerfile.jobs      -t raven/jobs:latest      .
+#   docker build -f deployments/docker/Dockerfile.websocket -t raven/websocket:latest .
+#   docker build -f deployments/docker/Dockerfile.broker    -t raven/broker:latest    .
+#   docker build -f deployments/docker/Dockerfile.worker    -t raven/worker:latest    .
+#   docker build -f deployments/docker/Dockerfile.migrate   -t raven/migrate:latest   .
+#
+#   # then, from the repo root:
+#   cp deployments/kubernetes/secrets.example.yaml /tmp/secrets.yaml  # edit values
+#   kubectl apply -f /tmp/secrets.yaml
+#   kubectl apply -f deployments/kubernetes/
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: raven
+  labels:
+    app.kubernetes.io/part-of: raven

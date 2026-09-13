@@ -1,0 +1,26 @@
+# syntax=docker/dockerfile:1
+# RAVEN websocket — HTTP/WS on :8084 (reached through the gateway /ws proxy).
+
+# ---------- build stage ----------
+FROM golang:1.27-alpine AS build
+WORKDIR /src
+
+# Copy module files first so `go mod download` is cached and only
+# re-runs when dependencies change — not on every code edit.
+COPY go.mod go.sum ./
+RUN go mod download
+
+COPY . .
+# CGO off + trimpath + stripped symbols = a small, static, portable binary.
+RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/app ./cmd/websocket
+
+# ---------- runtime stage ----------
+FROM alpine:3.21
+# ca-certificates: TLS to outside world. tzdata: sane log timestamps.
+RUN apk add --no-cache ca-certificates tzdata \
+    && adduser -D -u 10001 raven
+WORKDIR /home/raven
+COPY --from=build /out/app /app
+# Never run as root, even in dev.
+USER 10001
+ENTRYPOINT ["/app"]

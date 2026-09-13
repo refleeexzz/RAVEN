@@ -1,0 +1,26 @@
+# Keep the build context small and the image cache hot.
+# Everything the Go build does NOT need stays out of the image.
+
+# Local build artifacts and runtime data
+bin/
+data/
+
+# Frontend and host-only tooling — never imported by cmd/ binaries
+web/
+tools/
+
+# VCS noise
+.git/
+.github/
+
+# Docs and local env files (secrets must never enter an image)
+docs/
+*.md
+.env
+.env.*
+
+# Kubernetes / compose definitions live outside the images
+deployments/kubernetes/
+deployments/prometheus/
+deployments/grafana/
+docker-compose.yml
