@@ -1,0 +1,69 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  /* Dark ops console surfaces — near-neutral zinc family, never tinted */
+  --bg: 10 10 11;
+  --surface: 19 19 22;
+  --surface-2: 26 26 31;
+  --border: 39 39 44;
+  --fg: 250 250 250;
+  --muted: 161 161 170;
+  --subtle: 113 113 122;
+
+  /* One accent: violet */
+  --accent: 139 92 246;
+  --accent-hover: 124 58 237;
+  --accent-fg: 237 233 254;
+
+  /* Semantic */
+  --success: 52 211 153;
+  --warning: 251 191 36;
+  --error: 248 113 113;
+  --info: 96 165 250;
+
+  color-scheme: dark;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  @apply bg-bg font-sans text-base text-fg antialiased;
+}
+
+::selection {
+  background: rgb(var(--accent) / 0.35);
+}
+
+/* Slim, quiet scrollbars */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: rgb(var(--border)) transparent;
+}
+*::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+*::-webkit-scrollbar-thumb {
+  background: rgb(var(--border));
+  border-radius: 4px;
+}
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+/* Respect users who prefer no motion */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
