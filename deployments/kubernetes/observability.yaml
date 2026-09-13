@@ -108,7 +108,7 @@ metadata:
     app: prometheus
     app.kubernetes.io/part-of: raven
 spec:
-  type: ClusterIP
+  type: LoadBalancer
   selector:
     app: prometheus
   ports:
@@ -402,7 +402,7 @@ metadata:
     app: grafana
     app.kubernetes.io/part-of: raven
 spec:
-  type: ClusterIP
+  type: LoadBalancer
   selector:
     app: grafana
   ports:
@@ -472,7 +472,7 @@ metadata:
     app: jaeger
     app.kubernetes.io/part-of: raven
 spec:
-  type: ClusterIP
+  type: LoadBalancer
   selector:
     app: jaeger
   ports:

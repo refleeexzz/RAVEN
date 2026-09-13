@@ -65,7 +65,7 @@ metadata:
     app: gateway
     app.kubernetes.io/part-of: raven
 spec:
-  type: ClusterIP
+  type: LoadBalancer   # Docker Desktop binds this to localhost — that is how the console reaches the cluster
   selector:
     app: gateway
   ports:

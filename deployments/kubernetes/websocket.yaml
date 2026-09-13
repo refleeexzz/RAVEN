@@ -66,7 +66,7 @@ metadata:
     app: websocket
     app.kubernetes.io/part-of: raven
 spec:
-  type: ClusterIP
+  type: LoadBalancer   # console WebSocket client connects here directly (localhost:8084)
   selector:
     app: websocket
   ports:
