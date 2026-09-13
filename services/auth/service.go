@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/redis/go-redis/v9"
+	"go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc"
 	"google.golang.org/grpc"
 
 	"github.com/raven/platform/internal/database"
@@ -18,6 +19,7 @@ import (
 	"github.com/raven/platform/internal/middleware"
 	"github.com/raven/platform/pkg/logger"
 	"github.com/raven/platform/pkg/metrics"
+	"github.com/raven/platform/pkg/tracing"
 )
 
 // Config carries everything the auth service needs. cmd/auth fills it from
@@ -30,6 +32,11 @@ type Config struct {
 	JWTSecret   string
 	LogLevel    string
 	BcryptCost  int // AUTH_BCRYPT_COST; tests use bcrypt.MinCost (4)
+
+	// Tracing (OTel). Disabled by default locally; enabled in k8s via
+	// the raven-config ConfigMap.
+	OtelEndpoint string
+	OtelEnabled  bool
 }
 
 // Run starts the gRPC service and the ops HTTP server and blocks until ctx
@@ -62,10 +69,26 @@ func Run(ctx context.Context, cfg Config) error {
 	healthReg.Register("redis", redisChecker(rdb))
 
 	srv := NewServer(pool, rdb, log, cfg.JWTSecret, cfg.BcryptCost, sm)
-	grpcSrv := grpc.NewServer(grpc.ChainUnaryInterceptor(
-		unaryRecoveryInterceptor(log),
-		unaryLoggingInterceptor(log),
-	))
+
+	shutdownTracing, err := tracing.Setup(ctx, "auth", cfg.OtelEndpoint, cfg.OtelEnabled)
+	if err != nil {
+		return fmt.Errorf("auth: tracing setup: %w", err)
+	}
+	defer func() {
+		shutdownCtx, stop := context.WithTimeout(context.Background(), 5*time.Second)
+		defer stop()
+		_ = shutdownTracing(shutdownCtx)
+	}()
+
+	// otelgrpc's server handler continues the trace the gateway started, so
+	// one request shows up as a single trace across services in Jaeger.
+	grpcSrv := grpc.NewServer(
+		grpc.StatsHandler(otelgrpc.NewServerHandler()),
+		grpc.ChainUnaryInterceptor(
+			unaryRecoveryInterceptor(log),
+			unaryLoggingInterceptor(log),
+		),
+	)
 	genauth.RegisterAuthServiceServer(grpcSrv, srv)
 
 	lis, err := net.Listen("tcp", cfg.GRPCAddr)

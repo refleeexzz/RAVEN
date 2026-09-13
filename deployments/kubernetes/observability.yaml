@@ -456,12 +456,15 @@ spec:
             initialDelaySeconds: 15
             periodSeconds: 20
           resources:
+            # Jaeger keeps spans in memory. 100% sampling + a load test
+            # OOM-killed it at 512Mi (exit 137, spans wiped). 1Gi + keep
+            # an eye on it; drop the sampling ratio before bigger tests.
             requests:
               cpu: 100m
               memory: 128Mi
             limits:
               cpu: 500m
-              memory: 512Mi
+              memory: 1Gi
 ---
 apiVersion: v1
 kind: Service

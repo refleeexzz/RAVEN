@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/redis/go-redis/v9"
+	"go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc"
 	"google.golang.org/grpc"
 
 	"github.com/raven/platform/internal/database"
@@ -18,6 +19,7 @@ import (
 	"github.com/raven/platform/internal/middleware"
 	"github.com/raven/platform/pkg/logger"
 	"github.com/raven/platform/pkg/metrics"
+	"github.com/raven/platform/pkg/tracing"
 )
 
 // Config carries everything the jobs service needs. cmd/jobs fills it from
@@ -29,6 +31,11 @@ type Config struct {
 	RedisAddr   string
 	BrokerAddr  string
 	LogLevel    string
+
+	// Tracing (OTel). Disabled by default locally; enabled in k8s via
+	// the raven-config ConfigMap.
+	OtelEndpoint string
+	OtelEnabled  bool
 }
 
 // Run starts the gRPC service and the ops HTTP server and blocks until ctx
@@ -74,10 +81,26 @@ func Run(ctx context.Context, cfg Config) error {
 	healthReg.Register("broker", BrokerChecker(cfg.BrokerAddr))
 
 	srv := NewServer(pool, rdb, producer, log, sm)
-	grpcSrv := grpc.NewServer(grpc.ChainUnaryInterceptor(
-		unaryRecoveryInterceptor(log),
-		unaryLoggingInterceptor(log),
-	))
+
+	shutdownTracing, err := tracing.Setup(ctx, "jobs", cfg.OtelEndpoint, cfg.OtelEnabled)
+	if err != nil {
+		return fmt.Errorf("jobs: tracing setup: %w", err)
+	}
+	defer func() {
+		shutdownCtx, stop := context.WithTimeout(context.Background(), 5*time.Second)
+		defer stop()
+		_ = shutdownTracing(shutdownCtx)
+	}()
+
+	// otelgrpc's server handler continues the trace the gateway started, so
+	// one request shows up as a single trace across services in Jaeger.
+	grpcSrv := grpc.NewServer(
+		grpc.StatsHandler(otelgrpc.NewServerHandler()),
+		grpc.ChainUnaryInterceptor(
+			unaryRecoveryInterceptor(log),
+			unaryLoggingInterceptor(log),
+		),
+	)
 	genjobs.RegisterJobServiceServer(grpcSrv, srv)
 
 	lis, err := net.Listen("tcp", cfg.GRPCAddr)
