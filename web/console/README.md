@@ -27,9 +27,9 @@ npm run preview # serve the production build
 
 ## Demo mode
 
-The console boots by probing the gateway (`GET http://localhost:8080/api/jobs`,
-2.5s timeout). If the gateway is down — which it is most of the time while you
-hack on the frontend — it switches to **demo mode** automatically.
+The console boots by probing the gateway (`GET http://localhost:8080/health`,
+public, 2.5s timeout). If the gateway is down — which it is most of the time
+while you hack on the frontend — it switches to **demo mode** automatically.
 
 Demo mode is not a dead screenshot. A simulator (`src/lib/simulator.ts`) runs a
 small world model on a 1s tick: jobs move through
@@ -44,13 +44,29 @@ confuses it with production data. Sign-in is simulated too (any credentials).
 
 When the real stack is up, the same UI runs on live data:
 
-| Surface        | Endpoint                                   |
-| -------------- | ------------------------------------------ |
-| REST API       | `http://localhost:8080/api/...`            |
-| Job events     | `ws://localhost:8084/ws` (room `jobs`)     |
-| Broker stats   | `http://localhost:9101/topics`             |
-| Realtime stats | `http://localhost:8084/debug/stats`        |
-| Metrics        | `http://localhost:8080/metrics` (optional) |
+| Surface         | Endpoint                                            |
+| --------------- | --------------------------------------------------- |
+| REST API        | `http://localhost:8080/api/...`                     |
+| Service health  | `http://localhost:8080/api/health/services` (public, 5s poll) |
+| Job events      | `ws://localhost:8084/ws?token=...` (room `jobs`)    |
+| Overview metrics| `http://localhost:9090/api/v1/...` (Prometheus HTTP API) |
+| Broker stats    | `http://localhost:9101/topics`                      |
+| Realtime stats  | `http://localhost:8084/debug/stats`                 |
+
+Live-mode notes:
+
+- The WebSocket connects with the signed-in token, or with `?token=anon-console`
+  when signed out (the dev stack allows anonymous reads). "Reconnecting" shows
+  only after two failed attempts; an auth-refused close (4401) stops the retry
+  loop and the badge points at sign-in instead.
+- Overview numbers come from PromQL instant queries (`rate()` over the gateway
+  counters, `histogram_quantile` for p99), and the throughput chart from
+  `query_range` — never from raw cumulative counters. If Prometheus is
+  unreachable the cards keep the last good values with a "stale" note, or show
+  "—" before the first success.
+- The service-health grid trusts the gateway's own health aggregate. If
+  `/api/health/services` fails, all tiles go neutral "unknown" with the error
+  as the detail — never a fake red "down".
 
 The WebSocket client (`src/lib/live.ts`) reconnects with exponential backoff
 (1s → 2s → 5s → 10s cap) and joins the `jobs` room on open.
@@ -112,10 +128,11 @@ table, dialog/drawer, tabs, toast, skeleton, progress, slider).
 
 ```
 src/
-  lib/        types, config, api client, ws client, simulator, sources, store
+  lib/        types, config, api client, ws client, simulator, sources, store,
+              prometheus client
   components/ ui/ primitives + layout (shell, command palette) + auth dialog
-  features/   jobs drawer + create-job dialog
-  pages/      Overview, Jobs, Workers, Broker, Observability
+  features/   jobs drawer + create-job dialog + testlab scenarios
+  pages/      Overview, Jobs, Workers, Broker, Observability, TestLab
 ```
 
 Routing is a small hash router (`#/jobs?status=FAILED&page=2`), so filtered
@@ -128,5 +145,7 @@ command palette.
   the Redis `worker:*` hashes). Job events over the socket fill in the gaps
   between polls.
 - DLQ requeue in live mode uses `POST /api/jobs/{id}/requeue` (DEAD jobs only).
-- Overview chart in live mode needs the gateway to expose `/metrics`; without
-  it the chart shows a designed empty state (everything else still works).
+- The Observability page still parses the gateway's `/metrics` text exposition
+  for its raw series table; the Overview uses Prometheus instead.
+- After signing in, the realtime socket keeps the anonymous connection until
+  the next reconnect; a fresh page load uses the real token.

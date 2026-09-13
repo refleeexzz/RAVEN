@@ -40,6 +40,7 @@ type Config struct {
 	UsersGRPCAddr string // localhost:9082
 	JobsGRPCAddr  string // localhost:9083
 	WSAddr        string // http://localhost:8084
+	BrokerOpsAddr string // http://localhost:9101 — broker ops HTTP (health aggregate)
 	RedisAddr     string // localhost:6379
 	// JWTSecret is part of the contract env table. Token validation itself
 	// is delegated to the auth service over gRPC, so the gateway only keeps
@@ -54,17 +55,18 @@ type Config struct {
 
 // server bundles the dependencies the route table and middleware need.
 type server struct {
-	log     *slog.Logger
-	metr    *metrics.Registry
-	metrics *serviceMetrics
-	limiter *rateLimiter
-	authn   *authenticator
-	authH   *authHandlers
-	usersH  *usersHandlers
-	jobsH   *jobsHandlers
-	health  *health.Registry
-	wsProxy http.Handler
-	otelMW  middleware.Middleware
+	log       *slog.Logger
+	metr      *metrics.Registry
+	metrics   *serviceMetrics
+	limiter   *rateLimiter
+	authn     *authenticator
+	authH     *authHandlers
+	usersH    *usersHandlers
+	jobsH     *jobsHandlers
+	health    *health.Registry
+	healthAgg *healthAgg
+	wsProxy   http.Handler
+	otelMW    middleware.Middleware
 }
 
 // Run wires everything and serves until ctx is cancelled (SIGINT/SIGTERM).
@@ -139,12 +141,13 @@ func Run(ctx context.Context, cfg Config) error {
 			cache:     cache,
 			metrics:   gatewayMetrics,
 		},
-		authH:   newAuthHandlers(authUp),
-		usersH:  newUsersHandlers(usersUp),
-		jobsH:   newJobsHandlers(jobsUp, rdb),
-		health:  healthReg,
-		wsProxy: wsProxy,
-		otelMW:  otelMiddleware(cfg.OtelEnabled),
+		authH:     newAuthHandlers(authUp),
+		usersH:    newUsersHandlers(usersUp),
+		jobsH:     newJobsHandlers(jobsUp, rdb),
+		health:    healthReg,
+		healthAgg: newHealthAggregator(cfg, authUp, usersUp, jobsUp, rdb, log),
+		wsProxy:   wsProxy,
+		otelMW:    otelMiddleware(cfg.OtelEnabled),
 	}
 
 	log.Info("gateway listening", slog.String("addr", cfg.HTTPAddr))

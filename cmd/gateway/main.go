@@ -24,6 +24,7 @@ func main() {
 		UsersGRPCAddr:  config.Get("USERS_GRPC_ADDR", "localhost:9082"),
 		JobsGRPCAddr:   config.Get("JOBS_GRPC_ADDR", "localhost:9083"),
 		WSAddr:         config.Get("WS_ADDR", "http://localhost:8084"),
+		BrokerOpsAddr:  config.Get("BROKER_OPS_ADDR", "http://localhost:9101"),
 		RedisAddr:      config.Get("REDIS_ADDR", "localhost:6379"),
 		JWTSecret:      config.Get("JWT_SECRET", "dev-only-secret-change-me"),
 		LogLevel:       config.Get("LOG_LEVEL", "info"),

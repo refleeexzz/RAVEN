@@ -1,0 +1,8 @@
+
+  VITE v5.4.21  ready in 323 ms
+
+  ➜  Local:   http://localhost:7101/
+  ➜  Network: use --host to expose
+18:56:38 [vite] hmr update /src/pages/Overview.tsx, /src/index.css
+19:03:52 [vite] page reload .verify/bugfix-demo-mode.html
+19:03:54 [vite] page reload .verify/bugfix-demo-mode.html

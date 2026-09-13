@@ -47,7 +47,7 @@ export class LiveSocket {
 
   constructor(
     private url: string,
-    private token: string | null,
+    private getToken: () => string | null,
     private onEvent: (e: JobEvent) => void,
     private onConn: (c: ConnState) => void,
   ) {}
@@ -58,8 +58,14 @@ export class LiveSocket {
 
   private connect(): void {
     if (this.stopped) return;
-    this.onConn(this.attempt === 0 ? "connecting" : "reconnecting");
-    const url = this.token ? `${this.url}?token=${encodeURIComponent(this.token)}` : this.url;
+    // The badge says "Reconnecting" only after 2 failed attempts; the first
+    // retry is indistinguishable from a slow connect.
+    this.onConn(this.attempt >= 2 ? "reconnecting" : "connecting");
+    // The dev stack accepts anonymous connections (WS_ALLOW_ANONYMOUS=true):
+    // without a signed-in token we connect as "anon-console" instead of
+    // looping on 401.
+    const token = this.getToken() ?? "anon-console";
+    const url = `${this.url}?token=${encodeURIComponent(token)}`;
     let ws: WebSocket;
     try {
       ws = new WebSocket(url);
@@ -85,7 +91,13 @@ export class LiveSocket {
         // malformed frame — ignore
       }
     };
-    ws.onclose = () => {
+    ws.onclose = (ev: CloseEvent) => {
+      // 4401 = auth refused. Retrying with the same token is a hot loop —
+      // stop and let the badge point at sign-in instead.
+      if (ev.code === 4401) {
+        this.onConn("offline");
+        return;
+      }
       this.scheduleReconnect();
     };
     ws.onerror = () => {
@@ -97,7 +109,6 @@ export class LiveSocket {
     if (this.stopped) return;
     const delay = BACKOFF_MS[Math.min(this.attempt, BACKOFF_MS.length - 1)];
     this.attempt++;
-    this.onConn("reconnecting");
     this.timer = setTimeout(() => this.connect(), delay);
   }
 

@@ -22,3 +22,8 @@ data:
   USERS_GRPC_ADDR: "users:9082"
   JOBS_GRPC_ADDR: "jobs:9083"
   WEBSOCKET_ADDR: "websocket:8084"
+  WS_ADDR: "http://websocket:8084"          # gateway websocket proxy target
+  BROKER_OPS_ADDR: "http://broker:9101"     # broker ops HTTP (health aggregate)
+  # Dev cluster only: let the console watch job events without a login.
+  # The websocket service still accepts real JWTs; anon just reads public rooms.
+  WS_ALLOW_ANONYMOUS: "true"

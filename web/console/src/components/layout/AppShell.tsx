@@ -59,6 +59,23 @@ function ConnectionBadge() {
       </Badge>
     );
   }
+  if (conn === "offline") {
+    // Auth-refused socket (close 4401): no retry loop, just the hint.
+    return (
+      <span title="The realtime feed needs a session. Sign in to get live updates.">
+        <Badge variant="warning">
+          <LogIn className="h-3 w-3" aria-hidden /> Sign in for live updates
+        </Badge>
+      </span>
+    );
+  }
+  if (conn === "connecting") {
+    return (
+      <Badge variant="outline">
+        <Dot variant="muted" pulse /> Connecting
+      </Badge>
+    );
+  }
   return (
     <Badge variant="warning">
       <Dot variant="warning" pulse /> Reconnecting

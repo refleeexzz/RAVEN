@@ -25,7 +25,7 @@ import { fmtCompact, fmtMs, fmtNum, fmtPct, fmtTime } from "@/lib/utils";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { EmptyState } from "@/components/ui/empty";
-import { Dot } from "@/components/ui/badge";
+import { Badge, Dot } from "@/components/ui/badge";
 import { StatCard } from "@/components/StatCard";
 import { Sparkline } from "@/components/Sparkline";
 import { StatusChip } from "@/components/StatusChip";
@@ -54,11 +54,12 @@ function HealthTile({
   latency: number | null;
   detail: string;
 }) {
-  const dot = status === "ok" ? "success" : status === "degraded" ? "warning" : "error";
+  const dot =
+    status === "ok" ? "success" : status === "degraded" ? "warning" : status === "down" ? "error" : "muted";
   return (
     <div className="flex flex-col gap-1 rounded-md border border-border bg-bg p-3">
       <div className="flex items-center gap-2">
-        <Dot variant={dot} pulse={status !== "ok"} />
+        <Dot variant={dot} pulse={status === "degraded" || status === "down"} />
         <span className="truncate text-sm font-medium text-fg">{name}</span>
       </div>
       <div className="flex items-baseline justify-between gap-2">
@@ -93,31 +94,45 @@ export function OverviewPage() {
   }
 
   const { totals, services, series } = snapshot;
-  const tail = series.slice(-90);
+  // Live mode: the chart rides Prometheus query_range directly (real last-5m
+  // history). Demo mode: the simulator's own series.
+  const chartData = snapshot.chart && snapshot.chart.length >= 2 ? snapshot.chart : series.slice(-90);
   const rpsSpark = series.map((p) => p.rps).slice(-60);
   const errSpark = series.map((p) => p.err * 100).slice(-60);
   const p99Spark = series.map((p) => p.p99).slice(-60);
   const queueSpark = history.map((h) => h.queue);
   const activeSpark = history.map((h) => h.active);
   const wsSpark = history.map((h) => h.ws ?? 0);
-  const errHot = totals.err_rate > 0.02;
+  const errHot = totals.err_rate !== null && totals.err_rate > 0.02;
+  const stale = totals.metrics_stale === true;
+  const staleSub = stale ? "stale · Prometheus unreachable" : undefined;
 
   return (
     <div className="flex flex-col gap-6">
       {/* Status cards */}
       <div className="grid grid-cols-2 gap-4 md:grid-cols-3 xl:grid-cols-6">
-        <StatCard label="Requests/sec" value={fmtNum(totals.rps)} icon={Zap} sub="gateway, all routes">
+        <StatCard
+          label="Requests/sec"
+          value={totals.rps === null ? "—" : fmtNum(totals.rps)}
+          icon={Zap}
+          sub={staleSub ?? "gateway, all routes"}
+        >
           <Sparkline data={rpsSpark} tone="accent" />
         </StatCard>
         <StatCard
           label="Error rate"
           value={<span className={errHot ? "text-error" : undefined}>{fmtPct(totals.err_rate)}</span>}
           icon={AlertTriangle}
-          sub={errHot ? "above 2% threshold" : "5xx share of requests"}
+          sub={staleSub ?? (errHot ? "above 2% threshold" : "5xx share of requests")}
         >
           <Sparkline data={errSpark} tone={errHot ? "error" : "success"} />
         </StatCard>
-        <StatCard label="P99 latency" value={fmtMs(totals.p99_ms)} icon={Timer} sub="http request duration">
+        <StatCard
+          label="P99 latency"
+          value={fmtMs(totals.p99_ms)}
+          icon={Timer}
+          sub={staleSub ?? "http request duration"}
+        >
           <Sparkline data={p99Spark} tone="accent" />
         </StatCard>
         <StatCard label="Active jobs" value={fmtNum(totals.active_jobs)} icon={LoaderCircle} sub="processing right now">
@@ -131,11 +146,13 @@ export function OverviewPage() {
           value={totals.ws_connections === null ? "—" : fmtNum(totals.ws_connections)}
           icon={Wifi}
           sub={
-            totals.ws_rooms === null
-              ? mode === "live"
-                ? "websocket service unreachable"
-                : "realtime service"
-              : `${fmtNum(totals.ws_rooms)} rooms · ${fmtNum(totals.ws_users ?? 0)} users`
+            totals.ws_connections !== null && totals.ws_rooms === null
+              ? "realtime service · stats endpoint unreachable"
+              : totals.ws_rooms === null
+                ? mode === "live"
+                  ? "websocket service unreachable"
+                  : "realtime service"
+                : `${fmtNum(totals.ws_rooms)} rooms · ${fmtNum(totals.ws_users ?? 0)} users`
           }
         >
           <Sparkline data={wsSpark} tone="success" />
@@ -146,24 +163,33 @@ export function OverviewPage() {
       <Card>
         <CardHeader
           title="Gateway throughput"
-          description="Requests per second · last 5 minutes"
+          description={
+            mode === "live" ? "Requests per second · last 5 minutes · Prometheus" : "Requests per second · last 5 minutes"
+          }
           action={
-            <span className="flex items-center gap-1.5 text-xs text-muted">
-              <span className="h-2 w-2 rounded-full bg-accent" /> req/s
+            <span className="flex items-center gap-2 text-xs text-muted">
+              {stale && <Badge variant="warning">stale</Badge>}
+              <span className="flex items-center gap-1.5">
+                <span className="h-2 w-2 rounded-full bg-accent" /> req/s
+              </span>
             </span>
           }
         />
         <CardContent>
-          {tail.length < 2 ? (
+          {chartData.length < 2 ? (
             <EmptyState
               icon={Activity}
               title="No request metrics yet"
-              description="The gateway does not expose a /metrics endpoint the console can read. Jobs, broker and websocket panels on this page still work."
+              description={
+                mode === "live"
+                  ? "Prometheus is unreachable or has no gateway series yet. Jobs, broker and websocket panels on this page still work."
+                  : "The gateway does not expose a /metrics endpoint the console can read. Jobs, broker and websocket panels on this page still work."
+              }
             />
           ) : (
             <div className="h-56 w-full">
               <ResponsiveContainer width="100%" height="100%">
-                <AreaChart data={tail} margin={{ top: 8, right: 8, bottom: 0, left: 0 }}>
+                <AreaChart data={chartData} margin={{ top: 8, right: 8, bottom: 0, left: 0 }}>
                   <CartesianGrid stroke="#26262c" vertical={false} />
                   <XAxis
                     dataKey="t"

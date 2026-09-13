@@ -36,6 +36,8 @@ var expectedRoutes = []struct {
 	{"POST", "/api/jobs/{id}/requeue", ravenauth.PermJobsCreate},
 
 	{"GET", "/api/workers", ravenauth.PermJobsRead},
+
+	{"GET", "/api/health/services", ""}, // aggregated service health for the console
 }
 
 func TestRouteTableMatchesContract(t *testing.T) {

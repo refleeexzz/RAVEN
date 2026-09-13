@@ -2,10 +2,12 @@ import { getJson, postJson, probeGateway } from "./api";
 import { config } from "./config";
 import { LiveSocket } from "./live";
 import { parsePrometheus, pickInteresting } from "./metrics";
+import { promInstant, promRange } from "./prometheus";
 import { DemoWorld } from "./simulator";
 import type {
   ConnState,
   CreateJobInput,
+  Health,
   Job,
   JobEvent,
   JobsPage,
@@ -19,7 +21,6 @@ import type {
   WorkerInfo,
 } from "./types";
 import { JOB_STATUSES, JOB_TYPE_META } from "./types";
-import { clamp } from "./utils";
 
 // A Source feeds the store with snapshots + events and executes mutations.
 // Two implementations: LiveSource (real gateway + broker + websocket) and
@@ -180,25 +181,45 @@ export class LiveSource implements Source {
   private topicRates = new Map<string, number[]>();
   private wsStats: { connections: number; rooms: number; users: number } | null = null;
   private series: SeriesPoint[] = [];
-  private lastMetrics: { at: number; total: number; errors: number } | null = null;
-  private probeMs = new Map<string, number | null>();
+
+  // Service health comes from GET /api/health/services (public, gateway-side
+  // probes). Null until the first successful poll; stale cache expires after
+  // 30s and the grid falls back to neutral "unknown" tiles.
+  private servicesCache: ServiceHealth[] | null = null;
+  private servicesLastOkAt = 0;
+  private servicesError: string | null = null;
+
+  // Overview metrics come from Prometheus HTTP API queries. promTotals holds
+  // the last good instant values; chartSeries the last good 5m range query.
+  private promTotals: {
+    rps: number | null;
+    err: number | null;
+    p99: number | null;
+    active: number | null;
+    queue: number | null;
+    ws: number | null;
+  } | null = null;
+  private promLastOkAt = 0;
+  private chartSeries: Array<{ t: number; rps: number }> = [];
 
   constructor(private getToken: () => string | null) {}
 
   start(h: SourceHandlers): void {
     this.handlers = h;
     h.onConn("connecting");
-    this.socket = new LiveSocket(config.wsUrl, this.getToken(), h.onEvent, h.onConn);
+    this.socket = new LiveSocket(config.wsUrl, this.getToken, h.onEvent, h.onConn);
     this.socket.start();
 
     void this.pollJobs();
     void this.pollStats();
     void this.pollTopics();
     void this.pollMetrics();
+    void this.pollHealth();
     this.timers.push(setInterval(() => void this.pollJobs(), 3000));
     this.timers.push(setInterval(() => void this.pollStats(), 3000));
     this.timers.push(setInterval(() => void this.pollTopics(), 5000));
     this.timers.push(setInterval(() => void this.pollMetrics(), 2000));
+    this.timers.push(setInterval(() => void this.pollHealth(), 5000));
     this.timers.push(setInterval(() => this.pushSnapshot(), 2000));
   }
 
@@ -209,11 +230,9 @@ export class LiveSource implements Source {
   }
 
   private async pollJobs(): Promise<void> {
-    const t0 = performance.now();
     try {
       const data = await getJson<unknown>(`${config.gatewayUrl}/api/jobs`, this.getToken());
       this.jobsCache = normalizeJobList(data);
-      this.probeMs.set("gateway", performance.now() - t0);
       // opportunistic: a workers registry may exist
       try {
         const w = await getJson<unknown>(`${config.gatewayUrl}/api/workers`, this.getToken());
@@ -223,113 +242,157 @@ export class LiveSource implements Source {
         // not exposed — workers page falls back to event-derived data
       }
     } catch {
-      this.probeMs.set("gateway", null);
+      // gateway unreachable this tick — caches keep last good values
     }
   }
 
   private async pollStats(): Promise<void> {
-    const t0 = performance.now();
     try {
       const s = await getJson<{ connections?: number; rooms?: number; users?: number }>(
         `${config.realtimeUrl}/debug/stats`,
       );
       this.wsStats = { connections: s.connections ?? 0, rooms: s.rooms ?? 0, users: s.users ?? 0 };
-      this.probeMs.set("websocket", performance.now() - t0);
     } catch {
       this.wsStats = null;
-      this.probeMs.set("websocket", null);
     }
   }
 
   private async pollTopics(): Promise<void> {
-    const t0 = performance.now();
     try {
       const data = await getJson<unknown>(`${config.brokerUrl}/topics`);
       this.topicsCache = normalizeTopics(data, this.topicRates);
-      this.probeMs.set("broker", performance.now() - t0);
     } catch {
-      this.probeMs.set("broker", null);
+      // broker stats unreachable this tick
     }
   }
 
+  /** Service health: public gateway endpoint, no auth needed. */
+  private async pollHealth(): Promise<void> {
+    try {
+      const data = await getJson<unknown>(`${config.gatewayUrl}/api/health/services`);
+      const parsed = this.normalizeHealthServices(data);
+      if (parsed) {
+        this.servicesCache = parsed;
+        this.servicesLastOkAt = Date.now();
+        this.servicesError = null;
+      } else {
+        this.servicesError = "unexpected /api/health/services response shape";
+      }
+    } catch (err) {
+      this.servicesError = err instanceof Error ? err.message : "health endpoint unreachable";
+    }
+  }
+
+  /** Overview metrics: instant PromQL for the cards, range PromQL for the chart. */
   private async pollMetrics(): Promise<void> {
     try {
-      const res = await fetch(`${config.gatewayUrl}/metrics`, { signal: AbortSignal.timeout(2500) });
-      if (!res.ok) return;
-      const samples = parsePrometheus(await res.text());
-      const total = samples
-        .filter((s) => /http_requests_total$/.test(s.name))
-        .reduce((a, s) => a + s.value, 0);
-      const errors = samples
-        .filter((s) => /http_requests_total$/.test(s.name) && /^5/.test(s.labels.code ?? s.labels.status ?? ""))
-        .reduce((a, s) => a + s.value, 0);
-      const p99Sample = samples.find(
-        (s) => /request_duration/.test(s.name) && (s.labels.quantile === "0.99" || s.labels.le === "+Inf"),
-      );
+      const [rps, errNum, errDen, p99s, active, queue, ws] = await Promise.all([
+        promInstant("sum(rate(raven_gateway_http_requests_total[1m]))"),
+        promInstant('sum(rate(raven_gateway_http_requests_total{status=~"5.."}[5m]))'),
+        promInstant("sum(rate(raven_gateway_http_requests_total[5m]))"),
+        promInstant("histogram_quantile(0.99, sum(rate(raven_gateway_http_request_duration_seconds_bucket[5m])) by (le))"),
+        promInstant("sum(raven_jobs_processing)"),
+        promInstant("sum(raven_broker_messages_pending)"),
+        promInstant("sum(raven_websocket_connections)"),
+      ]);
       const now = Date.now();
-      if (this.lastMetrics && total >= this.lastMetrics.total) {
-        const dt = (now - this.lastMetrics.at) / 1000;
-        const rps = dt > 0 ? (total - this.lastMetrics.total) / dt : 0;
-        const err = total > this.lastMetrics.total ? clamp((errors - this.lastMetrics.errors) / Math.max(1, total - this.lastMetrics.total), 0, 1) : 0;
-        this.series.push({
-          t: now,
-          rps,
-          err,
-          p99: p99Sample ? p99Sample.value * 1000 : 0,
-        });
+      // Division-by-zero guard: no traffic in the window → 0% errors.
+      const err = errDen !== null && errDen > 0 ? (errNum ?? 0) / errDen : 0;
+      this.promTotals = { rps, err, p99: p99s === null ? null : p99s * 1000, active, queue, ws };
+      this.promLastOkAt = now;
+      if (rps !== null) {
+        this.series.push({ t: now, rps, err, p99: p99s === null ? 0 : p99s * 1000 });
         if (this.series.length > 300) this.series.shift();
       }
-      this.lastMetrics = { at: now, total, errors };
+      try {
+        const points = await promRange("sum(rate(raven_gateway_http_requests_total[1m]))", now - 5 * 60_000, now, 5);
+        if (points.length > 0) this.chartSeries = points.map((p) => ({ t: p.t, rps: p.v }));
+      } catch {
+        // range query failed — keep last good chart series
+      }
     } catch {
-      // /metrics not exposed — the overview chart shows its empty state
+      // Prometheus unreachable — cards keep last good values with a stale
+      // note; before the first success they show the designed empty state.
     }
+  }
+
+  /** Maps /api/health/services names onto the 7 grid cards. */
+  private normalizeHealthServices(data: unknown): ServiceHealth[] | null {
+    const r = asRecord(data);
+    const arr = r?.services;
+    if (!Array.isArray(arr)) return null;
+    // endpoint name → card id (worker_pool renders as the "Worker pool" card)
+    const nameToId: Record<string, string> = {
+      gateway: "gateway",
+      auth: "auth",
+      users: "users",
+      jobs: "jobs",
+      broker: "broker",
+      websocket: "websocket",
+      worker_pool: "worker",
+    };
+    const byId = new Map<string, ServiceHealth>();
+    for (const raw of arr) {
+      const s = asRecord(raw);
+      if (!s || typeof s.name !== "string") continue;
+      const id = nameToId[s.name];
+      if (!id) continue;
+      const st = String(s.status ?? "");
+      const status: Health = st === "ok" || st === "degraded" || st === "down" ? st : "unknown";
+      const lat = Number(s.latency_ms);
+      byId.set(id, {
+        id,
+        name: SERVICE_DEFS.find(([d]) => d === id)?.[1] ?? s.name,
+        status,
+        latency_ms: Number.isFinite(lat) ? lat : null,
+        detail: typeof s.detail === "string" && s.detail ? s.detail : "reported by gateway",
+      });
+    }
+    return SERVICE_DEFS.map(
+      ([id, name]) =>
+        byId.get(id) ?? { id, name, status: "unknown" as Health, latency_ms: null, detail: "not reported" },
+    );
   }
 
   private services(): ServiceHealth[] {
-    const gw = this.probeMs.get("gateway");
-    const broker = this.probeMs.get("broker");
-    const ws = this.probeMs.get("websocket");
-    const processing = this.jobsCache.filter((j) => j.status === "PROCESSING").length;
-    return SERVICE_DEFS.map(([id, name]) => {
-      if (id === "gateway") {
-        return { id, name, status: gw == null ? "down" : "ok", latency_ms: gw != null ? Math.round(gw * 10) / 10 : null, detail: "probe · GET /api/jobs" };
-      }
-      if (id === "broker") {
-        return { id, name, status: broker == null ? "down" : "ok", latency_ms: broker != null ? Math.round(broker * 10) / 10 : null, detail: "probe · GET /topics" };
-      }
-      if (id === "websocket") {
-        return { id, name, status: ws == null ? "down" : "ok", latency_ms: ws != null ? Math.round(ws * 10) / 10 : null, detail: "probe · GET /debug/stats" };
-      }
-      if (id === "worker") {
-        const ok = gw != null;
-        return { id, name, status: ok ? "ok" : "down", latency_ms: null, detail: processing > 0 ? `derived · ${processing} jobs processing` : "derived · idle" };
-      }
-      // auth / users / jobs sit behind the gateway
-      return { id, name, status: gw == null ? "down" : "ok", latency_ms: null, detail: "via gateway" };
-    });
+    const fresh = this.servicesCache !== null && Date.now() - this.servicesLastOkAt < 30_000;
+    if (fresh && this.servicesCache) return this.servicesCache;
+    // Endpoint failing or never answered: neutral unknown, never red "down".
+    const note = this.servicesError ?? "waiting for first probe";
+    return SERVICE_DEFS.map(([id, name]) => ({
+      id,
+      name,
+      status: "unknown" as Health,
+      latency_ms: null,
+      detail: note,
+    }));
   }
 
   private pushSnapshot(): void {
     if (!this.handlers) return;
     const active = this.jobsCache.filter((j) => j.status === "PROCESSING").length;
     const queued = this.jobsCache.filter((j) => j.status === "QUEUED" || j.status === "RETRYING").length;
-    const last = this.series[this.series.length - 1];
+    const prom = this.promTotals;
+    const promStale = this.promLastOkAt > 0 && Date.now() - this.promLastOkAt >= 15_000;
     this.handlers.onSnapshot({
       at: Date.now(),
       totals: {
-        rps: last?.rps ?? 0,
-        err_rate: last?.err ?? 0,
-        p99_ms: last ? last.p99 : null,
-        active_jobs: active,
-        queue_depth: queued,
-        ws_connections: this.wsStats?.connections ?? null,
+        // Prometheus values; null before the first success → "—", never garbage.
+        rps: prom?.rps ?? null,
+        err_rate: prom?.err ?? null,
+        p99_ms: prom?.p99 ?? null,
+        active_jobs: prom?.active ?? active,
+        queue_depth: prom?.queue ?? queued,
+        ws_connections: prom?.ws ?? this.wsStats?.connections ?? null,
         ws_rooms: this.wsStats?.rooms ?? null,
         ws_users: this.wsStats?.users ?? null,
+        metrics_stale: promStale,
       },
       services: this.services(),
       workers: this.workersCache,
       topics: this.topicsCache,
       series: [...this.series],
+      chart: [...this.chartSeries],
     });
   }
 

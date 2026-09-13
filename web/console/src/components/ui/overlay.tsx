@@ -7,21 +7,32 @@ import { cn } from "@/lib/utils";
 // overlay click closes (non-destructive surfaces), focus returns on close.
 
 function useOverlayLifecycle(open: boolean, onClose: () => void, panelRef: React.RefObject<HTMLElement | null>) {
+  // Callers pass inline `onClose` handlers (new identity every render). Keep
+  // the latest in a ref so the effect below depends on `open` only — otherwise
+  // every keystroke in a dialog field re-runs it, and the re-run steals focus
+  // back to the first focusable (the X button).
+  const onCloseRef = useRef(onClose);
+  useEffect(() => {
+    onCloseRef.current = onClose;
+  }, [onClose]);
+
   useEffect(() => {
     if (!open) return;
     const previouslyFocused = document.activeElement instanceof HTMLElement ? document.activeElement : null;
 
-    // Move focus inside on open
+    // Move focus inside on open — prefer the first form field over the
+    // header's close button.
     const panel = panelRef.current;
     const focusables = panel?.querySelectorAll<HTMLElement>(
       'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])',
     );
-    (focusables && focusables.length > 0 ? focusables[0] : panel)?.focus();
+    const firstField = panel?.querySelector<HTMLElement>("input, select, textarea");
+    (firstField ?? (focusables && focusables.length > 0 ? focusables[0] : panel))?.focus();
 
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
         e.stopPropagation();
-        onClose();
+        onCloseRef.current();
         return;
       }
       if (e.key !== "Tab" || !panel) return;
@@ -46,7 +57,7 @@ function useOverlayLifecycle(open: boolean, onClose: () => void, panelRef: React
       document.removeEventListener("keydown", onKeyDown, true);
       previouslyFocused?.focus();
     };
-  }, [open, onClose, panelRef]);
+  }, [open, panelRef]);
 }
 
 interface DialogProps {

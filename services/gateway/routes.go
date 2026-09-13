@@ -43,5 +43,8 @@ func (s *server) table() []route {
 
 		// Live worker registry (from Redis).
 		{"GET", "/api/workers", ravenauth.PermJobsRead, s.jobsH.workers},
+
+		// Aggregated service health for the console (public; light probes).
+		{"GET", "/api/health/services", "", s.healthAgg.handler},
 	}
 }

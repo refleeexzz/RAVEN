@@ -67,6 +67,7 @@ GET  /api/jobs/{id}       (auth: jobs:read)
 POST /api/jobs/{id}/cancel (auth: jobs:cancel)
 POST /api/jobs/{id}/requeue (auth: jobs:create) — DLQ requeue, DEAD jobs only
 GET  /api/workers         (auth: jobs:read) — live worker registry from Redis
+GET  /api/health/services (public) — aggregated service health for the console
 GET  /ws                  (websocket upgrade, auth via ?token=)
 GET  /health /ready /metrics
 ```

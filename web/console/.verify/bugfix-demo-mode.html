@@ -1,0 +1,1512 @@
+<!DOCTYPE html>
+<html lang="en" class="dark"><head>
+    <script type="module">import { injectIntoGlobalHook } from "/@react-refresh";
+injectIntoGlobalHook(window);
+window.$RefreshReg$ = () => {};
+window.$RefreshSig$ = () => (type) => type;</script>
+
+    <script type="module" src="/@vite/client"></script>
+
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="description" content="Operations console for the RAVEN distributed systems platform">
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg">
+    <title>RAVEN Console</title>
+  <style type="text/css" data-vite-dev-id="F:/RAVEN — Distributed Systems Platform/web/console/src/index.css">*, ::before, ::after {
+  --tw-border-spacing-x: 0;
+  --tw-border-spacing-y: 0;
+  --tw-translate-x: 0;
+  --tw-translate-y: 0;
+  --tw-rotate: 0;
+  --tw-skew-x: 0;
+  --tw-skew-y: 0;
+  --tw-scale-x: 1;
+  --tw-scale-y: 1;
+  --tw-pan-x:  ;
+  --tw-pan-y:  ;
+  --tw-pinch-zoom:  ;
+  --tw-scroll-snap-strictness: proximity;
+  --tw-gradient-from-position:  ;
+  --tw-gradient-via-position:  ;
+  --tw-gradient-to-position:  ;
+  --tw-ordinal:  ;
+  --tw-slashed-zero:  ;
+  --tw-numeric-figure:  ;
+  --tw-numeric-spacing:  ;
+  --tw-numeric-fraction:  ;
+  --tw-ring-inset:  ;
+  --tw-ring-offset-width: 0px;
+  --tw-ring-offset-color: #fff;
+  --tw-ring-color: rgb(59 130 246 / 0.5);
+  --tw-ring-offset-shadow: 0 0 #0000;
+  --tw-ring-shadow: 0 0 #0000;
+  --tw-shadow: 0 0 #0000;
+  --tw-shadow-colored: 0 0 #0000;
+  --tw-blur:  ;
+  --tw-brightness:  ;
+  --tw-contrast:  ;
+  --tw-grayscale:  ;
+  --tw-hue-rotate:  ;
+  --tw-invert:  ;
+  --tw-saturate:  ;
+  --tw-sepia:  ;
+  --tw-drop-shadow:  ;
+  --tw-backdrop-blur:  ;
+  --tw-backdrop-brightness:  ;
+  --tw-backdrop-contrast:  ;
+  --tw-backdrop-grayscale:  ;
+  --tw-backdrop-hue-rotate:  ;
+  --tw-backdrop-invert:  ;
+  --tw-backdrop-opacity:  ;
+  --tw-backdrop-saturate:  ;
+  --tw-backdrop-sepia:  ;
+  --tw-contain-size:  ;
+  --tw-contain-layout:  ;
+  --tw-contain-paint:  ;
+  --tw-contain-style:  ;
+}
+
+::backdrop {
+  --tw-border-spacing-x: 0;
+  --tw-border-spacing-y: 0;
+  --tw-translate-x: 0;
+  --tw-translate-y: 0;
+  --tw-rotate: 0;
+  --tw-skew-x: 0;
+  --tw-skew-y: 0;
+  --tw-scale-x: 1;
+  --tw-scale-y: 1;
+  --tw-pan-x:  ;
+  --tw-pan-y:  ;
+  --tw-pinch-zoom:  ;
+  --tw-scroll-snap-strictness: proximity;
+  --tw-gradient-from-position:  ;
+  --tw-gradient-via-position:  ;
+  --tw-gradient-to-position:  ;
+  --tw-ordinal:  ;
+  --tw-slashed-zero:  ;
+  --tw-numeric-figure:  ;
+  --tw-numeric-spacing:  ;
+  --tw-numeric-fraction:  ;
+  --tw-ring-inset:  ;
+  --tw-ring-offset-width: 0px;
+  --tw-ring-offset-color: #fff;
+  --tw-ring-color: rgb(59 130 246 / 0.5);
+  --tw-ring-offset-shadow: 0 0 #0000;
+  --tw-ring-shadow: 0 0 #0000;
+  --tw-shadow: 0 0 #0000;
+  --tw-shadow-colored: 0 0 #0000;
+  --tw-blur:  ;
+  --tw-brightness:  ;
+  --tw-contrast:  ;
+  --tw-grayscale:  ;
+  --tw-hue-rotate:  ;
+  --tw-invert:  ;
+  --tw-saturate:  ;
+  --tw-sepia:  ;
+  --tw-drop-shadow:  ;
+  --tw-backdrop-blur:  ;
+  --tw-backdrop-brightness:  ;
+  --tw-backdrop-contrast:  ;
+  --tw-backdrop-grayscale:  ;
+  --tw-backdrop-hue-rotate:  ;
+  --tw-backdrop-invert:  ;
+  --tw-backdrop-opacity:  ;
+  --tw-backdrop-saturate:  ;
+  --tw-backdrop-sepia:  ;
+  --tw-contain-size:  ;
+  --tw-contain-layout:  ;
+  --tw-contain-paint:  ;
+  --tw-contain-style:  ;
+}/*
+! tailwindcss v3.4.19 | MIT License | https://tailwindcss.com
+*//*
+1. Prevent padding and border from affecting element width. (https://github.com/mozdevs/cssremedy/issues/4)
+2. Allow adding a border to an element by just adding a border-width. (https://github.com/tailwindcss/tailwindcss/pull/116)
+*/
+
+*,
+::before,
+::after {
+  box-sizing: border-box; /* 1 */
+  border-width: 0; /* 2 */
+  border-style: solid; /* 2 */
+  border-color: #e5e7eb; /* 2 */
+}
+
+::before,
+::after {
+  --tw-content: '';
+}
+
+/*
+1. Use a consistent sensible line-height in all browsers.
+2. Prevent adjustments of font size after orientation changes in iOS.
+3. Use a more readable tab size.
+4. Use the user's configured `sans` font-family by default.
+5. Use the user's configured `sans` font-feature-settings by default.
+6. Use the user's configured `sans` font-variation-settings by default.
+7. Disable tap highlights on iOS
+*/
+
+html,
+:host {
+  line-height: 1.5; /* 1 */
+  -webkit-text-size-adjust: 100%; /* 2 */
+  -moz-tab-size: 4; /* 3 */
+  -o-tab-size: 4;
+     tab-size: 4; /* 3 */
+  font-family: Inter, -apple-system, Segoe UI, Roboto, Helvetica Neue, Arial, sans-serif; /* 4 */
+  font-feature-settings: normal; /* 5 */
+  font-variation-settings: normal; /* 6 */
+  -webkit-tap-highlight-color: transparent; /* 7 */
+}
+
+/*
+1. Remove the margin in all browsers.
+2. Inherit line-height from `html` so users can set them as a class directly on the `html` element.
+*/
+
+body {
+  margin: 0; /* 1 */
+  line-height: inherit; /* 2 */
+}
+
+/*
+1. Add the correct height in Firefox.
+2. Correct the inheritance of border color in Firefox. (https://bugzilla.mozilla.org/show_bug.cgi?id=190655)
+3. Ensure horizontal rules are visible by default.
+*/
+
+hr {
+  height: 0; /* 1 */
+  color: inherit; /* 2 */
+  border-top-width: 1px; /* 3 */
+}
+
+/*
+Add the correct text decoration in Chrome, Edge, and Safari.
+*/
+
+abbr:where([title]) {
+  -webkit-text-decoration: underline dotted;
+          text-decoration: underline dotted;
+}
+
+/*
+Remove the default font size and weight for headings.
+*/
+
+h1,
+h2,
+h3,
+h4,
+h5,
+h6 {
+  font-size: inherit;
+  font-weight: inherit;
+}
+
+/*
+Reset links to optimize for opt-in styling instead of opt-out.
+*/
+
+a {
+  color: inherit;
+  text-decoration: inherit;
+}
+
+/*
+Add the correct font weight in Edge and Safari.
+*/
+
+b,
+strong {
+  font-weight: bolder;
+}
+
+/*
+1. Use the user's configured `mono` font-family by default.
+2. Use the user's configured `mono` font-feature-settings by default.
+3. Use the user's configured `mono` font-variation-settings by default.
+4. Correct the odd `em` font sizing in all browsers.
+*/
+
+code,
+kbd,
+samp,
+pre {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, Liberation Mono, monospace; /* 1 */
+  font-feature-settings: normal; /* 2 */
+  font-variation-settings: normal; /* 3 */
+  font-size: 1em; /* 4 */
+}
+
+/*
+Add the correct font size in all browsers.
+*/
+
+small {
+  font-size: 80%;
+}
+
+/*
+Prevent `sub` and `sup` elements from affecting the line height in all browsers.
+*/
+
+sub,
+sup {
+  font-size: 75%;
+  line-height: 0;
+  position: relative;
+  vertical-align: baseline;
+}
+
+sub {
+  bottom: -0.25em;
+}
+
+sup {
+  top: -0.5em;
+}
+
+/*
+1. Remove text indentation from table contents in Chrome and Safari. (https://bugs.chromium.org/p/chromium/issues/detail?id=999088, https://bugs.webkit.org/show_bug.cgi?id=201297)
+2. Correct table border color inheritance in all Chrome and Safari. (https://bugs.chromium.org/p/chromium/issues/detail?id=935729, https://bugs.webkit.org/show_bug.cgi?id=195016)
+3. Remove gaps between table borders by default.
+*/
+
+table {
+  text-indent: 0; /* 1 */
+  border-color: inherit; /* 2 */
+  border-collapse: collapse; /* 3 */
+}
+
+/*
+1. Change the font styles in all browsers.
+2. Remove the margin in Firefox and Safari.
+3. Remove default padding in all browsers.
+*/
+
+button,
+input,
+optgroup,
+select,
+textarea {
+  font-family: inherit; /* 1 */
+  font-feature-settings: inherit; /* 1 */
+  font-variation-settings: inherit; /* 1 */
+  font-size: 100%; /* 1 */
+  font-weight: inherit; /* 1 */
+  line-height: inherit; /* 1 */
+  letter-spacing: inherit; /* 1 */
+  color: inherit; /* 1 */
+  margin: 0; /* 2 */
+  padding: 0; /* 3 */
+}
+
+/*
+Remove the inheritance of text transform in Edge and Firefox.
+*/
+
+button,
+select {
+  text-transform: none;
+}
+
+/*
+1. Correct the inability to style clickable types in iOS and Safari.
+2. Remove default button styles.
+*/
+
+button,
+input:where([type='button']),
+input:where([type='reset']),
+input:where([type='submit']) {
+  -webkit-appearance: button; /* 1 */
+  background-color: transparent; /* 2 */
+  background-image: none; /* 2 */
+}
+
+/*
+Use the modern Firefox focus style for all focusable elements.
+*/
+
+:-moz-focusring {
+  outline: auto;
+}
+
+/*
+Remove the additional `:invalid` styles in Firefox. (https://github.com/mozilla/gecko-dev/blob/2f9eacd9d3d995c937b4251a5557d95d494c9be1/layout/style/res/forms.css#L728-L737)
+*/
+
+:-moz-ui-invalid {
+  box-shadow: none;
+}
+
+/*
+Add the correct vertical alignment in Chrome and Firefox.
+*/
+
+progress {
+  vertical-align: baseline;
+}
+
+/*
+Correct the cursor style of increment and decrement buttons in Safari.
+*/
+
+::-webkit-inner-spin-button,
+::-webkit-outer-spin-button {
+  height: auto;
+}
+
+/*
+1. Correct the odd appearance in Chrome and Safari.
+2. Correct the outline style in Safari.
+*/
+
+[type='search'] {
+  -webkit-appearance: textfield; /* 1 */
+  outline-offset: -2px; /* 2 */
+}
+
+/*
+Remove the inner padding in Chrome and Safari on macOS.
+*/
+
+::-webkit-search-decoration {
+  -webkit-appearance: none;
+}
+
+/*
+1. Correct the inability to style clickable types in iOS and Safari.
+2. Change font properties to `inherit` in Safari.
+*/
+
+::-webkit-file-upload-button {
+  -webkit-appearance: button; /* 1 */
+  font: inherit; /* 2 */
+}
+
+/*
+Add the correct display in Chrome and Safari.
+*/
+
+summary {
+  display: list-item;
+}
+
+/*
+Removes the default spacing and border for appropriate elements.
+*/
+
+blockquote,
+dl,
+dd,
+h1,
+h2,
+h3,
+h4,
+h5,
+h6,
+hr,
+figure,
+p,
+pre {
+  margin: 0;
+}
+
+fieldset {
+  margin: 0;
+  padding: 0;
+}
+
+legend {
+  padding: 0;
+}
+
+ol,
+ul,
+menu {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+/*
+Reset default styling for dialogs.
+*/
+dialog {
+  padding: 0;
+}
+
+/*
+Prevent resizing textareas horizontally by default.
+*/
+
+textarea {
+  resize: vertical;
+}
+
+/*
+1. Reset the default placeholder opacity in Firefox. (https://github.com/tailwindlabs/tailwindcss/issues/3300)
+2. Set the default placeholder color to the user's configured gray 400 color.
+*/
+
+input::-moz-placeholder, textarea::-moz-placeholder {
+  opacity: 1; /* 1 */
+  color: #9ca3af; /* 2 */
+}
+
+input::placeholder,
+textarea::placeholder {
+  opacity: 1; /* 1 */
+  color: #9ca3af; /* 2 */
+}
+
+/*
+Set the default cursor for buttons.
+*/
+
+button,
+[role="button"] {
+  cursor: pointer;
+}
+
+/*
+Make sure disabled buttons don't get the pointer cursor.
+*/
+:disabled {
+  cursor: default;
+}
+
+/*
+1. Make replaced elements `display: block` by default. (https://github.com/mozdevs/cssremedy/issues/14)
+2. Add `vertical-align: middle` to align replaced elements more sensibly by default. (https://github.com/jensimmons/cssremedy/issues/14#issuecomment-634934210)
+   This can trigger a poorly considered lint error in some tools but is included by design.
+*/
+
+img,
+svg,
+video,
+canvas,
+audio,
+iframe,
+embed,
+object {
+  display: block; /* 1 */
+  vertical-align: middle; /* 2 */
+}
+
+/*
+Constrain images and videos to the parent width and preserve their intrinsic aspect ratio. (https://github.com/mozdevs/cssremedy/issues/14)
+*/
+
+img,
+video {
+  max-width: 100%;
+  height: auto;
+}
+
+/* Make elements with the HTML hidden attribute stay hidden by default */
+[hidden]:where(:not([hidden="until-found"])) {
+  display: none;
+}
+.pointer-events-none {
+  pointer-events: none;
+}
+.pointer-events-auto {
+  pointer-events: auto;
+}
+.visible {
+  visibility: visible;
+}
+.fixed {
+  position: fixed;
+}
+.absolute {
+  position: absolute;
+}
+.relative {
+  position: relative;
+}
+.inset-0 {
+  inset: 0px;
+}
+.-left-\[21px\] {
+  left: -21px;
+}
+.bottom-4 {
+  bottom: 1rem;
+}
+.left-0 {
+  left: 0px;
+}
+.left-2 {
+  left: 0.5rem;
+}
+.right-0 {
+  right: 0px;
+}
+.right-2 {
+  right: 0.5rem;
+}
+.right-4 {
+  right: 1rem;
+}
+.top-0 {
+  top: 0px;
+}
+.top-1 {
+  top: 0.25rem;
+}
+.top-1\/2 {
+  top: 50%;
+}
+.z-50 {
+  z-index: 50;
+}
+.mx-1 {
+  margin-left: 0.25rem;
+  margin-right: 0.25rem;
+}
+.mx-auto {
+  margin-left: auto;
+  margin-right: auto;
+}
+.mb-1 {
+  margin-bottom: 0.25rem;
+}
+.mb-2 {
+  margin-bottom: 0.5rem;
+}
+.mb-4 {
+  margin-bottom: 1rem;
+}
+.ml-1 {
+  margin-left: 0.25rem;
+}
+.ml-2 {
+  margin-left: 0.5rem;
+}
+.ml-6 {
+  margin-left: 1.5rem;
+}
+.ml-auto {
+  margin-left: auto;
+}
+.mr-2 {
+  margin-right: 0.5rem;
+}
+.mt-0\.5 {
+  margin-top: 0.125rem;
+}
+.mt-1 {
+  margin-top: 0.25rem;
+}
+.mt-2 {
+  margin-top: 0.5rem;
+}
+.mt-3 {
+  margin-top: 0.75rem;
+}
+.block {
+  display: block;
+}
+.inline {
+  display: inline;
+}
+.flex {
+  display: flex;
+}
+.inline-flex {
+  display: inline-flex;
+}
+.table {
+  display: table;
+}
+.grid {
+  display: grid;
+}
+.hidden {
+  display: none;
+}
+.h-12 {
+  height: 3rem;
+}
+.h-16 {
+  height: 4rem;
+}
+.h-2 {
+  height: 0.5rem;
+}
+.h-24 {
+  height: 6rem;
+}
+.h-28 {
+  height: 7rem;
+}
+.h-3 {
+  height: 0.75rem;
+}
+.h-3\.5 {
+  height: 0.875rem;
+}
+.h-32 {
+  height: 8rem;
+}
+.h-4 {
+  height: 1rem;
+}
+.h-40 {
+  height: 10rem;
+}
+.h-48 {
+  height: 12rem;
+}
+.h-5 {
+  height: 1.25rem;
+}
+.h-56 {
+  height: 14rem;
+}
+.h-6 {
+  height: 1.5rem;
+}
+.h-72 {
+  height: 18rem;
+}
+.h-8 {
+  height: 2rem;
+}
+.h-80 {
+  height: 20rem;
+}
+.h-full {
+  height: 100%;
+}
+.max-h-64 {
+  max-height: 16rem;
+}
+.max-h-80 {
+  max-height: 20rem;
+}
+.min-h-0 {
+  min-height: 0px;
+}
+.w-16 {
+  width: 4rem;
+}
+.w-2 {
+  width: 0.5rem;
+}
+.w-20 {
+  width: 5rem;
+}
+.w-24 {
+  width: 6rem;
+}
+.w-3 {
+  width: 0.75rem;
+}
+.w-3\.5 {
+  width: 0.875rem;
+}
+.w-32 {
+  width: 8rem;
+}
+.w-4 {
+  width: 1rem;
+}
+.w-40 {
+  width: 10rem;
+}
+.w-56 {
+  width: 14rem;
+}
+.w-6 {
+  width: 1.5rem;
+}
+.w-60 {
+  width: 15rem;
+}
+.w-8 {
+  width: 2rem;
+}
+.w-80 {
+  width: 20rem;
+}
+.w-full {
+  width: 100%;
+}
+.w-px {
+  width: 1px;
+}
+.min-w-0 {
+  min-width: 0px;
+}
+.min-w-40 {
+  min-width: 10rem;
+}
+.max-w-32 {
+  max-width: 8rem;
+}
+.max-w-44 {
+  max-width: 11rem;
+}
+.max-w-56 {
+  max-width: 14rem;
+}
+.max-w-\[1400px\] {
+  max-width: 1400px;
+}
+.max-w-\[480px\] {
+  max-width: 480px;
+}
+.max-w-lg {
+  max-width: 32rem;
+}
+.max-w-md {
+  max-width: 28rem;
+}
+.flex-1 {
+  flex: 1 1 0%;
+}
+.shrink-0 {
+  flex-shrink: 0;
+}
+.grow {
+  flex-grow: 1;
+}
+.border-collapse {
+  border-collapse: collapse;
+}
+.-translate-y-1\/2 {
+  --tw-translate-y: -50%;
+  transform: translate(var(--tw-translate-x), var(--tw-translate-y)) rotate(var(--tw-rotate)) skewX(var(--tw-skew-x)) skewY(var(--tw-skew-y)) scaleX(var(--tw-scale-x)) scaleY(var(--tw-scale-y));
+}
+@keyframes ping {
+
+  75%, 100% {
+    transform: scale(2);
+    opacity: 0;
+  }
+}
+.animate-ping {
+  animation: ping 1s cubic-bezier(0, 0, 0.2, 1) infinite;
+}
+@keyframes pulse {
+
+  50% {
+    opacity: .5;
+  }
+}
+.animate-pulse {
+  animation: pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+}
+@keyframes spin {
+
+  to {
+    transform: rotate(360deg);
+  }
+}
+.animate-spin {
+  animation: spin 1s linear infinite;
+}
+.cursor-pointer {
+  cursor: pointer;
+}
+.select-none {
+  -webkit-user-select: none;
+     -moz-user-select: none;
+          user-select: none;
+}
+.appearance-none {
+  -webkit-appearance: none;
+     -moz-appearance: none;
+          appearance: none;
+}
+.grid-cols-1 {
+  grid-template-columns: repeat(1, minmax(0, 1fr));
+}
+.grid-cols-2 {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+.grid-cols-3 {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+.flex-col {
+  flex-direction: column;
+}
+.flex-wrap {
+  flex-wrap: wrap;
+}
+.items-start {
+  align-items: flex-start;
+}
+.items-end {
+  align-items: flex-end;
+}
+.items-center {
+  align-items: center;
+}
+.items-baseline {
+  align-items: baseline;
+}
+.justify-end {
+  justify-content: flex-end;
+}
+.justify-center {
+  justify-content: center;
+}
+.justify-between {
+  justify-content: space-between;
+}
+.gap-0\.5 {
+  gap: 0.125rem;
+}
+.gap-1 {
+  gap: 0.25rem;
+}
+.gap-1\.5 {
+  gap: 0.375rem;
+}
+.gap-2 {
+  gap: 0.5rem;
+}
+.gap-3 {
+  gap: 0.75rem;
+}
+.gap-4 {
+  gap: 1rem;
+}
+.gap-6 {
+  gap: 1.5rem;
+}
+.gap-x-4 {
+  -moz-column-gap: 1rem;
+       column-gap: 1rem;
+}
+.gap-x-8 {
+  -moz-column-gap: 2rem;
+       column-gap: 2rem;
+}
+.gap-y-2 {
+  row-gap: 0.5rem;
+}
+.divide-y > :not([hidden]) ~ :not([hidden]) {
+  --tw-divide-y-reverse: 0;
+  border-top-width: calc(1px * calc(1 - var(--tw-divide-y-reverse)));
+  border-bottom-width: calc(1px * var(--tw-divide-y-reverse));
+}
+.divide-border\/60 > :not([hidden]) ~ :not([hidden]) {
+  border-color: rgb(var(--border) / 0.6);
+}
+.overflow-auto {
+  overflow: auto;
+}
+.overflow-hidden {
+  overflow: hidden;
+}
+.overflow-x-auto {
+  overflow-x: auto;
+}
+.overflow-y-auto {
+  overflow-y: auto;
+}
+.truncate {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.whitespace-nowrap {
+  white-space: nowrap;
+}
+.break-words {
+  overflow-wrap: break-word;
+}
+.rounded-full {
+  border-radius: 9999px;
+}
+.rounded-lg {
+  border-radius: 8px;
+}
+.rounded-md {
+  border-radius: 6px;
+}
+.rounded-sm {
+  border-radius: 4px;
+}
+.rounded-xl {
+  border-radius: 12px;
+}
+.border {
+  border-width: 1px;
+}
+.border-b {
+  border-bottom-width: 1px;
+}
+.border-l {
+  border-left-width: 1px;
+}
+.border-r {
+  border-right-width: 1px;
+}
+.border-t {
+  border-top-width: 1px;
+}
+.border-accent\/60 {
+  border-color: rgb(var(--accent) / 0.6);
+}
+.border-border {
+  --tw-border-opacity: 1;
+  border-color: rgb(var(--border) / var(--tw-border-opacity, 1));
+}
+.border-border\/60 {
+  border-color: rgb(var(--border) / 0.6);
+}
+.border-error\/40 {
+  border-color: rgb(var(--error) / 0.4);
+}
+.border-success\/40 {
+  border-color: rgb(var(--success) / 0.4);
+}
+.border-warning\/40 {
+  border-color: rgb(var(--warning) / 0.4);
+}
+.bg-accent {
+  --tw-bg-opacity: 1;
+  background-color: rgb(var(--accent) / var(--tw-bg-opacity, 1));
+}
+.bg-accent\/10 {
+  background-color: rgb(var(--accent) / 0.1);
+}
+.bg-accent\/15 {
+  background-color: rgb(var(--accent) / 0.15);
+}
+.bg-bg {
+  --tw-bg-opacity: 1;
+  background-color: rgb(var(--bg) / var(--tw-bg-opacity, 1));
+}
+.bg-black\/60 {
+  background-color: rgb(0 0 0 / 0.6);
+}
+.bg-border {
+  --tw-bg-opacity: 1;
+  background-color: rgb(var(--border) / var(--tw-bg-opacity, 1));
+}
+.bg-error {
+  --tw-bg-opacity: 1;
+  background-color: rgb(var(--error) / var(--tw-bg-opacity, 1));
+}
+.bg-error\/10 {
+  background-color: rgb(var(--error) / 0.1);
+}
+.bg-info {
+  --tw-bg-opacity: 1;
+  background-color: rgb(var(--info) / var(--tw-bg-opacity, 1));
+}
+.bg-info\/10 {
+  background-color: rgb(var(--info) / 0.1);
+}
+.bg-subtle {
+  --tw-bg-opacity: 1;
+  background-color: rgb(var(--subtle) / var(--tw-bg-opacity, 1));
+}
+.bg-success {
+  --tw-bg-opacity: 1;
+  background-color: rgb(var(--success) / var(--tw-bg-opacity, 1));
+}
+.bg-success\/10 {
+  background-color: rgb(var(--success) / 0.1);
+}
+.bg-surface {
+  --tw-bg-opacity: 1;
+  background-color: rgb(var(--surface) / var(--tw-bg-opacity, 1));
+}
+.bg-surface-2 {
+  --tw-bg-opacity: 1;
+  background-color: rgb(var(--surface-2) / var(--tw-bg-opacity, 1));
+}
+.bg-surface-2\/40 {
+  background-color: rgb(var(--surface-2) / 0.4);
+}
+.bg-surface-2\/50 {
+  background-color: rgb(var(--surface-2) / 0.5);
+}
+.bg-transparent {
+  background-color: transparent;
+}
+.bg-warning {
+  --tw-bg-opacity: 1;
+  background-color: rgb(var(--warning) / var(--tw-bg-opacity, 1));
+}
+.bg-warning\/10 {
+  background-color: rgb(var(--warning) / 0.1);
+}
+.p-0 {
+  padding: 0px;
+}
+.p-1 {
+  padding: 0.25rem;
+}
+.p-2 {
+  padding: 0.5rem;
+}
+.p-3 {
+  padding: 0.75rem;
+}
+.p-4 {
+  padding: 1rem;
+}
+.px-1 {
+  padding-left: 0.25rem;
+  padding-right: 0.25rem;
+}
+.px-1\.5 {
+  padding-left: 0.375rem;
+  padding-right: 0.375rem;
+}
+.px-2 {
+  padding-left: 0.5rem;
+  padding-right: 0.5rem;
+}
+.px-3 {
+  padding-left: 0.75rem;
+  padding-right: 0.75rem;
+}
+.px-4 {
+  padding-left: 1rem;
+  padding-right: 1rem;
+}
+.px-6 {
+  padding-left: 1.5rem;
+  padding-right: 1.5rem;
+}
+.py-0\.5 {
+  padding-top: 0.125rem;
+  padding-bottom: 0.125rem;
+}
+.py-1\.5 {
+  padding-top: 0.375rem;
+  padding-bottom: 0.375rem;
+}
+.py-12 {
+  padding-top: 3rem;
+  padding-bottom: 3rem;
+}
+.py-2 {
+  padding-top: 0.5rem;
+  padding-bottom: 0.5rem;
+}
+.py-3 {
+  padding-top: 0.75rem;
+  padding-bottom: 0.75rem;
+}
+.py-4 {
+  padding-top: 1rem;
+  padding-bottom: 1rem;
+}
+.py-6 {
+  padding-top: 1.5rem;
+  padding-bottom: 1.5rem;
+}
+.pb-1 {
+  padding-bottom: 0.25rem;
+}
+.pb-2 {
+  padding-bottom: 0.5rem;
+}
+.pl-3 {
+  padding-left: 0.75rem;
+}
+.pl-4 {
+  padding-left: 1rem;
+}
+.pl-8 {
+  padding-left: 2rem;
+}
+.pr-8 {
+  padding-right: 2rem;
+}
+.pt-1 {
+  padding-top: 0.25rem;
+}
+.pt-24 {
+  padding-top: 6rem;
+}
+.pt-4 {
+  padding-top: 1rem;
+}
+.text-left {
+  text-align: left;
+}
+.text-center {
+  text-align: center;
+}
+.text-right {
+  text-align: right;
+}
+.align-middle {
+  vertical-align: middle;
+}
+.font-mono {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, Liberation Mono, monospace;
+}
+.text-2xl {
+  font-size: 24px;
+  line-height: 32px;
+}
+.text-lg {
+  font-size: 18px;
+  line-height: 28px;
+}
+.text-sm {
+  font-size: 13px;
+  line-height: 18px;
+}
+.text-xl {
+  font-size: 20px;
+  line-height: 28px;
+}
+.text-xs {
+  font-size: 12px;
+  line-height: 16px;
+}
+.font-medium {
+  font-weight: 500;
+}
+.font-semibold {
+  font-weight: 600;
+}
+.uppercase {
+  text-transform: uppercase;
+}
+.capitalize {
+  text-transform: capitalize;
+}
+.tabular-nums {
+  --tw-numeric-spacing: tabular-nums;
+  font-variant-numeric: var(--tw-ordinal) var(--tw-slashed-zero) var(--tw-numeric-figure) var(--tw-numeric-spacing) var(--tw-numeric-fraction);
+}
+.tracking-tight {
+  letter-spacing: -0.025em;
+}
+.tracking-wide {
+  letter-spacing: 0.025em;
+}
+.text-accent-fg {
+  --tw-text-opacity: 1;
+  color: rgb(var(--accent-fg) / var(--tw-text-opacity, 1));
+}
+.text-error {
+  --tw-text-opacity: 1;
+  color: rgb(var(--error) / var(--tw-text-opacity, 1));
+}
+.text-fg {
+  --tw-text-opacity: 1;
+  color: rgb(var(--fg) / var(--tw-text-opacity, 1));
+}
+.text-info {
+  --tw-text-opacity: 1;
+  color: rgb(var(--info) / var(--tw-text-opacity, 1));
+}
+.text-muted {
+  --tw-text-opacity: 1;
+  color: rgb(var(--muted) / var(--tw-text-opacity, 1));
+}
+.text-subtle {
+  --tw-text-opacity: 1;
+  color: rgb(var(--subtle) / var(--tw-text-opacity, 1));
+}
+.text-success {
+  --tw-text-opacity: 1;
+  color: rgb(var(--success) / var(--tw-text-opacity, 1));
+}
+.text-warning {
+  --tw-text-opacity: 1;
+  color: rgb(var(--warning) / var(--tw-text-opacity, 1));
+}
+.text-white {
+  --tw-text-opacity: 1;
+  color: rgb(255 255 255 / var(--tw-text-opacity, 1));
+}
+.accent-accent {
+  accent-color: rgb(var(--accent) / 1);
+}
+.opacity-40 {
+  opacity: 0.4;
+}
+.opacity-60 {
+  opacity: 0.6;
+}
+.shadow-lg {
+  --tw-shadow: 0 4px 12px -1px rgb(0 0 0 / 0.5), 0 2px 4px -2px rgb(0 0 0 / 0.4);
+  --tw-shadow-colored: 0 4px 12px -1px var(--tw-shadow-color), 0 2px 4px -2px var(--tw-shadow-color);
+  box-shadow: var(--tw-ring-offset-shadow, 0 0 #0000), var(--tw-ring-shadow, 0 0 #0000), var(--tw-shadow);
+}
+.shadow-md {
+  --tw-shadow: 0 1px 3px 0 rgb(0 0 0 / 0.4), 0 1px 2px -1px rgb(0 0 0 / 0.4);
+  --tw-shadow-colored: 0 1px 3px 0 var(--tw-shadow-color), 0 1px 2px -1px var(--tw-shadow-color);
+  box-shadow: var(--tw-ring-offset-shadow, 0 0 #0000), var(--tw-ring-shadow, 0 0 #0000), var(--tw-shadow);
+}
+.outline {
+  outline-style: solid;
+}
+.filter {
+  filter: var(--tw-blur) var(--tw-brightness) var(--tw-contrast) var(--tw-grayscale) var(--tw-hue-rotate) var(--tw-invert) var(--tw-saturate) var(--tw-sepia) var(--tw-drop-shadow);
+}
+.transition-\[width\] {
+  transition-property: width;
+  transition-timing-function: cubic-bezier(0.4, 0, 0.2, 1);
+  transition-duration: 150ms;
+}
+.transition-colors {
+  transition-property: color, background-color, border-color, text-decoration-color, fill, stroke;
+  transition-timing-function: cubic-bezier(0.4, 0, 0.2, 1);
+  transition-duration: 150ms;
+}
+.duration-150 {
+  transition-duration: 150ms;
+}
+.duration-200 {
+  transition-duration: 200ms;
+}
+
+:root {
+  /* Dark ops console surfaces — near-neutral zinc family, never tinted */
+  --bg: 10 10 11;
+  --surface: 19 19 22;
+  --surface-2: 26 26 31;
+  --border: 39 39 44;
+  --fg: 250 250 250;
+  --muted: 161 161 170;
+  --subtle: 113 113 122;
+
+  /* One accent: violet */
+  --accent: 139 92 246;
+  --accent-hover: 124 58 237;
+  --accent-fg: 237 233 254;
+
+  /* Semantic */
+  --success: 52 211 153;
+  --warning: 251 191 36;
+  --error: 248 113 113;
+  --info: 96 165 250;
+
+  color-scheme: dark;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  --tw-bg-opacity: 1;
+  background-color: rgb(var(--bg) / var(--tw-bg-opacity, 1));
+  font-family: Inter, -apple-system, Segoe UI, Roboto, Helvetica Neue, Arial, sans-serif;
+  font-size: 14px;
+  line-height: 20px;
+  --tw-text-opacity: 1;
+  color: rgb(var(--fg) / var(--tw-text-opacity, 1));
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+::-moz-selection {
+  background: rgb(var(--accent) / 0.35);
+}
+
+::selection {
+  background: rgb(var(--accent) / 0.35);
+}
+
+/* Slim, quiet scrollbars */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: rgb(var(--border)) transparent;
+}
+*::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+*::-webkit-scrollbar-thumb {
+  background: rgb(var(--border));
+  border-radius: 4px;
+}
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+/* Respect users who prefer no motion */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+.placeholder\:text-subtle::-moz-placeholder {
+  --tw-text-opacity: 1;
+  color: rgb(var(--subtle) / var(--tw-text-opacity, 1));
+}
+.placeholder\:text-subtle::placeholder {
+  --tw-text-opacity: 1;
+  color: rgb(var(--subtle) / var(--tw-text-opacity, 1));
+}
+.last\:border-b-0:last-child {
+  border-bottom-width: 0px;
+}
+.hover\:bg-accent-hover:hover {
+  --tw-bg-opacity: 1;
+  background-color: rgb(var(--accent-hover) / var(--tw-bg-opacity, 1));
+}
+.hover\:bg-border\/60:hover {
+  background-color: rgb(var(--border) / 0.6);
+}
+.hover\:bg-error\/20:hover {
+  background-color: rgb(var(--error) / 0.2);
+}
+.hover\:bg-surface-2:hover {
+  --tw-bg-opacity: 1;
+  background-color: rgb(var(--surface-2) / var(--tw-bg-opacity, 1));
+}
+.hover\:bg-surface-2\/50:hover {
+  background-color: rgb(var(--surface-2) / 0.5);
+}
+.hover\:bg-surface-2\/60:hover {
+  background-color: rgb(var(--surface-2) / 0.6);
+}
+.hover\:text-accent:hover {
+  --tw-text-opacity: 1;
+  color: rgb(var(--accent) / var(--tw-text-opacity, 1));
+}
+.hover\:text-fg:hover {
+  --tw-text-opacity: 1;
+  color: rgb(var(--fg) / var(--tw-text-opacity, 1));
+}
+.focus\:outline-none:focus {
+  outline: 2px solid transparent;
+  outline-offset: 2px;
+}
+.focus-visible\:outline-none:focus-visible {
+  outline: 2px solid transparent;
+  outline-offset: 2px;
+}
+.focus-visible\:ring-2:focus-visible {
+  --tw-ring-offset-shadow: var(--tw-ring-inset) 0 0 0 var(--tw-ring-offset-width) var(--tw-ring-offset-color);
+  --tw-ring-shadow: var(--tw-ring-inset) 0 0 0 calc(2px + var(--tw-ring-offset-width)) var(--tw-ring-color);
+  box-shadow: var(--tw-ring-offset-shadow), var(--tw-ring-shadow), var(--tw-shadow, 0 0 #0000);
+}
+.focus-visible\:ring-inset:focus-visible {
+  --tw-ring-inset: inset;
+}
+.focus-visible\:ring-accent:focus-visible {
+  --tw-ring-opacity: 1;
+  --tw-ring-color: rgb(var(--accent) / var(--tw-ring-opacity, 1));
+}
+.focus-visible\:ring-offset-2:focus-visible {
+  --tw-ring-offset-width: 2px;
+}
+.focus-visible\:ring-offset-bg:focus-visible {
+  --tw-ring-offset-color: rgb(var(--bg) / 1);
+}
+.disabled\:pointer-events-none:disabled {
+  pointer-events: none;
+}
+.disabled\:cursor-not-allowed:disabled {
+  cursor: not-allowed;
+}
+.disabled\:opacity-50:disabled {
+  opacity: 0.5;
+}
+@media (prefers-reduced-motion: reduce) {
+
+  .motion-reduce\:animate-none {
+    animation: none;
+  }
+}
+@media (min-width: 640px) {
+
+  .sm\:block {
+    display: block;
+  }
+
+  .sm\:flex {
+    display: flex;
+  }
+
+  .sm\:grid-cols-2 {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .sm\:grid-cols-5 {
+    grid-template-columns: repeat(5, minmax(0, 1fr));
+  }
+
+  .sm\:p-6 {
+    padding: 1.5rem;
+  }
+}
+@media (min-width: 768px) {
+
+  .md\:block {
+    display: block;
+  }
+
+  .md\:hidden {
+    display: none;
+  }
+
+  .md\:grid-cols-2 {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .md\:grid-cols-3 {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+@media (min-width: 1024px) {
+
+  .lg\:grid-cols-2 {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .lg\:grid-cols-3 {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .lg\:grid-cols-\[320px_1fr\] {
+    grid-template-columns: 320px 1fr;
+  }
+}
+@media (min-width: 1280px) {
+
+  .xl\:grid-cols-2 {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .xl\:grid-cols-3 {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .xl\:grid-cols-4 {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+
+  .xl\:grid-cols-6 {
+    grid-template-columns: repeat(6, minmax(0, 1fr));
+  }
+}
+</style></head>
+  <body>
+    <div id="root"><div class="flex h-full"><aside class="hidden w-60 shrink-0 border-r border-border bg-bg md:block"><div class="flex h-full flex-col"><div class="flex h-12 items-center gap-2 border-b border-border px-4"><img src="/favicon.svg" alt="" width="20" height="20" class="rounded-sm"><span class="text-sm font-semibold tracking-tight">RAVEN</span><span class="text-sm text-subtle">Console</span></div><div class="flex-1 overflow-y-auto py-3"><p class="px-4 pb-1 text-xs font-medium uppercase tracking-wide text-subtle">Platform</p><nav class="flex flex-col gap-0.5 px-2" aria-label="Platform"><a href="#/overview" aria-current="page" class="flex h-8 items-center gap-2 rounded-md px-2 text-sm transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent bg-surface-2 font-medium text-fg"><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-activity h-4 w-4 shrink-0" aria-hidden="true"><path d="M22 12h-2.48a2 2 0 0 0-1.93 1.46l-2.35 8.36a.25.25 0 0 1-.48 0L9.24 2.18a.25.25 0 0 0-.48 0l-2.35 8.36A2 2 0 0 1 4.49 12H2"></path></svg><span class="flex-1 truncate">Overview</span></a><a href="#/jobs" class="flex h-8 items-center gap-2 rounded-md px-2 text-sm transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent text-muted hover:bg-surface-2/60 hover:text-fg"><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-layers h-4 w-4 shrink-0" aria-hidden="true"><path d="M12.83 2.18a2 2 0 0 0-1.66 0L2.6 6.08a1 1 0 0 0 0 1.83l8.58 3.91a2 2 0 0 0 1.66 0l8.58-3.9a1 1 0 0 0 0-1.83z"></path><path d="M2 12a1 1 0 0 0 .58.91l8.6 3.91a2 2 0 0 0 1.65 0l8.58-3.9A1 1 0 0 0 22 12"></path><path d="M2 17a1 1 0 0 0 .58.91l8.6 3.91a2 2 0 0 0 1.65 0l8.58-3.9A1 1 0 0 0 22 17"></path></svg><span class="flex-1 truncate">Jobs</span><span class="rounded-sm bg-accent/15 px-1.5 text-xs tabular-nums text-accent-fg">9</span></a><a href="#/workers" class="flex h-8 items-center gap-2 rounded-md px-2 text-sm transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent text-muted hover:bg-surface-2/60 hover:text-fg"><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-cpu h-4 w-4 shrink-0" aria-hidden="true"><rect width="16" height="16" x="4" y="4" rx="2"></rect><rect width="6" height="6" x="9" y="9" rx="1"></rect><path d="M15 2v2"></path><path d="M15 20v2"></path><path d="M2 15h2"></path><path d="M2 9h2"></path><path d="M20 15h2"></path><path d="M20 9h2"></path><path d="M9 2v2"></path><path d="M9 20v2"></path></svg><span class="flex-1 truncate">Workers</span></a><a href="#/broker" class="flex h-8 items-center gap-2 rounded-md px-2 text-sm transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent text-muted hover:bg-surface-2/60 hover:text-fg"><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-waypoints h-4 w-4 shrink-0" aria-hidden="true"><circle cx="12" cy="4.5" r="2.5"></circle><path d="m10.2 6.3-3.9 3.9"></path><circle cx="4.5" cy="12" r="2.5"></circle><path d="M7 12h10"></path><circle cx="19.5" cy="12" r="2.5"></circle><path d="m13.8 17.7 3.9-3.9"></path><circle cx="12" cy="19.5" r="2.5"></circle></svg><span class="flex-1 truncate">Broker</span></a><a href="#/observability" class="flex h-8 items-center gap-2 rounded-md px-2 text-sm transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent text-muted hover:bg-surface-2/60 hover:text-fg"><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-chart-column h-4 w-4 shrink-0" aria-hidden="true"><path d="M3 3v16a2 2 0 0 0 2 2h16"></path><path d="M18 17V9"></path><path d="M13 17V5"></path><path d="M8 17v-3"></path></svg><span class="flex-1 truncate">Observability</span></a><a href="#/testlab" class="flex h-8 items-center gap-2 rounded-md px-2 text-sm transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent text-muted hover:bg-surface-2/60 hover:text-fg"><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-wrench h-4 w-4 shrink-0" aria-hidden="true"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"></path></svg><span class="flex-1 truncate">Test Lab</span></a></nav></div><div class="border-t border-border px-4 py-3"><p class="text-xs text-subtle">Demo feed · simulated</p><p class="mt-0.5 text-xs text-subtle">v0.1.0</p></div></div></aside><div class="flex min-w-0 flex-1 flex-col"><header class="flex h-12 shrink-0 items-center gap-3 border-b border-border bg-bg px-4"><button class="inline-flex select-none items-center justify-center gap-2 rounded-md font-medium transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-2 focus-visible:ring-offset-bg disabled:pointer-events-none disabled:opacity-50 text-muted hover:bg-surface-2 hover:text-fg h-8 w-8 md:hidden" aria-label="Open navigation"><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-menu h-4 w-4"><line x1="4" x2="20" y1="12" y2="12"></line><line x1="4" x2="20" y1="6" y2="6"></line><line x1="4" x2="20" y1="18" y2="18"></line></svg></button><h1 class="text-sm font-semibold">Overview</h1><div class="ml-auto flex items-center gap-2"><button type="button" class="hidden h-8 items-center gap-2 rounded-md border border-border bg-surface px-3 text-sm text-muted transition-colors duration-150 hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent sm:flex"><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-search h-4 w-4" aria-hidden="true"><circle cx="11" cy="11" r="8"></circle><path d="m21 21-4.3-4.3"></path></svg><span>Commands</span><kbd class="rounded-sm border border-border bg-bg px-1 text-xs text-subtle">⌘K</kbd></button><span title="The gateway is unreachable, so the console is running on a simulated feed."><span class="inline-flex h-5 shrink-0 items-center gap-1.5 rounded-sm px-2 text-xs font-medium bg-warning/10 text-warning"><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-flask-conical h-3 w-3" aria-hidden="true"><path d="M14 2v6a2 2 0 0 0 .245.96l5.51 10.08A2 2 0 0 1 18 22H6a2 2 0 0 1-1.755-2.96l5.51-10.08A2 2 0 0 0 10 8V2"></path><path d="M6.453 15h11.094"></path><path d="M8.5 2h7"></path></svg> DEMO</span></span><button class="inline-flex select-none items-center justify-center gap-2 rounded-md font-medium transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-2 focus-visible:ring-offset-bg disabled:pointer-events-none disabled:opacity-50 border border-border bg-transparent text-fg hover:bg-surface-2 h-6 px-2 text-xs"><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-log-in h-4 w-4" aria-hidden="true"><path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4"></path><polyline points="10 17 15 12 10 7"></polyline><line x1="15" x2="3" y1="12" y2="12"></line></svg>Sign in</button></div></header><main class="min-h-0 flex-1 overflow-y-auto"><div class="mx-auto max-w-[1400px] p-4 sm:p-6"><div class="flex flex-col gap-6"><div class="grid grid-cols-2 gap-4 md:grid-cols-3 xl:grid-cols-6"><div class="rounded-lg border border-border bg-surface p-4"><div class="flex items-center justify-between gap-2"><span class="text-xs font-medium uppercase tracking-wide text-muted">Requests/sec</span><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-zap h-4 w-4 text-subtle" aria-hidden="true"><path d="M4 14a1 1 0 0 1-.78-1.63l9.9-10.2a.5.5 0 0 1 .86.46l-1.92 6.02A1 1 0 0 0 13 10h7a1 1 0 0 1 .78 1.63l-9.9 10.2a.5.5 0 0 1-.86-.46l1.92-6.02A1 1 0 0 0 11 14z"></path></svg></div><div class="mt-2 text-2xl font-semibold tabular-nums text-fg">134</div><div class="mt-0.5 text-xs text-muted">gateway, all routes</div><div class="mt-2"><svg viewBox="0 0 120 24" preserveAspectRatio="none" class="h-6 w-full" aria-hidden="true"><polygon points="0,24 0.0,13.9 2.0,15.5 4.1,16.3 6.1,15.5 8.1,14.0 10.2,15.7 12.2,14.7 14.2,16.3 16.3,13.7 18.3,15.4 20.3,14.8 22.4,14.2 24.4,13.9 26.4,15.6 28.5,15.6 30.5,15.9 32.5,15.5 34.6,16.6 36.6,15.5 38.6,15.0 40.7,15.9 42.7,15.0 44.7,15.7 46.8,16.0 48.8,14.7 50.8,17.3 52.9,15.3 54.9,15.0 56.9,15.1 59.0,2.0 61.0,2.4 63.1,3.6 65.1,2.1 67.1,3.3 69.2,3.7 71.2,17.1 73.2,18.2 75.3,18.5 77.3,17.8 79.3,17.9 81.4,17.1 83.4,18.7 85.4,18.5 87.5,17.7 89.5,18.8 91.5,18.9 93.6,18.6 95.6,18.7 97.6,17.6 99.7,19.1 101.7,18.5 103.7,20.1 105.8,18.3 107.8,20.1 109.8,20.3 111.9,19.6 113.9,19.7 115.9,19.5 118.0,21.8 120.0,22.0 120,24" fill="#8b5cf6" opacity="0.12" id=":r1:"></polygon><polyline points="0.0,13.9 2.0,15.5 4.1,16.3 6.1,15.5 8.1,14.0 10.2,15.7 12.2,14.7 14.2,16.3 16.3,13.7 18.3,15.4 20.3,14.8 22.4,14.2 24.4,13.9 26.4,15.6 28.5,15.6 30.5,15.9 32.5,15.5 34.6,16.6 36.6,15.5 38.6,15.0 40.7,15.9 42.7,15.0 44.7,15.7 46.8,16.0 48.8,14.7 50.8,17.3 52.9,15.3 54.9,15.0 56.9,15.1 59.0,2.0 61.0,2.4 63.1,3.6 65.1,2.1 67.1,3.3 69.2,3.7 71.2,17.1 73.2,18.2 75.3,18.5 77.3,17.8 79.3,17.9 81.4,17.1 83.4,18.7 85.4,18.5 87.5,17.7 89.5,18.8 91.5,18.9 93.6,18.6 95.6,18.7 97.6,17.6 99.7,19.1 101.7,18.5 103.7,20.1 105.8,18.3 107.8,20.1 109.8,20.3 111.9,19.6 113.9,19.7 115.9,19.5 118.0,21.8 120.0,22.0" fill="none" stroke="#8b5cf6" stroke-width="1.5" stroke-linejoin="round" stroke-linecap="round" vector-effect="non-scaling-stroke"></polyline></svg></div></div><div class="rounded-lg border border-border bg-surface p-4"><div class="flex items-center justify-between gap-2"><span class="text-xs font-medium uppercase tracking-wide text-muted">Error rate</span><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-triangle-alert h-4 w-4 text-subtle" aria-hidden="true"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3"></path><path d="M12 9v4"></path><path d="M12 17h.01"></path></svg></div><div class="mt-2 text-2xl font-semibold tabular-nums text-fg"><span>0.70%</span></div><div class="mt-0.5 text-xs text-muted">5xx share of requests</div><div class="mt-2"><svg viewBox="0 0 120 24" preserveAspectRatio="none" class="h-6 w-full" aria-hidden="true"><polygon points="0,24 0.0,17.6 2.0,21.5 4.1,18.9 6.1,20.9 8.1,18.2 10.2,20.5 12.2,19.6 14.2,21.4 16.3,19.0 18.3,20.5 20.3,20.4 22.4,18.0 24.4,21.4 26.4,20.7 28.5,19.5 30.5,17.4 32.5,20.1 34.6,21.8 36.6,21.7 38.6,17.1 40.7,17.6 42.7,17.6 44.7,19.9 46.8,21.3 48.8,18.6 50.8,20.6 52.9,21.0 54.9,21.2 56.9,20.4 59.0,2.0 61.0,3.8 63.1,2.5 65.1,5.6 67.1,4.8 69.2,4.1 71.2,18.0 73.2,19.7 75.3,17.5 77.3,21.2 79.3,17.3 81.4,22.0 83.4,19.0 85.4,19.0 87.5,17.1 89.5,18.5 91.5,19.2 93.6,20.0 95.6,18.6 97.6,17.7 99.7,21.6 101.7,17.7 103.7,18.1 105.8,20.5 107.8,21.1 109.8,17.1 111.9,17.2 113.9,21.8 115.9,17.8 118.0,21.2 120.0,18.2 120,24" fill="#34d399" opacity="0.12" id=":r3:"></polygon><polyline points="0.0,17.6 2.0,21.5 4.1,18.9 6.1,20.9 8.1,18.2 10.2,20.5 12.2,19.6 14.2,21.4 16.3,19.0 18.3,20.5 20.3,20.4 22.4,18.0 24.4,21.4 26.4,20.7 28.5,19.5 30.5,17.4 32.5,20.1 34.6,21.8 36.6,21.7 38.6,17.1 40.7,17.6 42.7,17.6 44.7,19.9 46.8,21.3 48.8,18.6 50.8,20.6 52.9,21.0 54.9,21.2 56.9,20.4 59.0,2.0 61.0,3.8 63.1,2.5 65.1,5.6 67.1,4.8 69.2,4.1 71.2,18.0 73.2,19.7 75.3,17.5 77.3,21.2 79.3,17.3 81.4,22.0 83.4,19.0 85.4,19.0 87.5,17.1 89.5,18.5 91.5,19.2 93.6,20.0 95.6,18.6 97.6,17.7 99.7,21.6 101.7,17.7 103.7,18.1 105.8,20.5 107.8,21.1 109.8,17.1 111.9,17.2 113.9,21.8 115.9,17.8 118.0,21.2 120.0,18.2" fill="none" stroke="#34d399" stroke-width="1.5" stroke-linejoin="round" stroke-linecap="round" vector-effect="non-scaling-stroke"></polyline></svg></div></div><div class="rounded-lg border border-border bg-surface p-4"><div class="flex items-center justify-between gap-2"><span class="text-xs font-medium uppercase tracking-wide text-muted">P99 latency</span><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-timer h-4 w-4 text-subtle" aria-hidden="true"><line x1="10" x2="14" y1="2" y2="2"></line><line x1="12" x2="15" y1="14" y2="11"></line><circle cx="12" cy="14" r="8"></circle></svg></div><div class="mt-2 text-2xl font-semibold tabular-nums text-fg">147ms</div><div class="mt-0.5 text-xs text-muted">http request duration</div><div class="mt-2"><svg viewBox="0 0 120 24" preserveAspectRatio="none" class="h-6 w-full" aria-hidden="true"><polygon points="0,24 0.0,17.9 2.0,18.2 4.1,18.9 6.1,17.3 8.1,18.5 10.2,17.9 12.2,15.9 14.2,19.7 16.3,18.1 18.3,16.8 20.3,19.2 22.4,18.1 24.4,17.8 26.4,18.7 28.5,19.3 30.5,16.8 32.5,16.0 34.6,18.4 36.6,16.5 38.6,19.2 40.7,19.8 42.7,16.9 44.7,17.9 46.8,15.9 48.8,18.4 50.8,19.2 52.9,16.8 54.9,18.9 56.9,19.4 59.0,3.2 61.0,4.2 63.1,2.8 65.1,2.0 67.1,2.0 69.2,2.5 71.2,17.2 73.2,16.5 75.3,18.5 77.3,17.4 79.3,20.3 81.4,16.4 83.4,16.9 85.4,18.6 87.5,18.0 89.5,20.6 91.5,17.8 93.6,17.8 95.6,20.3 97.6,20.0 99.7,17.7 101.7,19.2 103.7,17.7 105.8,19.5 107.8,17.8 109.8,20.6 111.9,19.7 113.9,19.5 115.9,20.0 118.0,21.8 120.0,22.0 120,24" fill="#8b5cf6" opacity="0.12" id=":r5:"></polygon><polyline points="0.0,17.9 2.0,18.2 4.1,18.9 6.1,17.3 8.1,18.5 10.2,17.9 12.2,15.9 14.2,19.7 16.3,18.1 18.3,16.8 20.3,19.2 22.4,18.1 24.4,17.8 26.4,18.7 28.5,19.3 30.5,16.8 32.5,16.0 34.6,18.4 36.6,16.5 38.6,19.2 40.7,19.8 42.7,16.9 44.7,17.9 46.8,15.9 48.8,18.4 50.8,19.2 52.9,16.8 54.9,18.9 56.9,19.4 59.0,3.2 61.0,4.2 63.1,2.8 65.1,2.0 67.1,2.0 69.2,2.5 71.2,17.2 73.2,16.5 75.3,18.5 77.3,17.4 79.3,20.3 81.4,16.4 83.4,16.9 85.4,18.6 87.5,18.0 89.5,20.6 91.5,17.8 93.6,17.8 95.6,20.3 97.6,20.0 99.7,17.7 101.7,19.2 103.7,17.7 105.8,19.5 107.8,17.8 109.8,20.6 111.9,19.7 113.9,19.5 115.9,20.0 118.0,21.8 120.0,22.0" fill="none" stroke="#8b5cf6" stroke-width="1.5" stroke-linejoin="round" stroke-linecap="round" vector-effect="non-scaling-stroke"></polyline></svg></div></div><div class="rounded-lg border border-border bg-surface p-4"><div class="flex items-center justify-between gap-2"><span class="text-xs font-medium uppercase tracking-wide text-muted">Active jobs</span><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-loader-circle h-4 w-4 text-subtle" aria-hidden="true"><path d="M21 12a9 9 0 1 1-6.219-8.56"></path></svg></div><div class="mt-2 text-2xl font-semibold tabular-nums text-fg">9</div><div class="mt-0.5 text-xs text-muted">processing right now</div><div class="mt-2"><svg viewBox="0 0 120 24" preserveAspectRatio="none" class="h-6 w-full" aria-hidden="true"><polygon points="0,24 0.0,8.7 17.1,12.0 34.3,12.0 51.4,15.3 68.6,22.0 85.7,15.3 102.9,2.0 120.0,2.0 120,24" fill="#8b5cf6" opacity="0.12" id=":r7:"></polygon><polyline points="0.0,8.7 17.1,12.0 34.3,12.0 51.4,15.3 68.6,22.0 85.7,15.3 102.9,2.0 120.0,2.0" fill="none" stroke="#8b5cf6" stroke-width="1.5" stroke-linejoin="round" stroke-linecap="round" vector-effect="non-scaling-stroke"></polyline></svg></div></div><div class="rounded-lg border border-border bg-surface p-4"><div class="flex items-center justify-between gap-2"><span class="text-xs font-medium uppercase tracking-wide text-muted">Queue depth</span><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-list-ordered h-4 w-4 text-subtle" aria-hidden="true"><path d="M10 12h11"></path><path d="M10 18h11"></path><path d="M10 6h11"></path><path d="M4 10h2"></path><path d="M4 6h1v4"></path><path d="M6 18H4c0-1 2-2 2-3s-1-1.5-2-1"></path></svg></div><div class="mt-2 text-2xl font-semibold tabular-nums text-fg">0</div><div class="mt-0.5 text-xs text-muted">queued + retrying</div><div class="mt-2"><svg viewBox="0 0 120 24" preserveAspectRatio="none" class="h-6 w-full" aria-hidden="true"><polygon points="0,24 0.0,22.0 17.1,15.3 34.3,8.7 51.4,2.0 68.6,2.0 85.7,15.3 102.9,15.3 120.0,22.0 120,24" fill="#fbbf24" opacity="0.12" id=":r9:"></polygon><polyline points="0.0,22.0 17.1,15.3 34.3,8.7 51.4,2.0 68.6,2.0 85.7,15.3 102.9,15.3 120.0,22.0" fill="none" stroke="#fbbf24" stroke-width="1.5" stroke-linejoin="round" stroke-linecap="round" vector-effect="non-scaling-stroke"></polyline></svg></div></div><div class="rounded-lg border border-border bg-surface p-4"><div class="flex items-center justify-between gap-2"><span class="text-xs font-medium uppercase tracking-wide text-muted">WS connections</span><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-wifi h-4 w-4 text-subtle" aria-hidden="true"><path d="M12 20h.01"></path><path d="M2 8.82a15 15 0 0 1 20 0"></path><path d="M5 12.859a10 10 0 0 1 14 0"></path><path d="M8.5 16.429a5 5 0 0 1 7 0"></path></svg></div><div class="mt-2 text-2xl font-semibold tabular-nums text-fg">62</div><div class="mt-0.5 text-xs text-muted">6 rooms · 45 users</div><div class="mt-2"><svg viewBox="0 0 120 24" preserveAspectRatio="none" class="h-6 w-full" aria-hidden="true"><polygon points="0,24 0.0,12.0 17.1,12.0 34.3,22.0 51.4,8.7 68.6,5.3 85.7,5.3 102.9,5.3 120.0,2.0 120,24" fill="#34d399" opacity="0.12" id=":rb:"></polygon><polyline points="0.0,12.0 17.1,12.0 34.3,22.0 51.4,8.7 68.6,5.3 85.7,5.3 102.9,5.3 120.0,2.0" fill="none" stroke="#34d399" stroke-width="1.5" stroke-linejoin="round" stroke-linecap="round" vector-effect="non-scaling-stroke"></polyline></svg></div></div></div><div class="rounded-lg border border-border bg-surface"><div class="flex items-start justify-between gap-4 border-b border-border px-4 py-3"><div class="min-w-0"><h2 class="text-sm font-semibold text-fg">Gateway throughput</h2><p class="mt-0.5 text-xs text-muted">Requests per second · last 5 minutes</p></div><div class="flex shrink-0 items-center gap-2"><span class="flex items-center gap-2 text-xs text-muted"><span class="flex items-center gap-1.5"><span class="h-2 w-2 rounded-full bg-accent"></span> req/s</span></span></div></div><div class="p-4"><div class="h-56 w-full"><div class="recharts-responsive-container" style="width: 100%; height: 100%; min-width: 0px;"><div class="recharts-wrapper" style="position: relative; cursor: default; width: 100%; height: 100%; max-height: 224px; max-width: 664px;"><svg class="recharts-surface" width="664" height="224" viewBox="0 0 664 224" style="width: 100%; height: 100%;"><title></title><desc></desc><defs><clipPath id="recharts2-clip"><rect x="48" y="8" height="186" width="608"></rect></clipPath></defs><g class="recharts-cartesian-grid"><g class="recharts-cartesian-grid-horizontal"><line stroke="#26262c" fill="none" x="48" y="8" width="608" height="186" x1="48" y1="194" x2="656" y2="194"></line><line stroke="#26262c" fill="none" x="48" y="8" width="608" height="186" x1="48" y1="147.5" x2="656" y2="147.5"></line><line stroke="#26262c" fill="none" x="48" y="8" width="608" height="186" x1="48" y1="101" x2="656" y2="101"></line><line stroke="#26262c" fill="none" x="48" y="8" width="608" height="186" x1="48" y1="54.5" x2="656" y2="54.5"></line><line stroke="#26262c" fill="none" x="48" y="8" width="608" height="186" x1="48" y1="8" x2="656" y2="8"></line></g></g><g class="recharts-layer recharts-cartesian-axis recharts-xAxis xAxis"><g class="recharts-cartesian-axis-ticks"><g class="recharts-layer recharts-cartesian-axis-tick"><text orientation="bottom" width="608" height="30" stroke="none" font-size="12" x="95.82022471910112" y="202" class="recharts-text recharts-cartesian-axis-tick-value" text-anchor="middle" fill="#71717a"><tspan x="95.82022471910112" dy="0.71em">19:02:38</tspan></text></g><g class="recharts-layer recharts-cartesian-axis-tick"><text orientation="bottom" width="608" height="30" stroke="none" font-size="12" x="205.12359550561797" y="202" class="recharts-text recharts-cartesian-axis-tick-value" text-anchor="middle" fill="#71717a"><tspan x="205.12359550561797" dy="0.71em">19:02:54</tspan></text></g><g class="recharts-layer recharts-cartesian-axis-tick"><text orientation="bottom" width="608" height="30" stroke="none" font-size="12" x="314.4269662921348" y="202" class="recharts-text recharts-cartesian-axis-tick-value" text-anchor="middle" fill="#71717a"><tspan x="314.4269662921348" dy="0.71em">19:03:10</tspan></text></g><g class="recharts-layer recharts-cartesian-axis-tick"><text orientation="bottom" width="608" height="30" stroke="none" font-size="12" x="423.7303370786517" y="202" class="recharts-text recharts-cartesian-axis-tick-value" text-anchor="middle" fill="#71717a"><tspan x="423.7303370786517" dy="0.71em">19:03:26</tspan></text></g><g class="recharts-layer recharts-cartesian-axis-tick"><text orientation="bottom" width="608" height="30" stroke="none" font-size="12" x="533.0337078651685" y="202" class="recharts-text recharts-cartesian-axis-tick-value" text-anchor="middle" fill="#71717a"><tspan x="533.0337078651685" dy="0.71em">19:03:42</tspan></text></g><g class="recharts-layer recharts-cartesian-axis-tick"><text orientation="bottom" width="608" height="30" stroke="none" font-size="12" x="641.9921875" y="202" class="recharts-text recharts-cartesian-axis-tick-value" text-anchor="middle" fill="#71717a"><tspan x="641.9921875" dy="0.71em">19:04:01</tspan></text></g></g></g><g class="recharts-layer recharts-cartesian-axis recharts-yAxis yAxis"><g class="recharts-cartesian-axis-ticks"><g class="recharts-layer recharts-cartesian-axis-tick"><text orientation="left" width="48" height="186" stroke="none" font-size="12" x="40" y="194" class="recharts-text recharts-cartesian-axis-tick-value" text-anchor="end" fill="#71717a"><tspan x="40" dy="0.355em">0</tspan></text></g><g class="recharts-layer recharts-cartesian-axis-tick"><text orientation="left" width="48" height="186" stroke="none" font-size="12" x="40" y="147.5" class="recharts-text recharts-cartesian-axis-tick-value" text-anchor="end" fill="#71717a"><tspan x="40" dy="0.355em">60</tspan></text></g><g class="recharts-layer recharts-cartesian-axis-tick"><text orientation="left" width="48" height="186" stroke="none" font-size="12" x="40" y="101" class="recharts-text recharts-cartesian-axis-tick-value" text-anchor="end" fill="#71717a"><tspan x="40" dy="0.355em">120</tspan></text></g><g class="recharts-layer recharts-cartesian-axis-tick"><text orientation="left" width="48" height="186" stroke="none" font-size="12" x="40" y="54.5" class="recharts-text recharts-cartesian-axis-tick-value" text-anchor="end" fill="#71717a"><tspan x="40" dy="0.355em">180</tspan></text></g><g class="recharts-layer recharts-cartesian-axis-tick"><text orientation="left" width="48" height="186" stroke="none" font-size="12" x="40" y="10" class="recharts-text recharts-cartesian-axis-tick-value" text-anchor="end" fill="#71717a"><tspan x="40" dy="0.355em">240</tspan></text></g></g></g><g class="recharts-layer recharts-area"><g class="recharts-layer"><path stroke-width="2" fill="#8b5cf6" fill-opacity="0.12" width="608" height="186" stroke="none" class="recharts-curve recharts-area-area" d="M48,69.279C50.277,68.878,52.554,68.476,54.831,68.476C57.109,68.476,59.386,74.824,61.663,74.824C63.94,74.824,66.217,67.088,68.494,67.087C70.772,67.085,73.049,67.084,75.326,67.084C77.603,67.084,79.88,70.342,82.157,71.413C84.434,72.485,86.712,73.516,88.989,73.516C91.266,73.516,93.543,68.658,95.82,68.131C98.097,67.604,100.375,67.341,102.652,67.341C104.929,67.341,107.206,69.395,109.483,69.395C111.76,69.395,114.037,64.286,116.315,64.286C118.592,64.286,120.869,66.849,123.146,68.092C125.423,69.335,127.7,71.742,129.978,71.742C132.255,71.742,134.532,69.102,136.809,68.264C139.086,67.425,141.363,66.709,143.64,66.709C145.918,66.709,148.195,70.64,150.472,70.64C152.749,70.64,155.026,63.004,157.303,63.004C159.581,63.004,161.858,64.551,164.135,64.551C166.412,64.551,168.689,63.987,170.966,63.987C173.243,63.987,175.521,65.205,177.798,65.205C180.075,65.205,182.352,59.519,184.629,59.519C186.906,59.519,189.184,61.711,191.461,62.704C193.738,63.697,196.015,65.476,198.292,65.476C200.569,65.476,202.846,59.013,205.124,59.013C207.401,59.013,209.678,61.89,211.955,61.89C214.232,61.89,216.509,61.15,218.787,61.15C221.064,61.15,223.341,62.421,225.618,63.238C227.895,64.056,230.172,66.055,232.449,66.055C234.727,66.055,237.004,65.899,239.281,65.587C241.558,65.274,243.835,58.427,246.112,58.427C248.39,58.427,250.667,58.54,252.944,58.766C255.221,58.992,257.498,63.339,259.775,64.877C262.052,66.415,264.33,67.996,266.607,67.996C268.884,67.996,271.161,66.643,273.438,65.201C275.715,63.76,277.993,59.347,280.27,59.347C282.547,59.347,284.824,65.641,287.101,65.641C289.378,65.641,291.655,61.766,293.933,61.766C296.21,61.766,298.487,68.095,300.764,68.095C303.041,68.095,305.318,57.908,307.596,57.908C309.873,57.908,312.15,64.589,314.427,64.589C316.704,64.589,318.981,63.174,321.258,62.43C323.536,61.686,325.813,60.758,328.09,60.126C330.367,59.493,332.644,58.633,334.921,58.633C337.199,58.633,339.476,65.395,341.753,65.395C344.03,65.395,346.307,65.37,348.584,65.37C350.861,65.37,353.139,66.621,355.416,66.621C357.693,66.621,359.97,64.85,362.247,64.85C364.524,64.85,366.801,69.315,369.079,69.315C371.356,69.315,373.633,66.042,375.91,64.97C378.187,63.897,380.464,62.881,382.742,62.881C385.019,62.881,387.296,66.556,389.573,66.556C391.85,66.556,394.127,62.936,396.404,62.936C398.682,62.936,400.959,65.179,403.236,65.858C405.513,66.537,407.79,67.01,410.067,67.01C412.345,67.01,414.622,61.937,416.899,61.937C419.176,61.937,421.453,72.06,423.73,72.06C426.007,72.06,428.285,65.173,430.562,64.328C432.839,63.483,435.116,63.06,437.393,63.06C439.67,63.06,441.948,63.525,444.225,63.525C446.502,63.525,448.779,12.306,451.056,12.306C453.333,12.306,455.61,13.049,457.888,14.061C460.165,15.072,462.442,18.375,464.719,18.375C466.996,18.375,469.273,12.541,471.551,12.541C473.828,12.541,476.105,16.417,478.382,17.377C480.659,18.337,482.936,17.857,485.213,18.817C487.491,19.778,489.768,68.77,492.045,71.452C494.322,74.135,496.599,74.587,498.876,75.476C501.154,76.365,503.431,76.81,505.708,76.81C507.985,76.81,510.262,73.978,512.539,73.978C514.816,73.978,517.094,74.553,519.371,74.553C521.648,74.553,523.925,71.293,526.202,71.293C528.479,71.293,530.757,77.557,533.034,77.557C535.311,77.557,537.588,77.311,539.865,76.82C542.142,76.329,544.419,73.627,546.697,73.627C548.974,73.627,551.251,78.031,553.528,78.078C555.805,78.124,558.082,78.148,560.36,78.148C562.637,78.148,564.914,76.99,567.191,76.99C569.468,76.99,571.745,77.37,574.022,77.37C576.3,77.37,578.577,73.171,580.854,73.171C583.131,73.171,585.408,78.893,587.685,78.893C589.963,78.893,592.24,76.806,594.517,76.806C596.794,76.806,599.071,83.131,601.348,83.131C603.625,83.131,605.903,75.944,608.18,75.944C610.457,75.944,612.734,82.366,615.011,83.003C617.288,83.639,619.566,83.958,621.843,83.958C624.12,83.958,626.397,80.868,628.674,80.868C630.951,80.868,633.228,81.352,635.506,81.352C637.783,81.352,640.06,80.735,642.337,80.735C644.614,80.735,646.891,89.169,649.169,89.666C651.446,90.163,653.723,90.288,656,90.412L656,194C653.723,194,651.446,194,649.169,194C646.891,194,644.614,194,642.337,194C640.06,194,637.783,194,635.506,194C633.228,194,630.951,194,628.674,194C626.397,194,624.12,194,621.843,194C619.566,194,617.288,194,615.011,194C612.734,194,610.457,194,608.18,194C605.903,194,603.625,194,601.348,194C599.071,194,596.794,194,594.517,194C592.24,194,589.963,194,587.685,194C585.408,194,583.131,194,580.854,194C578.577,194,576.3,194,574.022,194C571.745,194,569.468,194,567.191,194C564.914,194,562.637,194,560.36,194C558.082,194,555.805,194,553.528,194C551.251,194,548.974,194,546.697,194C544.419,194,542.142,194,539.865,194C537.588,194,535.311,194,533.034,194C530.757,194,528.479,194,526.202,194C523.925,194,521.648,194,519.371,194C517.094,194,514.816,194,512.539,194C510.262,194,507.985,194,505.708,194C503.431,194,501.154,194,498.876,194C496.599,194,494.322,194,492.045,194C489.768,194,487.491,194,485.213,194C482.936,194,480.659,194,478.382,194C476.105,194,473.828,194,471.551,194C469.273,194,466.996,194,464.719,194C462.442,194,460.165,194,457.888,194C455.61,194,453.333,194,451.056,194C448.779,194,446.502,194,444.225,194C441.948,194,439.67,194,437.393,194C435.116,194,432.839,194,430.562,194C428.285,194,426.007,194,423.73,194C421.453,194,419.176,194,416.899,194C414.622,194,412.345,194,410.067,194C407.79,194,405.513,194,403.236,194C400.959,194,398.682,194,396.404,194C394.127,194,391.85,194,389.573,194C387.296,194,385.019,194,382.742,194C380.464,194,378.187,194,375.91,194C373.633,194,371.356,194,369.079,194C366.801,194,364.524,194,362.247,194C359.97,194,357.693,194,355.416,194C353.139,194,350.861,194,348.584,194C346.307,194,344.03,194,341.753,194C339.476,194,337.199,194,334.921,194C332.644,194,330.367,194,328.09,194C325.813,194,323.536,194,321.258,194C318.981,194,316.704,194,314.427,194C312.15,194,309.873,194,307.596,194C305.318,194,303.041,194,300.764,194C298.487,194,296.21,194,293.933,194C291.655,194,289.378,194,287.101,194C284.824,194,282.547,194,280.27,194C277.993,194,275.715,194,273.438,194C271.161,194,268.884,194,266.607,194C264.33,194,262.052,194,259.775,194C257.498,194,255.221,194,252.944,194C250.667,194,248.39,194,246.112,194C243.835,194,241.558,194,239.281,194C237.004,194,234.727,194,232.449,194C230.172,194,227.895,194,225.618,194C223.341,194,221.064,194,218.787,194C216.509,194,214.232,194,211.955,194C209.678,194,207.401,194,205.124,194C202.846,194,200.569,194,198.292,194C196.015,194,193.738,194,191.461,194C189.184,194,186.906,194,184.629,194C182.352,194,180.075,194,177.798,194C175.521,194,173.243,194,170.966,194C168.689,194,166.412,194,164.135,194C161.858,194,159.581,194,157.303,194C155.026,194,152.749,194,150.472,194C148.195,194,145.918,194,143.64,194C141.363,194,139.086,194,136.809,194C134.532,194,132.255,194,129.978,194C127.7,194,125.423,194,123.146,194C120.869,194,118.592,194,116.315,194C114.037,194,111.76,194,109.483,194C107.206,194,104.929,194,102.652,194C100.375,194,98.097,194,95.82,194C93.543,194,91.266,194,88.989,194C86.712,194,84.434,194,82.157,194C79.88,194,77.603,194,75.326,194C73.049,194,70.772,194,68.494,194C66.217,194,63.94,194,61.663,194C59.386,194,57.109,194,54.831,194C52.554,194,50.277,194,48,194Z"></path><path stroke="#8b5cf6" stroke-width="2" fill="none" fill-opacity="0.12" width="608" height="186" class="recharts-curve recharts-area-curve" d="M48,69.279C50.277,68.878,52.554,68.476,54.831,68.476C57.109,68.476,59.386,74.824,61.663,74.824C63.94,74.824,66.217,67.088,68.494,67.087C70.772,67.085,73.049,67.084,75.326,67.084C77.603,67.084,79.88,70.342,82.157,71.413C84.434,72.485,86.712,73.516,88.989,73.516C91.266,73.516,93.543,68.658,95.82,68.131C98.097,67.604,100.375,67.341,102.652,67.341C104.929,67.341,107.206,69.395,109.483,69.395C111.76,69.395,114.037,64.286,116.315,64.286C118.592,64.286,120.869,66.849,123.146,68.092C125.423,69.335,127.7,71.742,129.978,71.742C132.255,71.742,134.532,69.102,136.809,68.264C139.086,67.425,141.363,66.709,143.64,66.709C145.918,66.709,148.195,70.64,150.472,70.64C152.749,70.64,155.026,63.004,157.303,63.004C159.581,63.004,161.858,64.551,164.135,64.551C166.412,64.551,168.689,63.987,170.966,63.987C173.243,63.987,175.521,65.205,177.798,65.205C180.075,65.205,182.352,59.519,184.629,59.519C186.906,59.519,189.184,61.711,191.461,62.704C193.738,63.697,196.015,65.476,198.292,65.476C200.569,65.476,202.846,59.013,205.124,59.013C207.401,59.013,209.678,61.89,211.955,61.89C214.232,61.89,216.509,61.15,218.787,61.15C221.064,61.15,223.341,62.421,225.618,63.238C227.895,64.056,230.172,66.055,232.449,66.055C234.727,66.055,237.004,65.899,239.281,65.587C241.558,65.274,243.835,58.427,246.112,58.427C248.39,58.427,250.667,58.54,252.944,58.766C255.221,58.992,257.498,63.339,259.775,64.877C262.052,66.415,264.33,67.996,266.607,67.996C268.884,67.996,271.161,66.643,273.438,65.201C275.715,63.76,277.993,59.347,280.27,59.347C282.547,59.347,284.824,65.641,287.101,65.641C289.378,65.641,291.655,61.766,293.933,61.766C296.21,61.766,298.487,68.095,300.764,68.095C303.041,68.095,305.318,57.908,307.596,57.908C309.873,57.908,312.15,64.589,314.427,64.589C316.704,64.589,318.981,63.174,321.258,62.43C323.536,61.686,325.813,60.758,328.09,60.126C330.367,59.493,332.644,58.633,334.921,58.633C337.199,58.633,339.476,65.395,341.753,65.395C344.03,65.395,346.307,65.37,348.584,65.37C350.861,65.37,353.139,66.621,355.416,66.621C357.693,66.621,359.97,64.85,362.247,64.85C364.524,64.85,366.801,69.315,369.079,69.315C371.356,69.315,373.633,66.042,375.91,64.97C378.187,63.897,380.464,62.881,382.742,62.881C385.019,62.881,387.296,66.556,389.573,66.556C391.85,66.556,394.127,62.936,396.404,62.936C398.682,62.936,400.959,65.179,403.236,65.858C405.513,66.537,407.79,67.01,410.067,67.01C412.345,67.01,414.622,61.937,416.899,61.937C419.176,61.937,421.453,72.06,423.73,72.06C426.007,72.06,428.285,65.173,430.562,64.328C432.839,63.483,435.116,63.06,437.393,63.06C439.67,63.06,441.948,63.525,444.225,63.525C446.502,63.525,448.779,12.306,451.056,12.306C453.333,12.306,455.61,13.049,457.888,14.061C460.165,15.072,462.442,18.375,464.719,18.375C466.996,18.375,469.273,12.541,471.551,12.541C473.828,12.541,476.105,16.417,478.382,17.377C480.659,18.337,482.936,17.857,485.213,18.817C487.491,19.778,489.768,68.77,492.045,71.452C494.322,74.135,496.599,74.587,498.876,75.476C501.154,76.365,503.431,76.81,505.708,76.81C507.985,76.81,510.262,73.978,512.539,73.978C514.816,73.978,517.094,74.553,519.371,74.553C521.648,74.553,523.925,71.293,526.202,71.293C528.479,71.293,530.757,77.557,533.034,77.557C535.311,77.557,537.588,77.311,539.865,76.82C542.142,76.329,544.419,73.627,546.697,73.627C548.974,73.627,551.251,78.031,553.528,78.078C555.805,78.124,558.082,78.148,560.36,78.148C562.637,78.148,564.914,76.99,567.191,76.99C569.468,76.99,571.745,77.37,574.022,77.37C576.3,77.37,578.577,73.171,580.854,73.171C583.131,73.171,585.408,78.893,587.685,78.893C589.963,78.893,592.24,76.806,594.517,76.806C596.794,76.806,599.071,83.131,601.348,83.131C603.625,83.131,605.903,75.944,608.18,75.944C610.457,75.944,612.734,82.366,615.011,83.003C617.288,83.639,619.566,83.958,621.843,83.958C624.12,83.958,626.397,80.868,628.674,80.868C630.951,80.868,633.228,81.352,635.506,81.352C637.783,81.352,640.06,80.735,642.337,80.735C644.614,80.735,646.891,89.169,649.169,89.666C651.446,90.163,653.723,90.288,656,90.412"></path></g></g></svg><div tabindex="-1" class="recharts-tooltip-wrapper" style="visibility: hidden; pointer-events: none; position: absolute; top: 0px; left: 0px;"></div></div></div></div></div></div><div class="grid grid-cols-1 gap-6 xl:grid-cols-2"><div class="rounded-lg border border-border bg-surface"><div class="flex items-start justify-between gap-4 border-b border-border px-4 py-3"><div class="min-w-0"><h2 class="text-sm font-semibold text-fg">Service health</h2><p class="mt-0.5 text-xs text-muted">Gateway, core services, broker and realtime</p></div></div><div class="p-4"><div class="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-3"><div class="flex flex-col gap-1 rounded-md border border-border bg-bg p-3"><div class="flex items-center gap-2"><span class="relative flex h-2 w-2 shrink-0"><span class="relative inline-flex h-2 w-2 rounded-full bg-success"></span></span><span class="truncate text-sm font-medium text-fg">API gateway</span></div><div class="flex items-baseline justify-between gap-2"><span class="text-xs capitalize text-muted">ok</span><span class="font-mono text-xs tabular-nums text-muted">7ms</span></div><span class="truncate text-xs text-subtle" title="simulated probe">simulated probe</span></div><div class="flex flex-col gap-1 rounded-md border border-border bg-bg p-3"><div class="flex items-center gap-2"><span class="relative flex h-2 w-2 shrink-0"><span class="relative inline-flex h-2 w-2 rounded-full bg-success"></span></span><span class="truncate text-sm font-medium text-fg">Auth service</span></div><div class="flex items-baseline justify-between gap-2"><span class="text-xs capitalize text-muted">ok</span><span class="font-mono text-xs tabular-nums text-muted">13ms</span></div><span class="truncate text-xs text-subtle" title="simulated probe">simulated probe</span></div><div class="flex flex-col gap-1 rounded-md border border-border bg-bg p-3"><div class="flex items-center gap-2"><span class="relative flex h-2 w-2 shrink-0"><span class="relative inline-flex h-2 w-2 rounded-full bg-success"></span></span><span class="truncate text-sm font-medium text-fg">User service</span></div><div class="flex items-baseline justify-between gap-2"><span class="text-xs capitalize text-muted">ok</span><span class="font-mono text-xs tabular-nums text-muted">11ms</span></div><span class="truncate text-xs text-subtle" title="simulated probe">simulated probe</span></div><div class="flex flex-col gap-1 rounded-md border border-border bg-bg p-3"><div class="flex items-center gap-2"><span class="relative flex h-2 w-2 shrink-0"><span class="relative inline-flex h-2 w-2 rounded-full bg-success"></span></span><span class="truncate text-sm font-medium text-fg">Job service</span></div><div class="flex items-baseline justify-between gap-2"><span class="text-xs capitalize text-muted">ok</span><span class="font-mono text-xs tabular-nums text-muted">14ms</span></div><span class="truncate text-xs text-subtle" title="simulated probe">simulated probe</span></div><div class="flex flex-col gap-1 rounded-md border border-border bg-bg p-3"><div class="flex items-center gap-2"><span class="relative flex h-2 w-2 shrink-0"><span class="relative inline-flex h-2 w-2 rounded-full bg-success"></span></span><span class="truncate text-sm font-medium text-fg">Message broker</span></div><div class="flex items-baseline justify-between gap-2"><span class="text-xs capitalize text-muted">ok</span><span class="font-mono text-xs tabular-nums text-muted">5ms</span></div><span class="truncate text-xs text-subtle" title="simulated probe">simulated probe</span></div><div class="flex flex-col gap-1 rounded-md border border-border bg-bg p-3"><div class="flex items-center gap-2"><span class="relative flex h-2 w-2 shrink-0"><span class="relative inline-flex h-2 w-2 rounded-full bg-success"></span></span><span class="truncate text-sm font-medium text-fg">Worker pool</span></div><div class="flex items-baseline justify-between gap-2"><span class="text-xs capitalize text-muted">ok</span><span class="font-mono text-xs tabular-nums text-muted">27ms</span></div><span class="truncate text-xs text-subtle" title="simulated probe">simulated probe</span></div><div class="flex flex-col gap-1 rounded-md border border-border bg-bg p-3"><div class="flex items-center gap-2"><span class="relative flex h-2 w-2 shrink-0"><span class="relative inline-flex h-2 w-2 rounded-full bg-success"></span></span><span class="truncate text-sm font-medium text-fg">WebSocket service</span></div><div class="flex items-baseline justify-between gap-2"><span class="text-xs capitalize text-muted">ok</span><span class="font-mono text-xs tabular-nums text-muted">6ms</span></div><span class="truncate text-xs text-subtle" title="simulated probe">simulated probe</span></div></div></div></div><div class="rounded-lg border border-border bg-surface flex flex-col"><div class="flex items-start justify-between gap-4 border-b border-border px-4 py-3"><div class="min-w-0"><h2 class="text-sm font-semibold text-fg">Job events</h2><p class="mt-0.5 text-xs text-muted">Live feed · websocket room jobs</p></div><div class="flex shrink-0 items-center gap-2"><a href="#/jobs" class="inline-flex h-6 items-center gap-1 rounded-md px-2 text-xs text-muted transition-colors duration-150 hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent">View all <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-arrow-right h-3 w-3" aria-hidden="true"><path d="M5 12h14"></path><path d="m12 5 7 7-7 7"></path></svg></a></div></div><div class="p-4 flex-1 p-0"><ul class="divide-y divide-border/60"><li><a href="#/jobs?job=job_01JMK69SZXB7F" class="flex items-center gap-3 px-4 py-2 transition-colors duration-150 hover:bg-surface-2/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent"><span class="w-20 shrink-0 font-mono text-xs tabular-nums text-subtle">19:04:01</span><span class="min-w-0 flex-1 truncate font-mono text-xs text-fg">job_01JMK69SZXB7F</span><span class="inline-flex h-5 shrink-0 items-center gap-1.5 rounded-sm px-2 text-xs font-medium bg-success/10 text-success"><span class="relative flex h-2 w-2 shrink-0"><span class="relative inline-flex h-2 w-2 rounded-full bg-success"></span></span>Success</span><span class="hidden w-24 truncate text-right font-mono text-xs text-muted sm:block">worker-0c52</span></a></li><li><a href="#/jobs?job=job_01J3J5J8F0BZF" class="flex items-center gap-3 px-4 py-2 transition-colors duration-150 hover:bg-surface-2/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent"><span class="w-20 shrink-0 font-mono text-xs tabular-nums text-subtle">19:04:01</span><span class="min-w-0 flex-1 truncate font-mono text-xs text-fg">job_01J3J5J8F0BZF</span><span class="inline-flex h-5 shrink-0 items-center gap-1.5 rounded-sm px-2 text-xs font-medium bg-success/10 text-success"><span class="relative flex h-2 w-2 shrink-0"><span class="relative inline-flex h-2 w-2 rounded-full bg-success"></span></span>Success</span><span class="hidden w-24 truncate text-right font-mono text-xs text-muted sm:block">worker-d109</span></a></li><li><a href="#/jobs?job=job_01J3JFV15MF6S" class="flex items-center gap-3 px-4 py-2 transition-colors duration-150 hover:bg-surface-2/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent"><span class="w-20 shrink-0 font-mono text-xs tabular-nums text-subtle">19:04:01</span><span class="min-w-0 flex-1 truncate font-mono text-xs text-fg">job_01J3JFV15MF6S</span><span class="inline-flex h-5 shrink-0 items-center gap-1.5 rounded-sm px-2 text-xs font-medium bg-accent/15 text-accent-fg"><span class="relative flex h-2 w-2 shrink-0"><span class="absolute inline-flex h-full w-full animate-ping rounded-full opacity-60 motion-reduce:animate-none bg-accent"></span><span class="relative inline-flex h-2 w-2 rounded-full bg-accent"></span></span>Processing</span><span class="hidden w-24 truncate text-right font-mono text-xs text-muted sm:block">worker-2dab</span></a></li><li><a href="#/jobs?job=job_01JKWQDXPYATJ" class="flex items-center gap-3 px-4 py-2 transition-colors duration-150 hover:bg-surface-2/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent"><span class="w-20 shrink-0 font-mono text-xs tabular-nums text-subtle">19:04:01</span><span class="min-w-0 flex-1 truncate font-mono text-xs text-fg">job_01JKWQDXPYATJ</span><span class="inline-flex h-5 shrink-0 items-center gap-1.5 rounded-sm px-2 text-xs font-medium bg-accent/15 text-accent-fg"><span class="relative flex h-2 w-2 shrink-0"><span class="absolute inline-flex h-full w-full animate-ping rounded-full opacity-60 motion-reduce:animate-none bg-accent"></span><span class="relative inline-flex h-2 w-2 rounded-full bg-accent"></span></span>Processing</span><span class="hidden w-24 truncate text-right font-mono text-xs text-muted sm:block">worker-2dab</span></a></li><li><a href="#/jobs?job=job_01J3JFV15MF6S" class="flex items-center gap-3 px-4 py-2 transition-colors duration-150 hover:bg-surface-2/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent"><span class="w-20 shrink-0 font-mono text-xs tabular-nums text-subtle">19:04:01</span><span class="min-w-0 flex-1 truncate font-mono text-xs text-fg">job_01J3JFV15MF6S</span><span class="inline-flex h-5 shrink-0 items-center gap-1.5 rounded-sm px-2 text-xs font-medium bg-info/10 text-info"><span class="relative flex h-2 w-2 shrink-0"><span class="relative inline-flex h-2 w-2 rounded-full bg-info"></span></span>Queued</span><span class="hidden w-24 truncate text-right font-mono text-xs text-muted sm:block">—</span></a></li><li><a href="#/jobs?job=job_01JKWQDXPYATJ" class="flex items-center gap-3 px-4 py-2 transition-colors duration-150 hover:bg-surface-2/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent"><span class="w-20 shrink-0 font-mono text-xs tabular-nums text-subtle">19:04:01</span><span class="min-w-0 flex-1 truncate font-mono text-xs text-fg">job_01JKWQDXPYATJ</span><span class="inline-flex h-5 shrink-0 items-center gap-1.5 rounded-sm px-2 text-xs font-medium bg-info/10 text-info"><span class="relative flex h-2 w-2 shrink-0"><span class="relative inline-flex h-2 w-2 rounded-full bg-info"></span></span>Queued</span><span class="hidden w-24 truncate text-right font-mono text-xs text-muted sm:block">—</span></a></li><li><a href="#/jobs?job=job_01J3JFV15MF6S" class="flex items-center gap-3 px-4 py-2 transition-colors duration-150 hover:bg-surface-2/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent"><span class="w-20 shrink-0 font-mono text-xs tabular-nums text-subtle">19:04:00</span><span class="min-w-0 flex-1 truncate font-mono text-xs text-fg">job_01J3JFV15MF6S</span><span class="inline-flex h-5 shrink-0 items-center gap-1.5 rounded-sm px-2 text-xs font-medium bg-warning/10 text-warning"><span class="relative flex h-2 w-2 shrink-0"><span class="absolute inline-flex h-full w-full animate-ping rounded-full opacity-60 motion-reduce:animate-none bg-warning"></span><span class="relative inline-flex h-2 w-2 rounded-full bg-warning"></span></span>Retrying</span><span class="hidden w-24 truncate text-right font-mono text-xs text-muted sm:block">worker-10e5</span></a></li><li><a href="#/jobs?job=job_01J3J5J8F0BZF" class="flex items-center gap-3 px-4 py-2 transition-colors duration-150 hover:bg-surface-2/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent"><span class="w-20 shrink-0 font-mono text-xs tabular-nums text-subtle">19:04:00</span><span class="min-w-0 flex-1 truncate font-mono text-xs text-fg">job_01J3J5J8F0BZF</span><span class="inline-flex h-5 shrink-0 items-center gap-1.5 rounded-sm px-2 text-xs font-medium bg-accent/15 text-accent-fg"><span class="relative flex h-2 w-2 shrink-0"><span class="absolute inline-flex h-full w-full animate-ping rounded-full opacity-60 motion-reduce:animate-none bg-accent"></span><span class="relative inline-flex h-2 w-2 rounded-full bg-accent"></span></span>Processing</span><span class="hidden w-24 truncate text-right font-mono text-xs text-muted sm:block">worker-d109</span></a></li><li><a href="#/jobs?job=job_01J0MJYG9EEC9" class="flex items-center gap-3 px-4 py-2 transition-colors duration-150 hover:bg-surface-2/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent"><span class="w-20 shrink-0 font-mono text-xs tabular-nums text-subtle">19:04:00</span><span class="min-w-0 flex-1 truncate font-mono text-xs text-fg">job_01J0MJYG9EEC9</span><span class="inline-flex h-5 shrink-0 items-center gap-1.5 rounded-sm px-2 text-xs font-medium bg-accent/15 text-accent-fg"><span class="relative flex h-2 w-2 shrink-0"><span class="absolute inline-flex h-full w-full animate-ping rounded-full opacity-60 motion-reduce:animate-none bg-accent"></span><span class="relative inline-flex h-2 w-2 rounded-full bg-accent"></span></span>Processing</span><span class="hidden w-24 truncate text-right font-mono text-xs text-muted sm:block">worker-d109</span></a></li><li><a href="#/jobs?job=job_01JTPF4VZY8NW" class="flex items-center gap-3 px-4 py-2 transition-colors duration-150 hover:bg-surface-2/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent"><span class="w-20 shrink-0 font-mono text-xs tabular-nums text-subtle">19:04:00</span><span class="min-w-0 flex-1 truncate font-mono text-xs text-fg">job_01JTPF4VZY8NW</span><span class="inline-flex h-5 shrink-0 items-center gap-1.5 rounded-sm px-2 text-xs font-medium bg-accent/15 text-accent-fg"><span class="relative flex h-2 w-2 shrink-0"><span class="absolute inline-flex h-full w-full animate-ping rounded-full opacity-60 motion-reduce:animate-none bg-accent"></span><span class="relative inline-flex h-2 w-2 rounded-full bg-accent"></span></span>Processing</span><span class="hidden w-24 truncate text-right font-mono text-xs text-muted sm:block">worker-d109</span></a></li><li><a href="#/jobs?job=job_01JER7VYZW0WP" class="flex items-center gap-3 px-4 py-2 transition-colors duration-150 hover:bg-surface-2/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent"><span class="w-20 shrink-0 font-mono text-xs tabular-nums text-subtle">19:04:00</span><span class="min-w-0 flex-1 truncate font-mono text-xs text-fg">job_01JER7VYZW0WP</span><span class="inline-flex h-5 shrink-0 items-center gap-1.5 rounded-sm px-2 text-xs font-medium bg-accent/15 text-accent-fg"><span class="relative flex h-2 w-2 shrink-0"><span class="absolute inline-flex h-full w-full animate-ping rounded-full opacity-60 motion-reduce:animate-none bg-accent"></span><span class="relative inline-flex h-2 w-2 rounded-full bg-accent"></span></span>Processing</span><span class="hidden w-24 truncate text-right font-mono text-xs text-muted sm:block">worker-d109</span></a></li><li><a href="#/jobs?job=job_01JBT4Q27NFDB" class="flex items-center gap-3 px-4 py-2 transition-colors duration-150 hover:bg-surface-2/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent"><span class="w-20 shrink-0 font-mono text-xs tabular-nums text-subtle">19:04:00</span><span class="min-w-0 flex-1 truncate font-mono text-xs text-fg">job_01JBT4Q27NFDB</span><span class="inline-flex h-5 shrink-0 items-center gap-1.5 rounded-sm px-2 text-xs font-medium bg-accent/15 text-accent-fg"><span class="relative flex h-2 w-2 shrink-0"><span class="absolute inline-flex h-full w-full animate-ping rounded-full opacity-60 motion-reduce:animate-none bg-accent"></span><span class="relative inline-flex h-2 w-2 rounded-full bg-accent"></span></span>Processing</span><span class="hidden w-24 truncate text-right font-mono text-xs text-muted sm:block">worker-d109</span></a></li></ul></div></div></div><div class="rounded-lg border border-border bg-surface"><div class="p-4 flex flex-wrap items-center gap-x-8 gap-y-2 py-3"><span class="flex items-center gap-2 text-sm text-muted"><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-layers h-4 w-4 text-subtle" aria-hidden="true"><path d="M12.83 2.18a2 2 0 0 0-1.66 0L2.6 6.08a1 1 0 0 0 0 1.83l8.58 3.91a2 2 0 0 0 1.66 0l8.58-3.9a1 1 0 0 0 0-1.83z"></path><path d="M2 12a1 1 0 0 0 .58.91l8.6 3.91a2 2 0 0 0 1.65 0l8.58-3.9A1 1 0 0 0 22 12"></path><path d="M2 17a1 1 0 0 0 .58.91l8.6 3.91a2 2 0 0 0 1.65 0l8.58-3.9A1 1 0 0 0 22 17"></path></svg>Topics: <span class="font-medium tabular-nums text-fg">5</span></span><span class="text-sm text-muted">Consumer lag: <span class="font-medium tabular-nums text-fg">9,395</span></span><span class="text-sm text-muted">Workers: <span class="font-medium tabular-nums text-fg">6</span></span><a href="#/broker" class="ml-auto inline-flex items-center gap-1 text-sm text-accent-fg transition-colors duration-150 hover:text-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent rounded-sm">Broker details <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-arrow-right h-4 w-4" aria-hidden="true"><path d="M5 12h14"></path><path d="m12 5 7 7-7 7"></path></svg></a></div></div></div></div></main></div></div><div aria-live="polite" class="pointer-events-none fixed bottom-4 right-4 z-50 flex w-80 flex-col gap-2"></div></div>
+    <script type="module" src="/src/main.tsx"></script>
+  
+
+<span id="recharts_measurement_span" aria-hidden="true" style="position: absolute; top: -20000px; left: 0px; padding: 0px; margin: 0px; border-width: medium; border-style: none; border-color: currentcolor; border-image: none; white-space: pre; font-size: 12px; letter-spacing: normal;">19:02:41</span></body></html>

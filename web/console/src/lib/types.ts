@@ -89,7 +89,7 @@ export interface CreateJobInput {
   idempotency_key: string;
 }
 
-export type Health = "ok" | "degraded" | "down";
+export type Health = "ok" | "degraded" | "down" | "unknown";
 
 export interface ServiceHealth {
   id: string;
@@ -140,14 +140,17 @@ export interface SeriesPoint {
 }
 
 export interface Totals {
-  rps: number;
-  err_rate: number; // 0..1
+  /** null when no metrics source has answered yet (never garbage numbers). */
+  rps: number | null;
+  err_rate: number | null; // 0..1
   p99_ms: number | null;
   active_jobs: number;
   queue_depth: number;
   ws_connections: number | null;
   ws_rooms: number | null;
   ws_users: number | null;
+  /** Live mode: true while showing last-good values after Prometheus stopped answering. */
+  metrics_stale?: boolean;
 }
 
 export interface Snapshot {
@@ -157,6 +160,8 @@ export interface Snapshot {
   workers: WorkerInfo[];
   topics: TopicInfo[];
   series: SeriesPoint[];
+  /** Live mode only: throughput chart series straight from Prometheus query_range. */
+  chart?: Array<{ t: number; rps: number }>;
 }
 
 export interface JobsQuery {
