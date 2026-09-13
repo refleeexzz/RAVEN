@@ -116,8 +116,16 @@ func (c *Coordinator) Close() error {
 	return c.offsets.Close()
 }
 
-// Join adds (or updates) a member and runs a rebalance. It returns the
-// new generation and this member's assignment.
+// Join adds (or updates) a member and returns the current generation
+// and this member's assignment.
+//
+// Rebalance invariant: the generation moves ONLY when the membership
+// or a subscription actually changes (new member, leave, timeout,
+// topic change). A re-join by an existing member with an unchanged
+// subscription is a no-op for the group: it just refreshes liveness
+// and hands back the current generation and assignment. Bumping the
+// generation here would invalidate every other member's heartbeat and
+// cascade into a rebalance storm (see docs/broker-internals.md).
 func (c *Coordinator) Join(groupID, memberID string, topics []string) (int32, []protocol.Assignment, error) {
 	if groupID == "" || memberID == "" || len(topics) == 0 {
 		return 0, nil, fmt.Errorf("group: join requires group, member_id and topics")
@@ -130,6 +138,10 @@ func (c *Coordinator) Join(groupID, memberID string, topics []string) (int32, []
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	g := c.getOrCreate(groupID)
+	if m, ok := g.members[memberID]; ok && sameTopics(m.topics, topics) {
+		m.lastSeen = time.Now()
+		return g.generation, g.assignments[memberID], nil
+	}
 	m, ok := g.members[memberID]
 	if !ok {
 		m = &member{id: memberID}
@@ -139,6 +151,24 @@ func (c *Coordinator) Join(groupID, memberID string, topics []string) (int32, []
 	m.lastSeen = time.Now()
 	c.rebalanceLocked(g)
 	return g.generation, g.assignments[memberID], nil
+}
+
+// sameTopics compares two subscriptions as sets (order is not a change).
+func sameTopics(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	seen := make(map[string]int, len(a))
+	for _, t := range a {
+		seen[t]++
+	}
+	for _, t := range b {
+		seen[t]--
+		if seen[t] < 0 {
+			return false
+		}
+	}
+	return true
 }
 
 // Leave removes a member and rebalances. Leaving a group you are not in

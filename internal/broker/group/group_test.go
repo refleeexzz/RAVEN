@@ -146,6 +146,74 @@ func TestJoinAssignsAndBumpsGeneration(t *testing.T) {
 	}
 }
 
+// generationOf reads the current generation (test helper, same package).
+func generationOf(c *Coordinator, groupID string) int32 {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	g, ok := c.groups[groupID]
+	if !ok {
+		return -1
+	}
+	return g.generation
+}
+
+// Regression test for the rebalance storm: a stale member re-joining
+// with an unchanged subscription must NOT bump the generation. If it
+// does, every other member's heartbeat goes stale, they re-join too,
+// each re-join bumps again — the storm.
+func TestRejoinUnchangedMemberKeepsGeneration(t *testing.T) {
+	t.Parallel()
+	c := newTestCoordinator(t, 30*time.Second)
+
+	gen1, _, err := c.Join("workers", "m1", []string{"jobs"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	gen2, _, err := c.Join("workers", "m2", []string{"jobs"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gen2 != gen1+1 {
+		t.Fatalf("new member should bump: gen1=%d gen2=%d", gen1, gen2)
+	}
+
+	// m1's heartbeat with the old generation fails...
+	if err := c.Heartbeat("workers", "m1", gen1); !errors.Is(err, ErrRebalance) {
+		t.Fatalf("stale heartbeat: %v", err)
+	}
+	// ...but the failure itself must not move the generation.
+	if got := generationOf(c, "workers"); got != gen2 {
+		t.Fatalf("stale heartbeat bumped generation: %d → %d", gen2, got)
+	}
+
+	// m1 re-joins with the same subscription: current generation back,
+	// no bump, and it gets its current assignment.
+	gen3, as, err := c.Join("workers", "m1", []string{"jobs"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gen3 != gen2 {
+		t.Fatalf("re-join with unchanged membership bumped generation: %d → %d", gen2, gen3)
+	}
+	if len(as) != 1 || len(as[0].Partitions) != 2 {
+		t.Fatalf("re-join should return current assignment (m1 owns 2 of 3): %+v", as)
+	}
+
+	// Topic order in the subscription is not a change.
+	if gen, _, err := c.Join("workers", "m1", []string{"jobs"}); err != nil || gen != gen2 {
+		t.Fatalf("idempotent re-join: gen=%d err=%v", gen, err)
+	}
+
+	// A changed subscription IS a membership change: bump once.
+	gen4, _, err := c.Join("workers", "m1", []string{"jobs", "jobs.retry"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gen4 != gen2+1 {
+		t.Fatalf("subscription change should bump exactly once: %d → %d", gen2, gen4)
+	}
+}
+
 func TestRebalanceOnMemberTimeout(t *testing.T) {
 	t.Parallel()
 	c := newTestCoordinator(t, 60*time.Millisecond)

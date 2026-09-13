@@ -193,3 +193,44 @@ at scrape time), `raven_broker_active_groups`.
 - `/topics` + `raven_broker_messages_pending` answer "is my consumer stuck?"
   in one look: lag growing means the consumer is behind or dead.
 - Corrupt-tail truncations are logged as WARN with the byte range dropped.
+
+## The rebalance storm bug (found in production-like k8s)
+
+What we saw: 7 worker pods in group `workers` on a 12-partition topic, and the
+group generation would not stop climbing. It hit 453,427 and kept going, about
++3 per second **per member**. Every pod logged "joined group ... generation N,
+N+1, N+2..." several times a second, fetches died with "context canceled"
+mid-batch, nothing was committed, and the queue stopped draining. Scaling down
+to one pod made it mostly stable, but the generation still crept up ~1/second.
+A healthy group should sit on the same generation forever.
+
+Root cause: `Coordinator.Join` bumped the generation on **every** join, even
+when the exact same member re-joined with the exact same topics. That made the
+system feed on itself. One member has a stale heartbeat (normal — happens right
+after any legit rebalance). The broker correctly rejects only that member's
+heartbeat with `REBALANCE`. The member re-joins — and the join bumps the
+generation, which makes **every other member's** heartbeat stale. They all
+re-join, each re-join bumps again, and the loop never stops. Two members are
+enough to ping-pong forever. The assignor was deterministic, member identity
+was stable, the reaper timing was fine — the bug was purely "re-join counts as
+a membership change".
+
+The fix: one rule now lives in `Join` — **the generation only moves when the
+membership or a subscription actually changes** (new member, leave, session
+timeout, different topics). Re-joining with an unchanged subscription just
+refreshes liveness and returns the current generation and assignment. Stale
+FETCH/COMMIT/HEARTBEAT still fail with `REBALANCE`, so the safety contract is
+untouched; the difference is that recovering from it no longer disturbs anyone
+else. The single-member creep is gone too, by construction: with a stable
+member set there is simply nothing left that can bump the generation.
+
+Regression tests: `TestRejoinUnchangedMemberKeepsGeneration` (coordinator unit
+test) and `TestE2ENoRebalanceStorm` (5 consumers, 12 partitions, asserts the
+generation is constant for 3s, then one member leaves → exactly one bump →
+stable again). Before the fix the e2e test saw the generation jump from 127 to
+1059 in under 100ms — roughly 9,000 rebalances a second, in-process.
+
+Lesson: idempotency is not only for APIs your users call. Every internal
+recovery path — and re-join is the recovery path — has to be a no-op when
+nothing actually changed, or your error handling becomes your worst load
+generator.

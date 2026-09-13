@@ -332,4 +332,95 @@ func TestE2ERebalanceMovesPartitions(t *testing.T) {
 	}
 }
 
+// TestE2ENoRebalanceStorm reproduces the production rebalance storm:
+// 5 consumers in one group on a 12-partition topic. Once everyone has
+// joined, the group generation must stay constant (polled every 100ms
+// for 3s). Then one member leaves: the generation bumps exactly once
+// and stability resumes. Before the fix, Join bumped the generation on
+// every re-join, so one stale heartbeat set off an endless cascade of
+// re-joins and the generation climbed several times per second.
+func TestE2ENoRebalanceStorm(t *testing.T) {
+	t.Parallel()
+	b, cancel, brokerDone := startBroker(t, nil)
+	defer func() {
+		cancel()
+		<-brokerDone
+	}()
+	ctx := context.Background()
+	admin := client.NewAdmin(addrOf(b))
+	defer admin.Close()
+	if _, err := admin.CreateTopic(ctx, "jobs", 12); err != nil {
+		t.Fatal(err)
+	}
+
+	const numConsumers = 5
+	stops := make([]context.CancelFunc, 0, numConsumers)
+	dones := make([]chan error, 0, numConsumers)
+	for i := 0; i < numConsumers; i++ {
+		c := client.NewConsumer(addrOf(b), "workers", []string{"jobs"},
+			func(_ context.Context, _ client.Message) error { return nil },
+			client.WithConsumerLogger(quietLogger()),
+			client.WithMemberID(fmt.Sprintf("member-%d", i)),
+			client.WithHeartbeatEvery(200*time.Millisecond),
+			client.WithPollInterval(20*time.Millisecond),
+		)
+		ctx2, stop := context.WithCancel(ctx)
+		done := make(chan error, 1)
+		go func() { done <- c.Run(ctx2) }()
+		stops = append(stops, stop)
+		dones = append(dones, done)
+	}
+
+	generation := func() (int32, int) {
+		for _, g := range b.Status().Groups {
+			if g.ID == "workers" {
+				return g.Generation, g.Members
+			}
+		}
+		return 0, 0
+	}
+	// assertStable fails if the generation moves within d.
+	assertStable := func(from int32, d time.Duration) {
+		t.Helper()
+		deadline := time.Now().Add(d)
+		for time.Now().Before(deadline) {
+			if gen, _ := generation(); gen != from {
+				t.Fatalf("rebalance storm: generation moved %d → %d during steady state", from, gen)
+			}
+			time.Sleep(100 * time.Millisecond)
+		}
+	}
+
+	waitFor(t, "all 5 members joined", 15*time.Second, func() bool {
+		_, n := generation()
+		return n == numConsumers
+	})
+	gen0, _ := generation()
+	assertStable(gen0, 3*time.Second)
+
+	// One member leaves: exactly one bump, then the group settles again.
+	stops[numConsumers-1]()
+	if err := <-dones[numConsumers-1]; err != nil {
+		t.Fatalf("consumer %d: %v", numConsumers-1, err)
+	}
+	waitFor(t, "membership drops to 4", 10*time.Second, func() bool {
+		_, n := generation()
+		return n == numConsumers-1
+	})
+	gen1, _ := generation()
+	if gen1 != gen0+1 {
+		t.Fatalf("one leave should bump the generation exactly once: %d → %d", gen0, gen1)
+	}
+	assertStable(gen1, 2*time.Second)
+
+	for i := 0; i < numConsumers-1; i++ {
+		stops[i]()
+	}
+	for i := 0; i < numConsumers-1; i++ {
+		if err := <-dones[i]; err != nil {
+			t.Fatalf("consumer %d: %v", i, err)
+		}
+	}
+}
+
 func addrOf(b *broker.Broker) string { return b.Addr() }
