@@ -494,6 +494,50 @@ func (x *CancelJobRequest) GetId() string {
 	return ""
 }
 
+type RequeueJobRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Id            string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *RequeueJobRequest) Reset() {
+	*x = RequeueJobRequest{}
+	mi := &file_jobs_jobs_proto_msgTypes[6]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RequeueJobRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RequeueJobRequest) ProtoMessage() {}
+
+func (x *RequeueJobRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_jobs_jobs_proto_msgTypes[6]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RequeueJobRequest.ProtoReflect.Descriptor instead.
+func (*RequeueJobRequest) Descriptor() ([]byte, []int) {
+	return file_jobs_jobs_proto_rawDescGZIP(), []int{6}
+}
+
+func (x *RequeueJobRequest) GetId() string {
+	if x != nil {
+		return x.Id
+	}
+	return ""
+}
+
 var File_jobs_jobs_proto protoreflect.FileDescriptor
 
 const file_jobs_jobs_proto_rawDesc = "" +
@@ -533,6 +577,8 @@ const file_jobs_jobs_proto_rawDesc = "" +
 	"\x04jobs\x18\x01 \x03(\v2\x12.raven.jobs.v1.JobR\x04jobs\x121\n" +
 	"\x04page\x18\x02 \x01(\v2\x1d.raven.common.v1.PageResponseR\x04page\"\"\n" +
 	"\x10CancelJobRequest\x12\x0e\n" +
+	"\x02id\x18\x01 \x01(\tR\x02id\"#\n" +
+	"\x11RequeueJobRequest\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id*\xd0\x01\n" +
 	"\tJobStatus\x12\x1a\n" +
 	"\x16JOB_STATUS_UNSPECIFIED\x10\x00\x12\x15\n" +
@@ -542,13 +588,15 @@ const file_jobs_jobs_proto_rawDesc = "" +
 	"\x11JOB_STATUS_FAILED\x10\x04\x12\x17\n" +
 	"\x13JOB_STATUS_RETRYING\x10\x05\x12\x18\n" +
 	"\x14JOB_STATUS_CANCELLED\x10\x06\x12\x13\n" +
-	"\x0fJOB_STATUS_DEAD\x10\a2\x99\x02\n" +
+	"\x0fJOB_STATUS_DEAD\x10\a2\xdd\x02\n" +
 	"\n" +
 	"JobService\x12@\n" +
 	"\tCreateJob\x12\x1f.raven.jobs.v1.CreateJobRequest\x1a\x12.raven.jobs.v1.Job\x12:\n" +
 	"\x06GetJob\x12\x1c.raven.jobs.v1.GetJobRequest\x1a\x12.raven.jobs.v1.Job\x12K\n" +
 	"\bListJobs\x12\x1e.raven.jobs.v1.ListJobsRequest\x1a\x1f.raven.jobs.v1.ListJobsResponse\x12@\n" +
-	"\tCancelJob\x12\x1f.raven.jobs.v1.CancelJobRequest\x1a\x12.raven.jobs.v1.JobB-Z+github.com/raven/platform/internal/gen/jobsb\x06proto3"
+	"\tCancelJob\x12\x1f.raven.jobs.v1.CancelJobRequest\x1a\x12.raven.jobs.v1.Job\x12B\n" +
+	"\n" +
+	"RequeueJob\x12 .raven.jobs.v1.RequeueJobRequest\x1a\x12.raven.jobs.v1.JobB-Z+github.com/raven/platform/internal/gen/jobsb\x06proto3"
 
 var (
 	file_jobs_jobs_proto_rawDescOnce sync.Once
@@ -563,7 +611,7 @@ func file_jobs_jobs_proto_rawDescGZIP() []byte {
 }
 
 var file_jobs_jobs_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
-var file_jobs_jobs_proto_msgTypes = make([]protoimpl.MessageInfo, 6)
+var file_jobs_jobs_proto_msgTypes = make([]protoimpl.MessageInfo, 7)
 var file_jobs_jobs_proto_goTypes = []any{
 	(JobStatus)(0),              // 0: raven.jobs.v1.JobStatus
 	(*Job)(nil),                 // 1: raven.jobs.v1.Job
@@ -572,28 +620,31 @@ var file_jobs_jobs_proto_goTypes = []any{
 	(*ListJobsRequest)(nil),     // 4: raven.jobs.v1.ListJobsRequest
 	(*ListJobsResponse)(nil),    // 5: raven.jobs.v1.ListJobsResponse
 	(*CancelJobRequest)(nil),    // 6: raven.jobs.v1.CancelJobRequest
-	(*common.PageRequest)(nil),  // 7: raven.common.v1.PageRequest
-	(*common.PageResponse)(nil), // 8: raven.common.v1.PageResponse
+	(*RequeueJobRequest)(nil),   // 7: raven.jobs.v1.RequeueJobRequest
+	(*common.PageRequest)(nil),  // 8: raven.common.v1.PageRequest
+	(*common.PageResponse)(nil), // 9: raven.common.v1.PageResponse
 }
 var file_jobs_jobs_proto_depIdxs = []int32{
-	0, // 0: raven.jobs.v1.Job.status:type_name -> raven.jobs.v1.JobStatus
-	7, // 1: raven.jobs.v1.ListJobsRequest.page:type_name -> raven.common.v1.PageRequest
-	0, // 2: raven.jobs.v1.ListJobsRequest.status_filter:type_name -> raven.jobs.v1.JobStatus
-	1, // 3: raven.jobs.v1.ListJobsResponse.jobs:type_name -> raven.jobs.v1.Job
-	8, // 4: raven.jobs.v1.ListJobsResponse.page:type_name -> raven.common.v1.PageResponse
-	2, // 5: raven.jobs.v1.JobService.CreateJob:input_type -> raven.jobs.v1.CreateJobRequest
-	3, // 6: raven.jobs.v1.JobService.GetJob:input_type -> raven.jobs.v1.GetJobRequest
-	4, // 7: raven.jobs.v1.JobService.ListJobs:input_type -> raven.jobs.v1.ListJobsRequest
-	6, // 8: raven.jobs.v1.JobService.CancelJob:input_type -> raven.jobs.v1.CancelJobRequest
-	1, // 9: raven.jobs.v1.JobService.CreateJob:output_type -> raven.jobs.v1.Job
-	1, // 10: raven.jobs.v1.JobService.GetJob:output_type -> raven.jobs.v1.Job
-	5, // 11: raven.jobs.v1.JobService.ListJobs:output_type -> raven.jobs.v1.ListJobsResponse
-	1, // 12: raven.jobs.v1.JobService.CancelJob:output_type -> raven.jobs.v1.Job
-	9, // [9:13] is the sub-list for method output_type
-	5, // [5:9] is the sub-list for method input_type
-	5, // [5:5] is the sub-list for extension type_name
-	5, // [5:5] is the sub-list for extension extendee
-	0, // [0:5] is the sub-list for field type_name
+	0,  // 0: raven.jobs.v1.Job.status:type_name -> raven.jobs.v1.JobStatus
+	8,  // 1: raven.jobs.v1.ListJobsRequest.page:type_name -> raven.common.v1.PageRequest
+	0,  // 2: raven.jobs.v1.ListJobsRequest.status_filter:type_name -> raven.jobs.v1.JobStatus
+	1,  // 3: raven.jobs.v1.ListJobsResponse.jobs:type_name -> raven.jobs.v1.Job
+	9,  // 4: raven.jobs.v1.ListJobsResponse.page:type_name -> raven.common.v1.PageResponse
+	2,  // 5: raven.jobs.v1.JobService.CreateJob:input_type -> raven.jobs.v1.CreateJobRequest
+	3,  // 6: raven.jobs.v1.JobService.GetJob:input_type -> raven.jobs.v1.GetJobRequest
+	4,  // 7: raven.jobs.v1.JobService.ListJobs:input_type -> raven.jobs.v1.ListJobsRequest
+	6,  // 8: raven.jobs.v1.JobService.CancelJob:input_type -> raven.jobs.v1.CancelJobRequest
+	7,  // 9: raven.jobs.v1.JobService.RequeueJob:input_type -> raven.jobs.v1.RequeueJobRequest
+	1,  // 10: raven.jobs.v1.JobService.CreateJob:output_type -> raven.jobs.v1.Job
+	1,  // 11: raven.jobs.v1.JobService.GetJob:output_type -> raven.jobs.v1.Job
+	5,  // 12: raven.jobs.v1.JobService.ListJobs:output_type -> raven.jobs.v1.ListJobsResponse
+	1,  // 13: raven.jobs.v1.JobService.CancelJob:output_type -> raven.jobs.v1.Job
+	1,  // 14: raven.jobs.v1.JobService.RequeueJob:output_type -> raven.jobs.v1.Job
+	10, // [10:15] is the sub-list for method output_type
+	5,  // [5:10] is the sub-list for method input_type
+	5,  // [5:5] is the sub-list for extension type_name
+	5,  // [5:5] is the sub-list for extension extendee
+	0,  // [0:5] is the sub-list for field type_name
 }
 
 func init() { file_jobs_jobs_proto_init() }
@@ -607,7 +658,7 @@ func file_jobs_jobs_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_jobs_jobs_proto_rawDesc), len(file_jobs_jobs_proto_rawDesc)),
 			NumEnums:      1,
-			NumMessages:   6,
+			NumMessages:   7,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

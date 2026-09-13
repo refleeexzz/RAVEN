@@ -65,9 +65,19 @@ POST /api/jobs            (auth: jobs:create)  + Idempotency-Key header
 GET  /api/jobs            (auth: jobs:read)
 GET  /api/jobs/{id}       (auth: jobs:read)
 POST /api/jobs/{id}/cancel (auth: jobs:cancel)
+POST /api/jobs/{id}/requeue (auth: jobs:create) — DLQ requeue, DEAD jobs only
+GET  /api/workers         (auth: jobs:read) — live worker registry from Redis
 GET  /ws                  (websocket upgrade, auth via ?token=)
 GET  /health /ready /metrics
 ```
+
+## Worker registry (Redis)
+
+Workers register themselves for discovery and the console UI:
+
+- Key `worker:<id>` (hash): `id`, `started_at`, `last_heartbeat`,
+  `jobs_processed`, `in_flight`. TTL 15 s, refreshed every 5 s.
+- The gateway reads `SCAN worker:*` to answer `GET /api/workers`.
 
 ## Job model (jobs service ↔ worker ↔ broker)
 

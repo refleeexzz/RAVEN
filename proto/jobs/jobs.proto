@@ -13,6 +13,9 @@ service JobService {
   rpc GetJob(GetJobRequest) returns (Job);
   rpc ListJobs(ListJobsRequest) returns (ListJobsResponse);
   rpc CancelJob(CancelJobRequest) returns (Job);
+  // RequeueJob moves a DEAD job back to QUEUED so it can be retried
+  // from the dead-letter queue. Only DEAD jobs can be requeued.
+  rpc RequeueJob(RequeueJobRequest) returns (Job);
 }
 
 enum JobStatus {
@@ -65,5 +68,9 @@ message ListJobsResponse {
 }
 
 message CancelJobRequest {
+  string id = 1;
+}
+
+message RequeueJobRequest {
   string id = 1;
 }
