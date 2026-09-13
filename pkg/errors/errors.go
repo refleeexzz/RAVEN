@@ -14,14 +14,14 @@ import (
 type Kind int
 
 const (
-	KindUnknown       Kind = iota // 500
-	KindInvalid                   // 400 — bad input, failed validation
-	KindUnauthorized              // 401 — missing or bad credentials
-	KindForbidden                 // 403 — authenticated but not allowed
-	KindNotFound                  // 404
-	KindConflict                  // 409 — duplicate, version mismatch
-	KindRateLimited               // 429
-	KindUnavailable               // 503 — dependency down, circuit open
+	KindUnknown      Kind = iota // 500
+	KindInvalid                  // 400 — bad input, failed validation
+	KindUnauthorized             // 401 — missing or bad credentials
+	KindForbidden                // 403 — authenticated but not allowed
+	KindNotFound                 // 404
+	KindConflict                 // 409 — duplicate, version mismatch
+	KindRateLimited              // 429
+	KindUnavailable              // 503 — dependency down, circuit open
 )
 
 // AppError is the single error type that travels across layers.

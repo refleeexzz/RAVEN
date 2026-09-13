@@ -12,6 +12,7 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 
 	"go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc"
@@ -87,6 +88,13 @@ func breakerFailure(code codes.Code) bool {
 // idempotent RPCs on Unavailable and routing everything through the circuit
 // breaker. rpc is the short method name ("GetUser") used in metrics.
 func (u *upstream) call(ctx context.Context, rpc string, idempotent bool, fn func(ctx context.Context) error) error {
+	// Forward the authenticated identity to upstreams. The jobs service
+	// reads x-user-id to set the job owner (used for owner-targeted
+	// websocket notifications); other services simply ignore it.
+	if id, ok := IdentityFrom(ctx); ok && id.UserID != "" {
+		ctx = metadata.AppendToOutgoingContext(ctx, "x-user-id", id.UserID)
+	}
+
 	for attempt := 0; ; attempt++ {
 		if err := u.breaker.before(); err != nil {
 			return err

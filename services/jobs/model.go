@@ -214,19 +214,19 @@ func (j *Job) toProto() *genjobs.Job {
 // ---------------------------------------------------------------------------
 
 type jobMessage struct {
-	ID          string     `json:"id"`
-	Type        string     `json:"type"`
+	ID          string          `json:"id"`
+	Type        string          `json:"type"`
 	Payload     json.RawMessage `json:"payload"`
-	Status      Status     `json:"status"`
-	Priority    int        `json:"priority"`
-	Attempts    int        `json:"attempts"`
-	MaxAttempts int        `json:"max_attempts"`
-	OwnerID     string     `json:"owner_id,omitempty"`
-	CreatedAt   time.Time  `json:"created_at"`
-	StartedAt   *time.Time `json:"started_at,omitempty"`
-	FinishedAt  *time.Time `json:"finished_at,omitempty"`
-	Error       string     `json:"error,omitempty"`
-	WorkerID    string     `json:"worker_id,omitempty"`
+	Status      Status          `json:"status"`
+	Priority    int             `json:"priority"`
+	Attempts    int             `json:"attempts"`
+	MaxAttempts int             `json:"max_attempts"`
+	OwnerID     string          `json:"owner_id,omitempty"`
+	CreatedAt   time.Time       `json:"created_at"`
+	StartedAt   *time.Time      `json:"started_at,omitempty"`
+	FinishedAt  *time.Time      `json:"finished_at,omitempty"`
+	Error       string          `json:"error,omitempty"`
+	WorkerID    string          `json:"worker_id,omitempty"`
 }
 
 // message renders the job as the broker payload.

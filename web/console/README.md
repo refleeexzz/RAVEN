@@ -87,9 +87,9 @@ command palette.
 
 ## TODO
 
-- Live mode: worker registry is derived from job events unless the gateway
-  exposes `GET /api/workers`.
-- DLQ requeue in live mode expects `POST /api/jobs/{id}/requeue`, which is not
-  in the spec yet — the UI shows a clear error toast if the gateway 404s.
+- Live mode: the worker registry comes from `GET /api/workers` (gateway reads
+  the Redis `worker:*` hashes). Job events over the socket fill in the gaps
+  between polls.
+- DLQ requeue in live mode uses `POST /api/jobs/{id}/requeue` (DEAD jobs only).
 - Overview chart in live mode needs the gateway to expose `/metrics`; without
   it the chart shows a designed empty state (everything else still works).

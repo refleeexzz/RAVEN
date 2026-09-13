@@ -17,10 +17,10 @@ import (
 // Registry bundles the Prometheus registry with the standard HTTP
 // instrumenter.
 type Registry struct {
-	reg       *prometheus.Registry
-	requests  *prometheus.CounterVec
-	duration  *prometheus.HistogramVec
-	inFlight  prometheus.Gauge
+	reg      *prometheus.Registry
+	requests *prometheus.CounterVec
+	duration *prometheus.HistogramVec
+	inFlight prometheus.Gauge
 }
 
 // New creates a registry pre-loaded with Go runtime metrics and the

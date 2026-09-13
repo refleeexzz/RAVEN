@@ -106,8 +106,8 @@ func TestLegalTransitions(t *testing.T) {
 	}
 
 	illegal := []transition{
-		{StatusQueued, StatusSuccess},   // must run first
-		{StatusQueued, StatusDead},      // must attempt first
+		{StatusQueued, StatusSuccess},    // must run first
+		{StatusQueued, StatusDead},       // must attempt first
 		{StatusProcessing, StatusQueued}, // no direct requeue while running
 		{StatusSuccess, StatusQueued},
 		{StatusCancelled, StatusQueued},
