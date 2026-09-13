@@ -1,0 +1,83 @@
+syntax = "proto3";
+
+package raven.auth.v1;
+
+option go_package = "github.com/raven/platform/internal/gen/auth";
+
+// AuthService owns identity: registration, login, tokens and RBAC
+// checks. The gateway calls ValidateToken on every protected request.
+service AuthService {
+  rpc Register(RegisterRequest) returns (RegisterResponse);
+  rpc Login(LoginRequest) returns (TokenPair);
+  rpc Refresh(RefreshRequest) returns (TokenPair);
+  rpc Logout(LogoutRequest) returns (LogoutResponse);
+  rpc ValidateToken(ValidateTokenRequest) returns (ValidateTokenResponse);
+  rpc RevokeToken(RevokeTokenRequest) returns (RevokeTokenResponse);
+  rpc CheckPermission(CheckPermissionRequest) returns (CheckPermissionResponse);
+}
+
+message RegisterRequest {
+  string email = 1;
+  string password = 2;
+  string display_name = 3;
+}
+
+message RegisterResponse {
+  string user_id = 1;
+  string email = 2;
+}
+
+message LoginRequest {
+  string email = 1;
+  string password = 2;
+}
+
+// TokenPair carries the short-lived access token and the long-lived
+// refresh token (rotated on every refresh).
+message TokenPair {
+  string access_token = 1;
+  string refresh_token = 2;
+  int64 access_expires_at = 3;  // unix seconds
+  int64 refresh_expires_at = 4; // unix seconds
+}
+
+message RefreshRequest {
+  string refresh_token = 1;
+}
+
+message LogoutRequest {
+  string refresh_token = 1;
+}
+
+message LogoutResponse {
+  bool ok = 1;
+}
+
+message ValidateTokenRequest {
+  string access_token = 1;
+}
+
+message ValidateTokenResponse {
+  bool valid = 1;
+  string user_id = 2;
+  string email = 3;
+  repeated string roles = 4;
+  repeated string permissions = 5;
+}
+
+message RevokeTokenRequest {
+  string access_token = 1;
+}
+
+message RevokeTokenResponse {
+  bool ok = 1;
+}
+
+message CheckPermissionRequest {
+  string user_id = 1;
+  string permission = 2; // e.g. "jobs:create"
+}
+
+message CheckPermissionResponse {
+  bool allowed = 1;
+}

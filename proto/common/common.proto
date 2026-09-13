@@ -1,0 +1,17 @@
+syntax = "proto3";
+
+package raven.common.v1;
+
+option go_package = "github.com/raven/platform/internal/gen/common";
+
+// PageRequest is the standard cursor-free pagination input.
+message PageRequest {
+  int32 page = 1;      // 1-based
+  int32 page_size = 2; // max 100
+}
+
+message PageResponse {
+  int32 page = 1;
+  int32 page_size = 2;
+  int64 total = 3;
+}
