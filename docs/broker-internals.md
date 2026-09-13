@@ -234,3 +234,87 @@ Lesson: idempotency is not only for APIs your users call. Every internal
 recovery path — and re-join is the recovery path — has to be a no-op when
 nothing actually changed, or your error handling becomes your worst load
 generator.
+
+## Hardening (P0 sweep)
+
+This section is the "what happens when the network and the disk are out to
+get us" chapter. Everything here has a test that breaks if the protection
+stops working.
+
+### TCP / protocol
+
+- **Connection cap** (`BROKER_MAX_CONNECTIONS`, default 1024). Past the cap a
+  new connection gets a real answer — an `ERROR` frame with `BROKER_BUSY` —
+  and then a close. No silent drops, no unbounded file descriptors.
+- **Idle timeout** (`BROKER_IDLE_TIMEOUT`, default 5m). Every frame read gets
+  a fresh read deadline, so a connection that goes completely silent (client
+  crashed without closing the socket) is reaped, while any active client
+  never notices. TCP keepalive alone takes hours to notice a half-open conn;
+  this takes minutes.
+- **Write timeout** (`BROKER_WRITE_TIMEOUT`, default 30s). One frame write may
+  never take longer. A client that stops reading gets its connection closed —
+  the writer goroutine closes the socket on a write error, which wakes the
+  read loop, so the whole connection is reaped at the deadline instead of
+  lingering until the idle timeout.
+- **Slow clients are contained.** A connection that floods its pipelining cap
+  (64 in-flight requests) or never reads responses pins only its own bounded
+  goroutines (one reader, one writer, at most 64 handlers). Other connections
+  are served normally. Proven by `TestSlowReaderDoesNotBlockOthers` and
+  `TestWriteDeadlineDropsStalledReader` (goroutine counts return to baseline).
+- **Hostile input is boring.** Byte-by-byte drip feeds, several frames in one
+  TCP write, EOF mid-header, EOF mid-payload, RST mid-payload, garbage JSON,
+  truncated binary payloads, unknown opcodes, oversize frames announced
+  byte-by-byte — all handled, all tested in
+  `internal/broker/server/hardening_test.go` and `protocol_test.go`.
+
+### Storage / WAL / recovery
+
+- **Index files are never trusted blindly.** At open, every sparse index entry
+  is validated against the log: entries must be sorted, positions must be
+  strictly increasing and inside the file, and — the strong check — we read 12
+  bytes at each position and verify the record there really has the offset the
+  entry claims. Costs one tiny read per entry, only at boot, and the index is
+  sparse (one entry per 4 KiB), so it stays cheap.
+- **Missing or corrupt indexes rebuild themselves.** If validation fails (or
+  the file is simply gone), the segment is scanned and the index rebuilt from
+  the log, then persisted. This works for the active segment (which always
+  gets a full recovery scan anyway) and for old inactive ones. Before this
+  check, a structurally valid but wrong index on an old segment would have
+  been trusted forever.
+- **Crash shapes tested**: empty segment (crash before append), half-written
+  record mid-batch, truncated header, single dangling byte, bad CRC in the
+  middle (everything after it is dropped), torn tail on the last of many
+  segments, and offsets staying monotonic across repeated crash/reopen cycles.
+  See `internal/broker/storage/recovery_test.go`.
+- **fsync policy is proven, not assumed.** One test watches the record-count
+  policy (`BROKER_FSYNC_RECORDS`) fire the flush at exactly the threshold;
+  another runs the full broker and watches the interval ticker
+  (`BROKER_FSYNC_MS`) flush dirty partitions on cadence. See
+  `internal/broker/fsync_test.go`.
+
+### Consumer groups
+
+- **One partition, one owner — always.** A property-style test hammers the
+  coordinator with a deterministic pseudo-random mix of joins, leaves and
+  subscription changes (300 steps) and checks after every single step that no
+  partition is assigned to two members and nothing is out of range.
+- **Zombies are fenced.** A member that misses its session timeout is expelled
+  and its partitions move. When it wakes up, its old generation is useless:
+  FETCH and COMMIT both come back `REBALANCE`/`UNKNOWN_MEMBER`. It cannot
+  consume or commit over the new owner. Tested at the coordinator level
+  (`TestZombieMemberFencedOut`) and end-to-end over the wire
+  (`TestE2EZombieMemberFencedOut`, which drives JOIN/HEARTBEAT/FETCH/COMMIT on
+  raw TCP connections through the real broker).
+- **Duplicate commits are fine.** Committing the same offset twice is a no-op.
+  A retried commit after a client timeout never corrupts state. A
+  stale-generation replay can never rewind a newer offset
+  (`TestDuplicateCommitIdempotent`).
+- **Reconnects are cheap.** Re-joining before the session expires keeps your
+  assignment and moves nothing (`TestReconnectBeforeTimeoutIsSeamless`).
+
+One honest note: "never process the same partition simultaneously" is enforced
+at the mechanism level — exclusive assignment plus fencing on fetch/commit. A
+zombie can still finish the one batch it had already fetched when the
+rebalance hit (at-least-once delivery means the new owner will reprocess those
+records anyway). What it cannot do is fetch anything new or commit anything.
+That's the strongest guarantee a fence can give, and it's what Kafka does too.

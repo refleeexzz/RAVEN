@@ -132,7 +132,11 @@ func New(cfg Config, log *slog.Logger, reg CollectorRegistrar) (*Broker, error) 
 	if reg != nil {
 		b.registerMetrics(reg)
 	}
-	b.server = server.New(cfg.TCPAddr, b, cfg.DrainTimeout, log)
+	b.server = server.New(cfg.TCPAddr, b, cfg.DrainTimeout, log,
+		server.WithMaxConnections(cfg.MaxConnections),
+		server.WithIdleTimeout(cfg.IdleTimeout),
+		server.WithWriteTimeout(cfg.WriteTimeout),
+	)
 	return b, nil
 }
 

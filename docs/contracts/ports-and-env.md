@@ -43,8 +43,15 @@ prometheus 9090, grafana 3000, jaeger 16686 (UI) / 4317 (OTLP gRPC).
 | `JWT_SECRET`     | auth, gateway      | `dev-only-secret-change-me` (never in prod)       |
 | `BROKER_ADDR`    | jobs, worker       | `localhost:9100`                                  |
 | `BROKER_DATA_DIR`| broker             | `./data`                                          |
+| `BROKER_MAX_CONNECTIONS` | broker   | `1024` (extra conns get BROKER_BUSY + close)      |
+| `BROKER_IDLE_TIMEOUT` | broker        | `5m` (closes silent connections)                  |
+| `BROKER_WRITE_TIMEOUT` | broker       | `30s` (max duration of one frame write)           |
 | `OTEL_ENABLED`   | all                | `false`                                           |
 | `OTEL_ENDPOINT`  | all                | `localhost:4317`                                  |
+| `WORKER_CONCURRENCY` | worker         | `8`                                               |
+| `WORKER_JOB_TIMEOUT` | worker         | `30s` (keep below the lease)                      |
+| `WORKER_JOB_LEASE_MS` | worker        | `30000` (milliseconds; lease claimed with each job, renewed every lease/3) |
+| `JOBS_SWEEP_INTERVAL` | jobs          | `15s` (`0` disables the stranded-job sweeper — do not disable in prod) |
 
 Service discovery inside Docker/K8s uses service names:
 `http://auth`, `auth:9081`, `broker:9100`, ...
@@ -83,10 +90,18 @@ Workers register themselves for discovery and the console UI:
 ## Job model (jobs service ↔ worker ↔ broker)
 
 Job JSON fields: `id, type, payload, status, priority, attempts,
-max_attempts, created_at, started_at, finished_at, error, worker_id`.
+max_attempts, created_at, started_at, finished_at, error, worker_id,
+execution_generation`.
 
 Status flow: `QUEUED → PROCESSING → SUCCESS | FAILED → RETRYING →
 SUCCESS | DEAD`, plus `CANCELLED`.
+
+Leases (ADR 009, migration 000003): a claimed job carries `heartbeat_at` and
+`lease_until`; the worker renews while executing; the jobs-service sweeper
+requeues expired leases with `execution_generation + 1`, and every execution
+write is fenced by the generation. Broker messages carry
+`execution_generation`; `0` means "unknown" (pre-lease messages) and is
+accepted as the row's current generation.
 
 Broker topics: `jobs` (work), `jobs.dlq` (dead letters),
 `jobs.retry` (delayed retries).

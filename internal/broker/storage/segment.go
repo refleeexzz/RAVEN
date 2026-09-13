@@ -64,7 +64,12 @@ func openSegment(dir string, base uint64, indexInterval int64) (*segment, error)
 	return s, nil
 }
 
-// loadIndex reads the .index file into memory.
+// loadIndex reads the .index file into memory and validates it against
+// the log. Beyond parse errors, an index is rejected when positions are
+// not monotonic, point outside the log, or do not land on the record
+// they claim to (verified by reading the offset field at each entry's
+// position). Any failure makes the caller rebuild from the log, so an
+// inconsistent index is always self-healing.
 func (s *segment) loadIndex() error {
 	if _, err := s.index.Seek(0, io.SeekStart); err != nil {
 		return err
@@ -86,7 +91,37 @@ func (s *segment) loadIndex() error {
 	if !sort.SliceIsSorted(entries, func(i, j int) bool { return entries[i].relOffset < entries[j].relOffset }) {
 		return fmt.Errorf("index entries out of order")
 	}
+	if err := s.validateEntries(entries); err != nil {
+		return err
+	}
 	s.entries = entries
+	return nil
+}
+
+// validateEntries checks every entry against the log file: positions
+// must be monotonic, inside the log, and point at a record whose offset
+// is exactly baseOffset+relOffset. One ReadAt per entry at open time;
+// the index is sparse (one entry per indexInterval bytes), so this is
+// cheap insurance against trusting a corrupt index.
+func (s *segment) validateEntries(entries []indexEntry) error {
+	var head [12]byte // crc(4) + offset(8): all we need to verify a record start
+	prevPos := int64(-1)
+	for _, e := range entries {
+		pos := int64(e.position)
+		if pos <= prevPos {
+			return fmt.Errorf("index positions not strictly increasing at %d", pos)
+		}
+		prevPos = pos
+		if pos < 0 || pos+int64(len(head)) > s.size {
+			return fmt.Errorf("index position %d outside log size %d", pos, s.size)
+		}
+		if _, err := s.log.ReadAt(head[:], pos); err != nil {
+			return fmt.Errorf("index probe at %d: %w", pos, err)
+		}
+		if got, want := binary.BigEndian.Uint64(head[4:12]), s.baseOffset+uint64(e.relOffset); got != want {
+			return fmt.Errorf("index entry points at offset %d, want %d", got, want)
+		}
+	}
 	return nil
 }
 

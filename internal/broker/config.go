@@ -32,6 +32,18 @@ type Config struct {
 	SessionTimeout time.Duration
 	// DrainTimeout bounds graceful connection draining at shutdown.
 	DrainTimeout time.Duration
+	// MaxConnections caps simultaneous client TCP connections. Beyond
+	// the cap, new connections get a BROKER_BUSY error frame and are
+	// closed (env BROKER_MAX_CONNECTIONS, default 1024).
+	MaxConnections int
+	// IdleTimeout closes connections that sent nothing for this long
+	// (env BROKER_IDLE_TIMEOUT, default 5m). It is a read deadline
+	// refreshed per frame, so active clients never notice it.
+	IdleTimeout time.Duration
+	// WriteTimeout bounds one frame write to a client (env
+	// BROKER_WRITE_TIMEOUT, default 30s). A client that stops reading
+	// loses its connection instead of pinning a goroutine forever.
+	WriteTimeout time.Duration
 }
 
 // ConfigFromEnv loads the broker configuration from the environment.
@@ -47,6 +59,9 @@ func ConfigFromEnv() Config {
 		ProduceQueueSize:   config.GetInt("BROKER_PRODUCE_QUEUE", 1024),
 		SessionTimeout:     time.Duration(config.GetInt("BROKER_SESSION_TIMEOUT_MS", 10000)) * time.Millisecond,
 		DrainTimeout:       config.GetDuration("BROKER_DRAIN_TIMEOUT", 5*time.Second),
+		MaxConnections:     config.GetInt("BROKER_MAX_CONNECTIONS", 1024),
+		IdleTimeout:        config.GetDuration("BROKER_IDLE_TIMEOUT", 5*time.Minute),
+		WriteTimeout:       config.GetDuration("BROKER_WRITE_TIMEOUT", 30*time.Second),
 	}
 }
 
@@ -63,6 +78,9 @@ func (c Config) withDefaults() Config {
 		ProduceQueueSize:   1024,
 		SessionTimeout:     10 * time.Second,
 		DrainTimeout:       5 * time.Second,
+		MaxConnections:     1024,
+		IdleTimeout:        5 * time.Minute,
+		WriteTimeout:       30 * time.Second,
 	}
 	if c.TCPAddr != "" {
 		def.TCPAddr = c.TCPAddr
@@ -93,6 +111,15 @@ func (c Config) withDefaults() Config {
 	}
 	if c.DrainTimeout > 0 {
 		def.DrainTimeout = c.DrainTimeout
+	}
+	if c.MaxConnections > 0 {
+		def.MaxConnections = c.MaxConnections
+	}
+	if c.IdleTimeout > 0 {
+		def.IdleTimeout = c.IdleTimeout
+	}
+	if c.WriteTimeout > 0 {
+		def.WriteTimeout = c.WriteTimeout
 	}
 	return def
 }

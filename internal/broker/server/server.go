@@ -39,9 +39,59 @@ type Backend interface {
 // applies TCP backpressure to the client.
 const maxInFlightPerConn = 64
 
-// writeDeadline bounds a single frame write so a stalled client cannot
-// pin a connection goroutine forever.
-const writeDeadline = 30 * time.Second
+// Server hardening defaults. All three are overridable through the
+// functional options below (the broker wires them to env vars; see
+// internal/broker/config.go).
+const (
+	// defaultMaxConnections caps simultaneous client connections. Past
+	// the cap, new connections get a clean BROKER_BUSY error frame and
+	// are closed — file descriptors stay bounded no matter how hostile
+	// the network gets.
+	defaultMaxConnections = 1024
+	// defaultIdleTimeout closes connections that sent nothing for this
+	// long. It is a read deadline refreshed before every frame read, so
+	// active connections never trip it. It reaps half-open connections
+	// (client crashed without a FIN) that TCP keepalive alone would
+	// take hours to notice.
+	defaultIdleTimeout = 5 * time.Minute
+	// defaultWriteTimeout bounds a single frame write so a stalled
+	// client cannot pin a connection goroutine forever.
+	defaultWriteTimeout = 30 * time.Second
+)
+
+// Option customizes a Server. Options exist so tests and the broker can
+// tune hardening limits without changing the New signature again.
+type Option func(*Server)
+
+// WithMaxConnections sets the simultaneous-connection cap (0 keeps the
+// default of 1024).
+func WithMaxConnections(n int) Option {
+	return func(s *Server) {
+		if n > 0 {
+			s.maxConns = n
+		}
+	}
+}
+
+// WithIdleTimeout sets the per-connection idle read deadline (0 keeps
+// the default of 5 minutes).
+func WithIdleTimeout(d time.Duration) Option {
+	return func(s *Server) {
+		if d > 0 {
+			s.idleTimeout = d
+		}
+	}
+}
+
+// WithWriteTimeout sets the per-frame write deadline (0 keeps the
+// default of 30 seconds).
+func WithWriteTimeout(d time.Duration) Option {
+	return func(s *Server) {
+		if d > 0 {
+			s.writeTimeout = d
+		}
+	}
+}
 
 // Server is the TCP listener for the broker protocol.
 type Server struct {
@@ -49,6 +99,10 @@ type Server struct {
 	backend Backend
 	log     *slog.Logger
 	drain   time.Duration
+
+	maxConns     int
+	idleTimeout  time.Duration
+	writeTimeout time.Duration
 
 	ln      net.Listener
 	mu      sync.Mutex
@@ -58,17 +112,24 @@ type Server struct {
 }
 
 // New creates a server; Run starts it.
-func New(addr string, backend Backend, drainTimeout time.Duration, log *slog.Logger) *Server {
+func New(addr string, backend Backend, drainTimeout time.Duration, log *slog.Logger, opts ...Option) *Server {
 	if log == nil {
 		log = slog.Default()
 	}
-	return &Server{
-		addr:    addr,
-		backend: backend,
-		log:     log,
-		drain:   drainTimeout,
-		conns:   make(map[net.Conn]struct{}),
+	s := &Server{
+		addr:         addr,
+		backend:      backend,
+		log:          log,
+		drain:        drainTimeout,
+		maxConns:     defaultMaxConnections,
+		idleTimeout:  defaultIdleTimeout,
+		writeTimeout: defaultWriteTimeout,
+		conns:        make(map[net.Conn]struct{}),
 	}
+	for _, o := range opts {
+		o(s)
+	}
+	return s
 }
 
 // Addr returns the actual bound address (useful with ":0").
@@ -158,11 +219,32 @@ func (s *Server) Run(ctx context.Context) error {
 			_ = conn.Close()
 			continue
 		}
+		if len(s.conns) >= s.maxConns {
+			// At capacity: reject cleanly (an ERROR frame the client can
+			// read, then a close) instead of silently dropping. Never
+			// tracked, never counted against the WaitGroup.
+			s.mu.Unlock()
+			s.rejectConn(conn)
+			continue
+		}
 		s.conns[conn] = struct{}{}
 		s.wg.Add(1)
 		s.mu.Unlock()
 		go s.serveConn(ctx, conn)
 	}
+}
+
+// rejectConn tells a refused client why (BROKER_BUSY) and closes. Best
+// effort: a 2-second write deadline so a hostile client that never
+// reads cannot stall the accept loop.
+func (s *Server) rejectConn(conn net.Conn) {
+	s.log.Warn("connection refused: at max connections",
+		slog.String("remote", conn.RemoteAddr().String()),
+		slog.Int("max", s.maxConns))
+	f := protocol.ErrorFrame(0, protocol.NewError(protocol.CodeBrokerBusy, "too many connections"))
+	_ = conn.SetWriteDeadline(time.Now().Add(2 * time.Second))
+	_ = protocol.WriteFrame(conn, f)
+	_ = conn.Close()
 }
 
 func (s *Server) closeAllConns() {
@@ -204,9 +286,14 @@ func (s *Server) serveConn(ctx context.Context, conn net.Conn) {
 	go func() {
 		defer close(writerDone)
 		for f := range resCh {
-			_ = conn.SetWriteDeadline(time.Now().Add(writeDeadline))
+			_ = conn.SetWriteDeadline(time.Now().Add(s.writeTimeout))
 			if err := protocol.WriteFrame(conn, f); err != nil {
-				return // broken conn; reader loop will notice too
+				// Stalled reader (or dead conn). Close so the blocked
+				// read loop wakes up and the whole connection is reaped
+				// now, not at idle timeout. The read loop's own close
+				// is a harmless no-op after this.
+				_ = conn.Close()
+				return
 			}
 		}
 	}()
@@ -220,13 +307,22 @@ func (s *Server) serveConn(ctx context.Context, conn net.Conn) {
 	defer close(connDone)
 
 	for {
+		// Idle deadline: refreshed before every frame, so only genuinely
+		// silent connections trip it. This is what reaps half-open
+		// connections (client crashed without closing the socket).
+		_ = conn.SetReadDeadline(time.Now().Add(s.idleTimeout))
 		f, err := protocol.ReadFrame(conn)
 		if err != nil {
-			if errors.Is(err, protocol.ErrFrameTooLarge) {
+			var ne net.Error
+			switch {
+			case errors.Is(err, protocol.ErrFrameTooLarge):
 				s.log.Warn("oversize frame, dropping connection",
 					slog.String("remote", conn.RemoteAddr().String()))
-			} else if !errors.Is(err, io.EOF) && !errors.Is(err, io.ErrUnexpectedEOF) &&
-				!errors.Is(err, net.ErrClosed) && !s.closing.Load() {
+			case errors.As(err, &ne) && ne.Timeout():
+				s.log.Debug("connection idle timeout",
+					slog.String("remote", conn.RemoteAddr().String()))
+			case !errors.Is(err, io.EOF) && !errors.Is(err, io.ErrUnexpectedEOF) &&
+				!errors.Is(err, net.ErrClosed) && !s.closing.Load():
 				s.log.Debug("connection closed",
 					slog.String("remote", conn.RemoteAddr().String()),
 					slog.Any("err", err))
