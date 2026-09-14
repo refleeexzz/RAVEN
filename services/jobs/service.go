@@ -38,6 +38,18 @@ type Config struct {
 	// stranding window, so production should always run it.
 	SweepInterval time.Duration
 
+	// LegacyTopicFanout mirrors every execution publish onto the legacy
+	// "jobs" topic in addition to the pinned jobs.p<priority> topic
+	// (JOBS_LEGACY_TOPIC_FANOUT, default true). Keep it on until every
+	// worker subscribes to the priority topics directly; then flip it off.
+	LegacyTopicFanout bool
+
+	// SchedulerInterval is how often the delayed-job dispatcher and the cron
+	// scheduler scan for due work (JOBS_SCHEDULER_INTERVAL, default 1s).
+	// <= 0 disables both loops (tests); production should keep it small —
+	// it is the upper bound on delayed-job lateness.
+	SchedulerInterval time.Duration
+
 	// Tracing (OTel). Disabled by default locally; enabled in k8s via
 	// the raven-config ConfigMap.
 	OtelEndpoint string
@@ -76,6 +88,7 @@ func Run(ctx context.Context, cfg Config) error {
 	cancel()
 
 	producer := NewProducer(cfg.BrokerAddr, log)
+	producer.SetLegacyFanout(cfg.LegacyTopicFanout)
 	defer func() { _ = producer.Close() }()
 
 	metr := metrics.New("jobs")

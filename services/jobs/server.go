@@ -134,7 +134,7 @@ func (s *Server) CreateJob(ctx context.Context, req *genjobs.CreateJobRequest) (
 		return nil, toStatus(errors.E(errors.KindUnavailable, "broker_unavailable",
 			"the job broker is not configured", nil))
 	}
-	if err := s.producer.PublishJob(ctx, TopicJobs, j); err != nil {
+	if err := s.producer.PublishExecution(ctx, j); err != nil {
 		errMsg := "broker produce failed: " + err.Error()
 		if uerr := markQueuedFailed(ctx, s.pool, j.ID, errMsg); uerr != nil {
 			s.log.ErrorContext(ctx, "could not mark job failed after produce error",
@@ -280,7 +280,7 @@ func (s *Server) RequeueJob(ctx context.Context, req *genjobs.RequeueJobRequest)
 		return nil, toStatus(errors.E(errors.KindUnavailable, "broker_unavailable",
 			"the job broker is not configured", nil))
 	}
-	if err := s.producer.PublishJob(ctx, TopicJobs, j); err != nil {
+	if err := s.producer.PublishExecution(ctx, j); err != nil {
 		// Best-effort revert so the job does not sit QUEUED with no message
 		// on the broker.
 		if _, rerr := requeueRevert(ctx, s.pool, j.ID); rerr != nil {

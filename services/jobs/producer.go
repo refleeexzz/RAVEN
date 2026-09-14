@@ -4,6 +4,7 @@ import (
 	"context"
 	stderrors "errors"
 	"log/slog"
+	"sync/atomic"
 	"time"
 
 	"go.opentelemetry.io/otel"
@@ -20,15 +21,32 @@ import (
 type Producer struct {
 	p   *client.Producer
 	log *slog.Logger
+
+	// legacyFanout mirrors every execution publish onto the legacy "jobs"
+	// topic in addition to the pinned jobs.p<priority> topic. Default on so
+	// pre-priority workers keep consuming while the fleet migrates; flip off
+	// (JOBS_LEGACY_TOPIC_FANOUT=false) once workers subscribe to the
+	// priority topics directly.
+	legacyFanout atomic.Bool
 }
 
-// NewProducer builds a Producer for the broker at addr.
+// NewProducer builds a Producer for the broker at addr. The legacy-topic
+// fanout starts enabled: the safe compatibility default.
 func NewProducer(addr string, log *slog.Logger) *Producer {
-	return &Producer{
+	p := &Producer{
 		p:   client.NewProducer(addr, client.WithProducerLogger(log)),
 		log: log,
 	}
+	p.legacyFanout.Store(true)
+	return p
 }
+
+// SetLegacyFanout toggles the duplicate publish onto the legacy "jobs"
+// topic (see the Producer docs).
+func (p *Producer) SetLegacyFanout(on bool) { p.legacyFanout.Store(on) }
+
+// LegacyFanout reports whether the legacy-topic fanout is enabled.
+func (p *Producer) LegacyFanout() bool { return p.legacyFanout.Load() }
 
 // Close closes the underlying producer.
 func (p *Producer) Close() error { return p.p.Close() }
@@ -46,6 +64,24 @@ func (p *Producer) PublishJob(ctx context.Context, topic string, j *Job) error {
 		return err
 	}
 	return p.publish(ctx, topic, []byte(j.ID), raw, j.Type)
+}
+
+// PublishExecution is the standard way to put a job in front of workers: it
+// routes the message to the pinned priority topic jobs.p<priority> and,
+// while the legacy fanout is on, also to the legacy "jobs" topic so old
+// workers keep seeing the work. The same encoded message goes to every
+// topic, so the worker's claim fence simply ignores the duplicate copy.
+func (p *Producer) PublishExecution(ctx context.Context, j *Job) error {
+	raw, err := j.message()
+	if err != nil {
+		return err
+	}
+	for _, topic := range executionTopics(j.Priority, p.LegacyFanout()) {
+		if err := p.publish(ctx, topic, []byte(j.ID), raw, j.Type); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // publish is the single produce path: span, inject, produce.
@@ -85,13 +121,18 @@ func (p *Producer) PublishRawWithHeaders(ctx context.Context, topic string, key,
 	return err
 }
 
-// EnsureTopics creates the job topics at startup. Already-existing topics are
+// EnsureTopics creates the job topics at startup: the legacy topics plus the
+// pinned priority family jobs.p1..jobs.p9. Already-existing topics are
 // fine (TOPIC_EXISTS is swallowed); anything else is fatal at boot.
 func EnsureTopics(ctx context.Context, addr string, log *slog.Logger) error {
 	admin := client.NewAdmin(addr)
 	defer func() { _ = admin.Close() }()
 
-	for _, topic := range []string{TopicJobs, TopicDLQ, TopicRetry} {
+	topics := []string{TopicJobs, TopicDLQ, TopicRetry}
+	for prio := 1; prio <= MaxPriority; prio++ {
+		topics = append(topics, TopicForPriority(prio))
+	}
+	for _, topic := range topics {
 		_, err := admin.CreateTopic(ctx, topic, 0) // 0 = broker default partitions
 		if err == nil {
 			log.Info("topic created", slog.String("topic", topic))

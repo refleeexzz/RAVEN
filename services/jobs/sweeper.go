@@ -259,7 +259,7 @@ func (s *Sweeper) recoverJob(ctx context.Context, id string) (bool, error) {
 			s.log.Error("sweeper DLQ produce failed",
 				slog.String("job_id", j.ID), slog.Any("error", err))
 		}
-	} else if err := s.producer.PublishJob(pubCtx, TopicJobs, j); err != nil {
+	} else if err := s.producer.PublishExecution(pubCtx, j); err != nil {
 		s.log.Error("sweeper republish failed; job stays RETRYING until the next pass",
 			slog.String("job_id", j.ID), slog.Any("error", err))
 	}

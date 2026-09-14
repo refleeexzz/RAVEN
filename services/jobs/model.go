@@ -9,6 +9,7 @@ package jobs
 
 import (
 	"encoding/json"
+	"strconv"
 	"time"
 
 	"github.com/google/uuid"
@@ -33,12 +34,46 @@ const (
 
 // Broker topics (docs/contracts/ports-and-env.md §Job model). TopicRetry is
 // created so a future broker-side delay queue can use it; today the worker
-// itself schedules retries with a timer and republishes to TopicJobs.
+// itself schedules retries with a timer and republishes to the routed
+// execution topics.
 const (
 	TopicJobs  = "jobs"
 	TopicDLQ   = "jobs.dlq"
 	TopicRetry = "jobs.retry"
+
+	// TopicPriorityPrefix is the priority-queue topic family pinned with the
+	// worker agent: every execution publish goes to
+	// "jobs.p<priority>" (p1 = most urgent, p9 = least). The legacy "jobs"
+	// topic stays for compatibility while workers migrate (see
+	// Producer.PublishExecution).
+	TopicPriorityPrefix = "jobs.p"
 )
+
+// TopicForPriority maps a validated priority (1-9) to its execution topic.
+// Priorities outside 1-9 are clamped to the nearest valid topic so a buggy
+// caller can never escape the pinned topic family.
+func TopicForPriority(priority int) string {
+	if priority < 1 {
+		priority = 1
+	}
+	if priority > MaxPriority {
+		priority = MaxPriority
+	}
+	return TopicPriorityPrefix + strconv.Itoa(priority)
+}
+
+// executionTopics returns the topics an execution publish must hit, in
+// order: the pinned priority topic first, then the legacy "jobs" topic when
+// the compatibility fanout is enabled (JOBS_LEGACY_TOPIC_FANOUT, default on
+// until workers subscribe to the priority topics directly). Duplicates are
+// safe: the worker claim fence ignores the second copy.
+func executionTopics(priority int, legacyFanout bool) []string {
+	topics := []string{TopicForPriority(priority)}
+	if legacyFanout {
+		topics = append(topics, TopicJobs)
+	}
+	return topics
+}
 
 // Redis channel carrying job_status events to the websocket service.
 const EventsChannel = "raven:events:jobs"
@@ -56,6 +91,12 @@ const (
 	defaultMaxAttempts = 4
 	maxMaxAttempts     = 25
 	defaultPriority    = 5
+
+	// MaxPriority is the highest accepted priority value. The priority-queue
+	// contract pinned with the worker agent defines topics jobs.p1..jobs.p9
+	// (p1 = most urgent), so CreateJob validates 1-9. The database CHECK
+	// still allows 1-10 (a compatible superset kept for older rows).
+	MaxPriority = 9
 
 	// MaxPayloadBytes caps CreateJob payload_json (JOBS-03). The payload is
 	// stored as jsonb, copied into broker messages and re-read on every
@@ -169,9 +210,9 @@ func ValidateCreate(jobType, payloadJSON string, priority, maxAttempts int32) (p
 	if priority == 0 {
 		priority = defaultPriority
 	}
-	if priority < 1 || priority > 10 {
+	if priority < 1 || priority > MaxPriority {
 		return 0, 0, errors.E(errors.KindInvalid, "priority_out_of_range",
-			"priority must be between 1 and 10", nil)
+			"priority must be between 1 and 9", nil)
 	}
 	if maxAttempts == 0 {
 		maxAttempts = defaultMaxAttempts
