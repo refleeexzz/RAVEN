@@ -73,10 +73,16 @@ type CommitOffsetResponse struct{}
 
 // ---- FETCH_OFFSET ----
 
+// FetchOffsetRequest reads the committed offset for a group. MemberID
+// and Generation are required (BRKR-03): the member must be joined to
+// the group and in the current generation, otherwise any client could
+// read any group's offsets just by naming the group id.
 type FetchOffsetRequest struct {
-	Group     string `json:"group"`
-	Topic     string `json:"topic"`
-	Partition int32  `json:"partition"`
+	Group      string `json:"group"`
+	MemberID   string `json:"member_id"`
+	Topic      string `json:"topic"`
+	Partition  int32  `json:"partition"`
+	Generation int32  `json:"generation"`
 }
 
 // FetchOffsetResponse returns the next offset to consume (0 when the

@@ -20,10 +20,52 @@ var (
 	ErrTopicExists      = errors.New("storage: topic already exists")
 	ErrTopicNotFound    = errors.New("storage: topic not found")
 	ErrInvalidTopicName = errors.New("storage: invalid topic name")
+	// ErrTooManyPartitions rejects CREATE_TOPIC past MaxPartitionsPerTopic.
+	ErrTooManyPartitions = errors.New("storage: partition count exceeds limit")
 )
 
 // topicNameRe keeps topic names filesystem-safe and URL-friendly.
 var topicNameRe = regexp.MustCompile(`^[a-zA-Z0-9._-]{1,128}$`)
+
+// MaxPartitionsPerTopic caps CREATE_TOPIC. Every partition costs a
+// directory, at least two open files and one writer goroutine, so the
+// count must stay small enough that one connection cannot exhaust file
+// descriptors by spraying topics with huge partition counts.
+const MaxPartitionsPerTopic = 64
+
+// validTopicName enforces the wire-level topic name rules. The charset
+// alone is not enough: "." and ".." pass it but are path metacharacters
+// that escape topics/ once filepath.Join cleans them (BRKR-01). Names
+// ending in a dot are rejected too: Windows refuses to create them (and
+// silently strips trailing dots), so allowing them would make the wire
+// contract platform-dependent.
+func validTopicName(name string) error {
+	if !topicNameRe.MatchString(name) {
+		return fmt.Errorf("%w %q: allowed [a-zA-Z0-9._-], max 128 chars", ErrInvalidTopicName, name)
+	}
+	if strings.HasSuffix(name, ".") {
+		return fmt.Errorf("%w %q: reserved path name or trailing dot", ErrInvalidTopicName, name)
+	}
+	return nil
+}
+
+// topicsDir is the one directory every topic lives under.
+func (s *Store) topicsDir() string { return filepath.Join(s.dir, "topics") }
+
+// topicDirFor resolves the on-disk directory for a topic and proves the
+// result stays directly inside topicsDir. Defense in depth behind
+// validTopicName: even a future caller that skips name validation cannot
+// make the store touch a path outside topics/.
+func (s *Store) topicDirFor(name string) (string, error) {
+	base := s.topicsDir()
+	dir := filepath.Join(base, name)
+	rel, err := filepath.Rel(base, dir)
+	if err != nil || rel == "." || rel == ".." || filepath.IsAbs(rel) ||
+		strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return "", fmt.Errorf("%w %q: resolved path escapes topics dir", ErrInvalidTopicName, name)
+	}
+	return dir, nil
+}
 
 // Topic is a named set of partitions.
 type Topic struct {
@@ -82,7 +124,7 @@ func OpenStore(dir string, opts Options, defaultPartitions int32, log *slog.Logg
 	}
 	names := make([]string, 0, len(entries))
 	for _, e := range entries {
-		if e.IsDir() && topicNameRe.MatchString(e.Name()) {
+		if e.IsDir() && validTopicName(e.Name()) == nil {
 			names = append(names, e.Name())
 		}
 	}
@@ -99,7 +141,10 @@ func OpenStore(dir string, opts Options, defaultPartitions int32, log *slog.Logg
 
 // openTopic opens all partitions of one topic from disk.
 func (s *Store) openTopic(name string) (*Topic, error) {
-	topicDir := filepath.Join(s.dir, "topics", name)
+	topicDir, err := s.topicDirFor(name)
+	if err != nil {
+		return nil, err
+	}
 	entries, err := os.ReadDir(topicDir)
 	if err != nil {
 		return nil, err
@@ -116,6 +161,14 @@ func (s *Store) openTopic(name string) (*Topic, error) {
 		ids = append(ids, id)
 	}
 	sort.Ints(ids)
+	// A topic always has at least one partition: CreateTopic never makes
+	// fewer. A dir without partition-N subdirs is corruption (or the
+	// leftover of the "." traversal, BRKR-01) — refuse to guess around
+	// it, because a zero-partition topic panics PickPartition with a
+	// division by zero on the first PRODUCE.
+	if len(ids) == 0 {
+		return nil, fmt.Errorf("topic %q has no partitions on disk", name)
+	}
 	// Partition ids must be exactly 0..n-1; anything else means someone
 	// hand-edited the data dir, which we refuse to guess around.
 	for i, id := range ids {
@@ -141,8 +194,8 @@ func partitionDir(topicDir string, id int) string {
 // CreateTopic creates a topic with the given partition count (or the
 // store default when partitions <= 0).
 func (s *Store) CreateTopic(name string, partitions int32) (*Topic, error) {
-	if !topicNameRe.MatchString(name) {
-		return nil, fmt.Errorf("%w %q: allowed [a-zA-Z0-9._-], max 128 chars", ErrInvalidTopicName, name)
+	if err := validTopicName(name); err != nil {
+		return nil, err
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -155,10 +208,13 @@ func (s *Store) CreateTopic(name string, partitions int32) (*Topic, error) {
 	if partitions <= 0 {
 		partitions = s.defaultPartitions
 	}
-	if partitions > 1024 {
-		return nil, fmt.Errorf("partition count %d exceeds limit 1024", partitions)
+	if partitions > MaxPartitionsPerTopic {
+		return nil, fmt.Errorf("%w: %d exceeds limit %d", ErrTooManyPartitions, partitions, MaxPartitionsPerTopic)
 	}
-	topicDir := filepath.Join(s.dir, "topics", name)
+	topicDir, err := s.topicDirFor(name)
+	if err != nil {
+		return nil, err
+	}
 	topic := &Topic{Name: name, Partitions: make([]*Partition, 0, partitions)}
 	for i := int32(0); i < partitions; i++ {
 		p, err := OpenPartition(partitionDir(topicDir, int(i)), name, i, s.opts, s.log)

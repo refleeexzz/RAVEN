@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"regexp"
 	"sync"
 	"time"
 
@@ -19,7 +20,34 @@ var (
 	ErrUnknownGroup  = errors.New("group: unknown group")
 	ErrUnknownMember = errors.New("group: unknown member")
 	ErrRebalance     = errors.New("group: stale generation, rebalance in progress or done")
+	// ErrNotAssigned rejects a commit for a partition the member does not
+	// own in the current generation (BRKR-03).
+	ErrNotAssigned = errors.New("group: partition not assigned to member")
+	// ErrTooManyGroups rejects the creation of a new group past the cap
+	// (BRKR-04). Empty groups are garbage-collected, so the cap only
+	// ever counts groups with state worth keeping.
+	ErrTooManyGroups = errors.New("group: too many groups")
+	// ErrInvalidID rejects group/member ids with control characters,
+	// separators or absurd length: ids flow into log lines and the
+	// offsets file, so they get the same charset as topic names.
+	ErrInvalidID = errors.New("group: invalid group/member id")
 )
+
+// idRe is the allowed charset for group and member ids. They are not
+// file paths, but the restriction kills log forging via control
+// characters and bounds every line in offsets.jsonl (BRKR-06).
+var idRe = regexp.MustCompile(`^[a-zA-Z0-9._-]{1,128}$`)
+
+func validID(kind, id string) error {
+	if !idRe.MatchString(id) {
+		return fmt.Errorf("%w: %s %q: allowed [a-zA-Z0-9._-], max 128 chars", ErrInvalidID, kind, id)
+	}
+	return nil
+}
+
+// defaultMaxGroups bounds live group states when no explicit cap is
+// configured.
+const defaultMaxGroups = 1024
 
 // member is one live consumer in a group.
 type member struct {
@@ -53,17 +81,33 @@ type Coordinator struct {
 	sessionTimeout time.Duration
 	partitionsFor  func(topic string) (int, bool)
 	offsets        *offsetStore
+	maxGroups      int
 	log            *slog.Logger
 
 	reaperCancel context.CancelFunc
 	reaperDone   chan struct{}
 }
 
+// Option customizes a Coordinator.
+type Option func(*Coordinator)
+
+// WithMaxGroups caps the number of live group states (0 keeps the
+// default of 1024). Groups whose last member left or expired are
+// garbage-collected — committed offsets live in the offset store and
+// survive — so the cap only bounds groups that actually hold members.
+func WithMaxGroups(n int) Option {
+	return func(c *Coordinator) {
+		if n > 0 {
+			c.maxGroups = n
+		}
+	}
+}
+
 // NewCoordinator builds a coordinator. partitionsFor resolves topic
 // partition counts (the broker injects storage access here).
 // sessionTimeout is how long a member may go without a heartbeat before
 // it is expelled and the group rebalances.
-func NewCoordinator(dataDir string, partitionsFor func(topic string) (int, bool), sessionTimeout time.Duration, log *slog.Logger) (*Coordinator, error) {
+func NewCoordinator(dataDir string, partitionsFor func(topic string) (int, bool), sessionTimeout time.Duration, log *slog.Logger, opts ...Option) (*Coordinator, error) {
 	if log == nil {
 		log = slog.Default()
 	}
@@ -71,13 +115,18 @@ func NewCoordinator(dataDir string, partitionsFor func(topic string) (int, bool)
 	if err != nil {
 		return nil, err
 	}
-	return &Coordinator{
+	c := &Coordinator{
 		groups:         make(map[string]*groupState),
 		sessionTimeout: sessionTimeout,
 		partitionsFor:  partitionsFor,
 		offsets:        offsets,
+		maxGroups:      defaultMaxGroups,
 		log:            log,
-	}, nil
+	}
+	for _, o := range opts {
+		o(c)
+	}
+	return c, nil
 }
 
 // Start launches the reaper goroutine that expels dead members. It
@@ -130,6 +179,12 @@ func (c *Coordinator) Join(groupID, memberID string, topics []string) (int32, []
 	if groupID == "" || memberID == "" || len(topics) == 0 {
 		return 0, nil, fmt.Errorf("group: join requires group, member_id and topics")
 	}
+	if err := validID("group", groupID); err != nil {
+		return 0, nil, err
+	}
+	if err := validID("member", memberID); err != nil {
+		return 0, nil, err
+	}
 	for _, t := range topics {
 		if _, ok := c.partitionsFor(t); !ok {
 			return 0, nil, fmt.Errorf("%w: %s", ErrUnknownTopic, t)
@@ -137,7 +192,14 @@ func (c *Coordinator) Join(groupID, memberID string, topics []string) (int32, []
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	g := c.getOrCreate(groupID)
+	g, ok := c.groups[groupID]
+	if !ok {
+		if len(c.groups) >= c.maxGroups {
+			return 0, nil, fmt.Errorf("%w (limit %d)", ErrTooManyGroups, c.maxGroups)
+		}
+		g = &groupState{id: groupID, members: make(map[string]*member), assignments: make(map[string][]protocol.Assignment)}
+		c.groups[groupID] = g
+	}
 	if m, ok := g.members[memberID]; ok && sameTopics(m.topics, topics) {
 		m.lastSeen = time.Now()
 		return g.generation, g.assignments[memberID], nil
@@ -172,7 +234,10 @@ func sameTopics(a, b []string) bool {
 }
 
 // Leave removes a member and rebalances. Leaving a group you are not in
-// is a no-op (idempotent leave keeps shutdown paths simple).
+// is a no-op (idempotent leave keeps shutdown paths simple). A group
+// whose last member left is dropped: committed offsets live in the
+// offset store and survive, and a re-join simply starts a fresh group
+// (BRKR-04: group states must not accumulate forever).
 func (c *Coordinator) Leave(groupID, memberID string) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -184,6 +249,10 @@ func (c *Coordinator) Leave(groupID, memberID string) error {
 		return nil
 	}
 	delete(g.members, memberID)
+	if len(g.members) == 0 {
+		delete(c.groups, groupID)
+		return nil
+	}
 	c.rebalanceLocked(g)
 	return nil
 }
@@ -229,6 +298,10 @@ func (c *Coordinator) CheckFetch(groupID, memberID string, generation int32) err
 // Commit persists the next-to-consume offset for (group, topic,
 // partition). Stale generations are rejected with ErrRebalance so a
 // zombie member from an old generation cannot rewind committed state.
+// The (topic, partition) must be part of the member's assignment in the
+// current generation (BRKR-03): without that binding any live member
+// could clobber another member's progress or write offsets under topics
+// the group never subscribed to.
 func (c *Coordinator) Commit(groupID, memberID, topic string, partition int32, offset uint64, generation int32) error {
 	c.mu.Lock()
 	g, ok := c.groups[groupID]
@@ -244,9 +317,46 @@ func (c *Coordinator) Commit(groupID, memberID, topic string, partition int32, o
 		c.mu.Unlock()
 		return ErrRebalance
 	}
+	assigned := false
+	for _, a := range g.assignments[memberID] {
+		if a.Topic != topic {
+			continue
+		}
+		for _, p := range a.Partitions {
+			if p == partition {
+				assigned = true
+				break
+			}
+		}
+	}
 	c.mu.Unlock()
+	if !assigned {
+		return ErrNotAssigned
+	}
 	// Disk write outside the lock: offsets have their own mutex.
 	return c.offsets.Set(groupID, topic, partition, offset)
+}
+
+// CheckOffsetAccess authorizes a FETCH_OFFSET (BRKR-03): the group must
+// exist, the member must be joined to it, and the generation must be
+// current. Reading offsets is intentionally NOT assignment-bound —
+// members legitimately inspect sibling partitions — but it is always
+// membership-bound, so a client can no longer read a foreign group's
+// offsets just by naming its id.
+func (c *Coordinator) CheckOffsetAccess(groupID, memberID string, generation int32) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	g, ok := c.groups[groupID]
+	if !ok {
+		return ErrRebalance
+	}
+	if _, ok := g.members[memberID]; !ok {
+		return ErrUnknownMember
+	}
+	if generation != g.generation {
+		return ErrRebalance
+	}
+	return nil
 }
 
 // Committed returns the next-to-consume offset, 0 when never committed.
@@ -291,33 +401,30 @@ func (c *Coordinator) GroupsInfo() []GroupInfo {
 }
 
 // expireDeadMembers removes members whose heartbeat expired and
-// rebalances their groups. Called by the reaper goroutine.
+// rebalances their groups. Called by the reaper goroutine. Groups that
+// end up memberless are dropped (offsets survive in the offset store).
 func (c *Coordinator) expireDeadMembers(now time.Time) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	for _, g := range c.groups {
+	for id, g := range c.groups {
 		changed := false
-		for id, m := range g.members {
+		for mid, m := range g.members {
 			if now.Sub(m.lastSeen) > c.sessionTimeout {
 				c.log.Warn("member heartbeat expired, expelling",
-					slog.String("group", g.id), slog.String("member", id))
-				delete(g.members, id)
+					slog.String("group", g.id), slog.String("member", mid))
+				delete(g.members, mid)
 				changed = true
 			}
 		}
-		if changed {
-			c.rebalanceLocked(g)
+		if !changed {
+			continue
 		}
+		if len(g.members) == 0 {
+			delete(c.groups, id)
+			continue
+		}
+		c.rebalanceLocked(g)
 	}
-}
-
-func (c *Coordinator) getOrCreate(id string) *groupState {
-	g, ok := c.groups[id]
-	if !ok {
-		g = &groupState{id: id, members: make(map[string]*member), assignments: make(map[string][]protocol.Assignment)}
-		c.groups[id] = g
-	}
-	return g
 }
 
 // rebalanceLocked bumps the generation and recomputes every member's

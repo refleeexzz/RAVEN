@@ -36,6 +36,15 @@ type Config struct {
 	// the cap, new connections get a BROKER_BUSY error frame and are
 	// closed (env BROKER_MAX_CONNECTIONS, default 1024).
 	MaxConnections int
+	// MaxTopics caps topic creation (env BROKER_MAX_TOPICS, default
+	// 1024). Every topic costs directories, file handles and one writer
+	// goroutine per partition, so unauthenticated creation cannot be
+	// free.
+	MaxTopics int
+	// MaxGroups caps live consumer-group states (env BROKER_MAX_GROUPS,
+	// default 1024). Memberless groups are garbage-collected (committed
+	// offsets survive), so the cap bounds only groups with state.
+	MaxGroups int
 	// IdleTimeout closes connections that sent nothing for this long
 	// (env BROKER_IDLE_TIMEOUT, default 5m). It is a read deadline
 	// refreshed per frame, so active clients never notice it.
@@ -60,6 +69,8 @@ func ConfigFromEnv() Config {
 		SessionTimeout:     time.Duration(config.GetInt("BROKER_SESSION_TIMEOUT_MS", 10000)) * time.Millisecond,
 		DrainTimeout:       config.GetDuration("BROKER_DRAIN_TIMEOUT", 5*time.Second),
 		MaxConnections:     config.GetInt("BROKER_MAX_CONNECTIONS", 1024),
+		MaxTopics:          config.GetInt("BROKER_MAX_TOPICS", 1024),
+		MaxGroups:          config.GetInt("BROKER_MAX_GROUPS", 1024),
 		IdleTimeout:        config.GetDuration("BROKER_IDLE_TIMEOUT", 5*time.Minute),
 		WriteTimeout:       config.GetDuration("BROKER_WRITE_TIMEOUT", 30*time.Second),
 	}
@@ -79,6 +90,8 @@ func (c Config) withDefaults() Config {
 		SessionTimeout:     10 * time.Second,
 		DrainTimeout:       5 * time.Second,
 		MaxConnections:     1024,
+		MaxTopics:          1024,
+		MaxGroups:          1024,
 		IdleTimeout:        5 * time.Minute,
 		WriteTimeout:       30 * time.Second,
 	}
@@ -114,6 +127,12 @@ func (c Config) withDefaults() Config {
 	}
 	if c.MaxConnections > 0 {
 		def.MaxConnections = c.MaxConnections
+	}
+	if c.MaxTopics > 0 {
+		def.MaxTopics = c.MaxTopics
+	}
+	if c.MaxGroups > 0 {
+		def.MaxGroups = c.MaxGroups
 	}
 	if c.IdleTimeout > 0 {
 		def.IdleTimeout = c.IdleTimeout

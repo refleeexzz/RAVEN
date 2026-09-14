@@ -115,7 +115,8 @@ func New(cfg Config, log *slog.Logger, reg CollectorRegistrar) (*Broker, error) 
 		}
 		return t.NumPartitions(), true
 	}
-	groups, err := group.NewCoordinator(cfg.DataDir, partitionsFor, cfg.SessionTimeout, log)
+	groups, err := group.NewCoordinator(cfg.DataDir, partitionsFor, cfg.SessionTimeout, log,
+		group.WithMaxGroups(cfg.MaxGroups))
 	if err != nil {
 		_ = store.Close()
 		return nil, fmt.Errorf("open coordinator: %w", err)
@@ -227,12 +228,24 @@ func (b *Broker) Healthy(_ context.Context) error {
 // ---- server.Backend implementation ----
 
 func (b *Broker) CreateTopic(_ context.Context, req *protocol.CreateTopicRequest) (*protocol.CreateTopicResponse, error) {
+	// BRKR-04: bound the number of topics. Each topic costs directories,
+	// file handles and one writer goroutine per partition, so topic
+	// creation cannot be free. The existence check comes first so a
+	// duplicate create still answers TOPIC_EXISTS at the cap. The count
+	// check races with concurrent creates by design: it is load
+	// shedding, not an exact quota.
+	if _, err := b.store.Topic(req.Topic); errors.Is(err, storage.ErrTopicNotFound) && len(b.store.Topics()) >= b.cfg.MaxTopics {
+		return nil, protocol.NewError(protocol.CodeBadRequest,
+			fmt.Sprintf("topic limit reached (%d)", b.cfg.MaxTopics))
+	}
 	t, err := b.store.CreateTopic(req.Topic, req.Partitions)
 	if err != nil {
 		switch {
 		case errors.Is(err, storage.ErrTopicExists):
 			return nil, protocol.NewError(protocol.CodeTopicExists, req.Topic)
 		case errors.Is(err, storage.ErrInvalidTopicName):
+			return nil, protocol.NewError(protocol.CodeBadRequest, err.Error())
+		case errors.Is(err, storage.ErrTooManyPartitions):
 			return nil, protocol.NewError(protocol.CodeBadRequest, err.Error())
 		default:
 			return nil, fmt.Errorf("create topic: %w", err)
@@ -406,15 +419,30 @@ func (b *Broker) Fetch(_ context.Context, req *protocol.FetchRequest) (*protocol
 }
 
 func (b *Broker) CommitOffset(_ context.Context, req *protocol.CommitOffsetRequest) (*protocol.CommitOffsetResponse, error) {
-	if err := b.checkTopicPartition(req.Topic, req.Partition); err != nil {
+	t, err := b.checkTopicPartition(req.Topic, req.Partition)
+	if err != nil {
 		return nil, err
 	}
-	err := b.groups.Commit(req.Group, req.MemberID, req.Topic, req.Partition, req.Offset, req.Generation)
+	// BRKR-02: never commit past the high-water mark. A committed offset
+	// beyond the HWM wedges the group: every later FETCH answers
+	// OFFSET_OUT_OF_RANGE and the consumer can make no progress. The
+	// check is taken at request time; the HWM only grows, so a race with
+	// a concurrent produce can at most accept an offset that was valid a
+	// moment ago.
+	hwm := t.Partitions[req.Partition].HighWatermark()
+	if req.Offset > hwm {
+		return nil, protocol.NewError(protocol.CodeOffsetOutOfRange,
+			fmt.Sprintf("offset %d beyond high-water mark %d", req.Offset, hwm))
+	}
+	err = b.groups.Commit(req.Group, req.MemberID, req.Topic, req.Partition, req.Offset, req.Generation)
 	switch {
 	case errors.Is(err, group.ErrRebalance):
 		return nil, protocol.NewError(protocol.CodeRebalance, "stale generation: re-join the group")
 	case errors.Is(err, group.ErrUnknownMember):
 		return nil, protocol.NewError(protocol.CodeUnknownMember, req.MemberID)
+	case errors.Is(err, group.ErrNotAssigned):
+		return nil, protocol.NewError(protocol.CodeBadRequest,
+			fmt.Sprintf("partition %s/%d is not assigned to member %s", req.Topic, req.Partition, req.MemberID))
 	case err != nil:
 		return nil, fmt.Errorf("commit offset: %w", err)
 	}
@@ -422,8 +450,19 @@ func (b *Broker) CommitOffset(_ context.Context, req *protocol.CommitOffsetReque
 }
 
 func (b *Broker) FetchOffset(_ context.Context, req *protocol.FetchOffsetRequest) (*protocol.FetchOffsetResponse, error) {
-	if err := b.checkTopicPartition(req.Topic, req.Partition); err != nil {
+	if _, err := b.checkTopicPartition(req.Topic, req.Partition); err != nil {
 		return nil, err
+	}
+	// BRKR-03: offset reads are membership-bound. Without this any
+	// client could read any group's committed offsets by naming its id.
+	err := b.groups.CheckOffsetAccess(req.Group, req.MemberID, req.Generation)
+	switch {
+	case errors.Is(err, group.ErrUnknownMember):
+		return nil, protocol.NewError(protocol.CodeUnknownMember, req.MemberID)
+	case errors.Is(err, group.ErrRebalance):
+		return nil, protocol.NewError(protocol.CodeRebalance, "unknown group or stale generation: re-join")
+	case err != nil:
+		return nil, fmt.Errorf("fetch offset: %w", err)
 	}
 	return &protocol.FetchOffsetResponse{Offset: b.groups.Committed(req.Group, req.Topic, req.Partition)}, nil
 }
@@ -463,18 +502,18 @@ func (b *Broker) Heartbeat(_ context.Context, req *protocol.HeartbeatRequest) (*
 
 // ---- helpers ----
 
-func (b *Broker) checkTopicPartition(topic string, partition int32) error {
+func (b *Broker) checkTopicPartition(topic string, partition int32) (*storage.Topic, error) {
 	t, err := b.store.Topic(topic)
 	if errors.Is(err, storage.ErrTopicNotFound) {
-		return protocol.NewError(protocol.CodeTopicNotFound, topic)
+		return nil, protocol.NewError(protocol.CodeTopicNotFound, topic)
 	}
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if partition < 0 || partition >= int32(t.NumPartitions()) {
-		return protocol.NewError(protocol.CodeBadRequest, fmt.Sprintf("partition %d out of range", partition))
+		return nil, protocol.NewError(protocol.CodeBadRequest, fmt.Sprintf("partition %d out of range", partition))
 	}
-	return nil
+	return t, nil
 }
 
 func (b *Broker) writerFor(topic string, partition int32) *partWriter {

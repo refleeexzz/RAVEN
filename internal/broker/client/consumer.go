@@ -196,7 +196,7 @@ func (c *Consumer) runGeneration(ctx context.Context, gen int32, assignments []p
 	for _, a := range assignments {
 		for _, p := range a.Partitions {
 			tp := topicPartition{a.Topic, p}
-			off, err := c.fetchOffset(genCtx, tp)
+			off, err := c.fetchOffset(genCtx, tp, gen)
 			if err != nil {
 				if ctx.Err() != nil {
 					return
@@ -339,8 +339,11 @@ func (c *Consumer) fetch(ctx context.Context, tp topicPartition, offset uint64, 
 	return resp, nil
 }
 
-func (c *Consumer) fetchOffset(ctx context.Context, tp topicPartition) (uint64, error) {
-	payload, _ := json.Marshal(protocol.FetchOffsetRequest{Group: c.group, Topic: tp.topic, Partition: tp.partition})
+func (c *Consumer) fetchOffset(ctx context.Context, tp topicPartition, gen int32) (uint64, error) {
+	payload, _ := json.Marshal(protocol.FetchOffsetRequest{
+		Group: c.group, MemberID: c.memberID,
+		Topic: tp.topic, Partition: tp.partition, Generation: gen,
+	})
 	frame, err := c.t.call(ctx, protocol.OpFetchOffset, payload)
 	if err != nil {
 		return 0, err
