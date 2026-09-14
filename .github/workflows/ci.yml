@@ -106,4 +106,8 @@ jobs:
       - name: go test (integration)
         # testcontainers spins its own postgres/redis containers — the
         # only requirement is a Docker daemon, which GHA runners have.
-        run: go test -tags=integration ./tests/integration/... -timeout 10m
+        # WORKER_WEBHOOK_ALLOW_PRIVATE lets the SSRF egress guard reach
+        # the loopback httptest servers used by the webhook suites.
+        env:
+          WORKER_WEBHOOK_ALLOW_PRIVATE: "true"
+        run: go test -tags=integration ./tests/integration/... ./tests/security/... -timeout 10m

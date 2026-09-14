@@ -50,9 +50,11 @@ test-race:
 	$(GO) test -race ./...
 
 ## test-integration: integration tests (needs Docker)
+## WORKER_WEBHOOK_ALLOW_PRIVATE lets the SSRF egress guard reach the
+## loopback httptest servers used by the webhook suites.
 .PHONY: test-integration
 test-integration:
-	$(GO) test -tags=integration ./tests/integration/...
+	WORKER_WEBHOOK_ALLOW_PRIVATE=true $(GO) test -tags=integration ./tests/integration/... ./tests/security/...
 
 ## coverage
 .PHONY: coverage
