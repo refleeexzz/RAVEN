@@ -90,6 +90,10 @@ type Broker struct {
 	// (raven_broker_retention_bytes_freed_total). Kept on the Broker, not
 	// in Metrics, so metrics.go stays untouched for parallel work.
 	retentionFreed *prometheus.CounterVec
+	// compactionFreed counts bytes reclaimed by log compaction;
+	// compactionDropped counts superseded records removed.
+	compactionFreed   *prometheus.CounterVec
+	compactionDropped *prometheus.CounterVec
 
 	// writers holds one partWriter per partition. Channels are closed
 	// only during shutdown, after the server has fully drained, so no
@@ -143,6 +147,18 @@ func New(cfg Config, log *slog.Logger, reg CollectorRegistrar) (*Broker, error) 
 			Name:      "retention_bytes_freed_total",
 			Help:      "Total bytes deleted by retention sweeps (.log + .index), by topic and partition.",
 		}, []string{"topic", "partition"}),
+		compactionFreed: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Namespace: "raven",
+			Subsystem: "broker",
+			Name:      "compaction_bytes_freed_total",
+			Help:      "Total bytes reclaimed by log compaction, by topic and partition.",
+		}, []string{"topic", "partition"}),
+		compactionDropped: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Namespace: "raven",
+			Subsystem: "broker",
+			Name:      "compaction_records_dropped_total",
+			Help:      "Total superseded records removed by log compaction, by topic and partition.",
+		}, []string{"topic", "partition"}),
 		cleanupDone: make(chan struct{}),
 	}
 	for _, t := range store.Topics() {
@@ -159,7 +175,7 @@ func New(cfg Config, log *slog.Logger, reg CollectorRegistrar) (*Broker, error) 
 	)
 	if reg != nil {
 		b.registerMetrics(reg)
-		reg.Register(b.retentionFreed)
+		reg.Register(b.retentionFreed, b.compactionFreed, b.compactionDropped)
 	}
 	return b, nil
 }
@@ -575,9 +591,15 @@ func (b *Broker) minCommittedSnapshot() map[string]map[int32]uint64 {
 
 // observeCleanup turns one partition's sweep stats into metrics.
 func (b *Broker) observeCleanup(stats storage.CleanupStats) {
+	part := strconv.Itoa(int(stats.Partition))
 	if stats.Retention.BytesFreed > 0 {
-		part := strconv.Itoa(int(stats.Partition))
 		b.retentionFreed.WithLabelValues(stats.Topic, part).Add(float64(stats.Retention.BytesFreed))
+	}
+	if stats.Compaction.BytesFreed > 0 {
+		b.compactionFreed.WithLabelValues(stats.Topic, part).Add(float64(stats.Compaction.BytesFreed))
+	}
+	if stats.Compaction.RecordsDropped > 0 {
+		b.compactionDropped.WithLabelValues(stats.Topic, part).Add(float64(stats.Compaction.RecordsDropped))
 	}
 }
 

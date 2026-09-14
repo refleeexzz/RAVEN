@@ -145,6 +145,67 @@ Metrics: `raven_broker_retention_bytes_freed_total` (counter per
 topic/partition) tells you how much the cleaner freed;
 `raven_broker_segment_count` (existing gauge) drops as segments are deleted.
 
+## Log compaction
+
+Retention deletes whole segments by age or size. **Compaction** is different:
+it shrinks closed segments by keeping only the newest record for every key.
+Think of a topic as a changelog where only the latest state matters —
+`key=A → 1`, `key=A → 2`, `key=A → 3` becomes just `key=A → 3`.
+
+It is opt-in per topic (there is no global switch on purpose):
+
+```
+BROKER_TOPIC_CONFIGS={"state":{"compact":true}}
+```
+
+How a pass works, per partition, inside the same cleaner loop as retention:
+
+1. **Snapshot** the closed segments. The active segment is never compacted —
+   same rule as retention, same reason: it is still being written.
+2. **Offset map**: scan every closed segment and remember, per key, the
+   highest offset. Keyless records are not in the map: there is nothing to
+   dedupe them by, so they always stay. If the map would grow past 4M
+   distinct keys, the pass aborts and the partition is left untouched —
+   compaction is an optimization, never worth an OOM.
+3. **Rewrite**: each segment is rewritten to `<base>.log.swap` +
+   `<base>.index.swap`, keeping only records whose offset is the highest for
+   their key (plus every keyless record), fsynced. A segment with zero drops
+   is skipped, so a second pass over clean data costs only a scan. A segment
+   with zero survivors is deleted entirely.
+4. **Atomic swap**: the `_compacted` marker file is written and fsynced
+   first, then per segment: close old files → remove old pair → rename swap
+   pair into place.
+
+Crash safety is the point of the swap dance. At every instant, each segment
+exists on disk as either the whole old pair or the whole new pair, never a
+mix. On boot, before opening anything, the broker resolves leftovers: real
+files intact → swap files are garbage, delete them; some real file missing →
+the swap was interrupted mid-way, complete it. Both directions have tests
+that manufacture the exact crash state on disk and then boot.
+
+Two rules to know before marking a topic compactable:
+
+- **Offsets are preserved, holes and all.** Dropped records leave gaps; the
+  high-water mark never moves; nothing is renumbered. A fetch that lands in a
+  hole just skips forward to the next surviving record. This is exactly
+  Kafka's model. The `_compacted` marker file in the partition dir is how
+  recovery knows gaps are fine and not corruption.
+- **There are no tombstones in v1.** The record format cannot tell a null
+  value from an empty one, so an empty value is simply the latest value for
+  its key and is kept. If you need delete-markers, that is a format change
+  for a later version.
+
+Reads and writes keep working during compaction: the scan and the swap-file
+writes run without holding the partition lock (closed segments are
+immutable), and only the rename phase takes the write lock, for a few file
+operations per segment.
+
+Metrics: `raven_broker_compaction_bytes_freed_total` and
+`raven_broker_compaction_records_dropped_total`, both per topic/partition.
+The storage benchmark (`BenchmarkCompactPartition`) measures the I/O cost of
+a full pass — scan + rewrite + swap — so you can see what a compactable topic
+costs before enabling it.
+
 ## Concurrency design
 
 - One goroutine per connection reads frames and dispatches handlers.
@@ -219,8 +280,9 @@ at scrape time), `raven_broker_active_groups`.
 ## Current limitations (being honest)
 
 1. **Single node.** No replication. The disk dies, data is gone.
-2. **No compaction.** Retention deletes old segments (see above), but
-   superseded values inside a segment are never cleaned by key.
+2. **Compaction has no tombstones yet.** Retention deletes old segments and
+   opt-in topics compact by key (see above), but empty values are kept, not
+   treated as delete markers.
 3. **No idempotent/exactly-once produce.** Retrying a produce after an
    ambiguous failure can duplicate records.
 4. **Static partition count.** You pick it at topic creation; there's no

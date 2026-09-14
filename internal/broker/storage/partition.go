@@ -6,6 +6,7 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -48,8 +49,12 @@ type Partition struct {
 	recordsSinceFlush int
 	dirty             bool // data written since last successful Flush
 	dirtySegStart     int  // first segment that may hold unsynced data
-	closed            bool
-	log               *slog.Logger
+	// gapsAllowed is true once the partition was compacted at least once
+	// (persisted as the _compacted marker file). Index rebuilds then
+	// tolerate offset gaps inside inactive segments.
+	gapsAllowed bool
+	closed      bool
+	log         *slog.Logger
 }
 
 // OpenPartition opens (or creates) the partition stored in dir and runs
@@ -60,6 +65,11 @@ func OpenPartition(dir, topic string, id int32, opts Options, log *slog.Logger) 
 	}
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return nil, fmt.Errorf("create partition dir: %w", err)
+	}
+	// Finish or undo any compaction swap interrupted by a crash before
+	// we trust the segment list. See compaction.go for the protocol.
+	if err := resolveSwapFiles(dir); err != nil {
+		return nil, fmt.Errorf("resolve compaction leftovers: %w", err)
 	}
 	bases, err := listSegmentBases(dir)
 	if err != nil {
@@ -72,6 +82,9 @@ func OpenPartition(dir, topic string, id int32, opts Options, log *slog.Logger) 
 		opts:          opts,
 		dirtySegStart: 0,
 		log:           log.With(slog.String("topic", topic), slog.Int("partition", int(id))),
+	}
+	if _, err := os.Stat(filepath.Join(dir, compactedMarkerName)); err == nil {
+		p.gapsAllowed = true
 	}
 	if len(bases) == 0 {
 		bases = []uint64{0}
@@ -177,6 +190,9 @@ func (p *Partition) recoverActive(s *segment) error {
 }
 
 // rebuildIndex rescans an inactive segment to rebuild a lost index.
+// Compacted partitions may legitimately have offset gaps (compaction
+// removes records without renumbering); for those, gaps are skipped
+// instead of treated as corruption.
 func (p *Partition) rebuildIndex(s *segment) error {
 	s.entries = nil
 	s.bytesSinceIndex = 0
@@ -185,15 +201,20 @@ func (p *Partition) rebuildIndex(s *segment) error {
 	var scanErr error
 	err := streamRecords(s.log, 0, s.size, true, func(r *Record, pos, size int64) bool {
 		if r.Offset != expected {
-			scanErr = fmt.Errorf("offset gap at %d", r.Offset)
-			return false
+			if p.gapsAllowed && r.Offset > expected {
+				// Compaction hole: the records between expected and
+				// r.Offset were superseded and removed. Not corruption.
+			} else {
+				scanErr = fmt.Errorf("offset gap at %d", r.Offset)
+				return false
+			}
 		}
 		if s.bytesSinceIndex >= s.indexInterval {
 			s.addIndexEntry(indexEntry{relOffset: uint32(r.Offset - s.baseOffset), position: uint32(pos)})
 			s.bytesSinceIndex = 0
 		}
 		s.bytesSinceIndex += size
-		expected++
+		expected = r.Offset + 1
 		if r.TimestampMs > s.maxTs {
 			s.maxTs = r.TimestampMs
 		}

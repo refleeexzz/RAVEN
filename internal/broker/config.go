@@ -12,14 +12,16 @@ import (
 // TopicOverride holds per-topic cleanup settings. It rides the
 // BROKER_TOPIC_CONFIGS env var as JSON, e.g.:
 //
-//	BROKER_TOPIC_CONFIGS={"jobs-dlq":{"retention_ms":86400000},"state":{"retention_bytes":1073741824}}
+//	BROKER_TOPIC_CONFIGS={"jobs-dlq":{"retention_ms":86400000},"state":{"compact":true}}
 //
 // Fields absent from the JSON inherit the global defaults
 // (RetentionMaxAge / RetentionMaxBytes). Overrides for topics that do
-// not exist are ignored at sweep time.
+// not exist are ignored at sweep time. Compaction is opt-in per topic
+// only — there is deliberately no global "compact everything" switch.
 type TopicOverride struct {
 	RetentionMs    *int64 `json:"retention_ms,omitempty"`
 	RetentionBytes *int64 `json:"retention_bytes,omitempty"`
+	Compact        bool   `json:"compact,omitempty"`
 }
 
 // Config holds every broker knob. All of it comes from env vars
@@ -102,6 +104,7 @@ func (c Config) policyFor(topic string) storage.Policy {
 		if ov.RetentionBytes != nil {
 			pol.RetentionMaxBytes = *ov.RetentionBytes
 		}
+		pol.Compact = ov.Compact
 	}
 	return pol
 }

@@ -13,6 +13,8 @@ type CleanupStats struct {
 	Topic     string
 	Partition int32
 	Retention RetentionStats
+	// Compaction is zero unless the topic's policy has Compact set.
+	Compaction CompactionStats
 }
 
 // PolicyFunc resolves the cleanup policy for one topic. Called once per
@@ -30,12 +32,14 @@ type SafetyFunc func() map[string]map[int32]uint64
 type CleanupObserver func(CleanupStats)
 
 // RunCleaner is the store's background cleanup loop: every interval it
-// sweeps every partition, applying retention. It returns when ctx is
-// cancelled; the broker waits for it before closing the store, so no
-// cleanup ever touches a closed partition.
+// sweeps every partition, applying retention and (for compactable
+// topics) compaction. It returns when ctx is cancelled; the broker waits
+// for it before closing the store, so no cleanup ever touches a closed
+// partition.
 //
-// The loop is the only caller of ApplyRetention and it processes one
-// partition at a time, so deletion never races itself.
+// The loop is the only caller of ApplyRetention and Compact, and it
+// processes one partition at a time, so deletion and compaction never
+// run concurrently on the same partition.
 func (s *Store) RunCleaner(ctx context.Context, interval time.Duration, policy PolicyFunc, safety SafetyFunc, obs CleanupObserver) {
 	if interval <= 0 {
 		interval = 5 * time.Minute
@@ -55,7 +59,9 @@ func (s *Store) RunCleaner(ctx context.Context, interval time.Duration, policy P
 // SweepOnce runs a single cleanup pass over every partition of every
 // topic. Exported so tests can drive it deterministically (no ticker)
 // and so operators could trigger a manual sweep. It checks ctx between
-// partitions, so a shutdown stops the sweep promptly.
+// partitions and between compaction segments, so a shutdown stops the
+// sweep promptly; a compaction interrupted mid-segment leaves only swap
+// files, which the next boot resolves (see compaction.go).
 func (s *Store) SweepOnce(ctx context.Context, policy PolicyFunc, safety SafetyFunc, obs CleanupObserver) {
 	var min map[string]map[int32]uint64
 	if safety != nil {
@@ -92,6 +98,26 @@ func (s *Store) SweepOnce(ctx context.Context, policy PolicyFunc, safety SafetyF
 						slog.Int("partition", int(p.ID())),
 						slog.Int("segments", rs.SegmentsDeleted),
 						slog.Int64("bytes_freed", rs.BytesFreed))
+				}
+			}
+			if pol.Compact {
+				cs, err := p.Compact(ctx)
+				if err != nil && ctx.Err() == nil {
+					s.log.Error("compaction failed",
+						slog.String("topic", t.Name),
+						slog.Int("partition", int(p.ID())),
+						slog.Any("err", err))
+				} else {
+					stats.Compaction = cs
+					if cs.SegmentsRewritten > 0 || cs.SegmentsDeleted > 0 {
+						s.log.Info("compaction pass",
+							slog.String("topic", t.Name),
+							slog.Int("partition", int(p.ID())),
+							slog.Int("segments_rewritten", cs.SegmentsRewritten),
+							slog.Int("segments_deleted", cs.SegmentsDeleted),
+							slog.Int("records_dropped", cs.RecordsDropped),
+							slog.Int64("bytes_freed", cs.BytesFreed))
+					}
 				}
 			}
 			if obs != nil {
