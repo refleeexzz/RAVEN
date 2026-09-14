@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/redis/go-redis/v9"
@@ -23,6 +24,7 @@ import (
 	"github.com/refleeexzz/RAVEN/internal/health"
 	"github.com/refleeexzz/RAVEN/internal/httpserver"
 	"github.com/refleeexzz/RAVEN/internal/middleware"
+	"github.com/refleeexzz/RAVEN/pkg/errors"
 	"github.com/refleeexzz/RAVEN/pkg/logger"
 	"github.com/refleeexzz/RAVEN/pkg/metrics"
 	"github.com/refleeexzz/RAVEN/pkg/tracing"
@@ -170,14 +172,17 @@ func (s *server) handler() http.Handler {
 
 	// /ws gets only RequestID + Recovery. Logging, metrics and timeout wrap
 	// the ResponseWriter with recorders that do not implement http.Hijacker,
-	// which would break the websocket upgrade.
-	ws := middleware.Chain(s.wsProxy, middleware.RequestID, middleware.Recovery(s.log))
+	// which would break the websocket upgrade. The path guard rejects
+	// encoded dot-segments (%2e%2e) that slip past ServeMux cleaning and
+	// would otherwise be proxied to the websocket service verbatim (EDGE-04).
+	ws := middleware.Chain(s.wsProxy, middleware.RequestID, middleware.Recovery(s.log), wsPathGuard)
 	mux.Handle("GET /ws", ws)
 	mux.Handle("GET /ws/", ws)
 
-	// Outermost layer: CORS for the console's browser fetches. Header-only
-	// (no ResponseWriter wrapping), so /ws hijacking still works.
-	return cors(mux)
+	// Outermost layer: CORS for the console's browser fetches, wrapped by the
+	// security-header baseline. Both are header-only (no ResponseWriter
+	// wrapping), so /ws hijacking still works.
+	return secureHeaders(cors(mux))
 }
 
 // wrapAPI applies the API middleware chain to one route:
@@ -212,6 +217,25 @@ func (s *server) wrapOps(h http.Handler) http.Handler {
 		middleware.Recovery(s.log),
 		s.metr.Middleware,
 	)
+}
+
+// wsPathGuard rejects requests whose DECODED path contains a ".." segment.
+// ServeMux cleans raw dot-segments with a redirect before routing, but
+// encoded ones (%2e%2e) match the /ws/ subtree uncleaned and the reverse
+// proxy would forward the traversal verbatim to the websocket service —
+// silently expanding what the mount can reach the day the ws service adds a
+// subtree route. Header-only middleware: safe for the upgrade hijack.
+func wsPathGuard(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		for _, seg := range strings.Split(r.URL.Path, "/") {
+			if seg == ".." {
+				writeError(w, r, errors.E(errors.KindInvalid, "invalid_path",
+					"path must not contain .. segments", nil))
+				return
+			}
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 // otelMiddleware wraps requests with an otelhttp span when tracing is on,

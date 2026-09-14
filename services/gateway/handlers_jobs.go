@@ -5,8 +5,11 @@ package gateway
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"net/http"
+	"strconv"
 	"strings"
 
 	"github.com/redis/go-redis/v9"
@@ -100,7 +103,9 @@ type createJobRequest struct {
 }
 
 // create handles POST /api/jobs. The Idempotency-Key header is forwarded
-// into CreateJobRequest.idempotency_key so retries collapse to one job.
+// into CreateJobRequest.idempotency_key — but never verbatim: it is first
+// bound to a fingerprint of the whole request so a replayed key with a
+// different payload cannot return the original job (see bindIdempotencyKey).
 func (h *jobsHandlers) create(w http.ResponseWriter, r *http.Request) {
 	var req createJobRequest
 	if err := decodeJSON(r, &req); err != nil {
@@ -121,7 +126,7 @@ func (h *jobsHandlers) create(w http.ResponseWriter, r *http.Request) {
 			PayloadJson:    string(req.Payload),
 			Priority:       req.Priority,
 			MaxAttempts:    req.MaxAttempts,
-			IdempotencyKey: r.Header.Get("Idempotency-Key"),
+			IdempotencyKey: bindIdempotencyKey(r.Header.Get("Idempotency-Key"), &req),
 		})
 		return err
 	})
@@ -130,6 +135,33 @@ func (h *jobsHandlers) create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusCreated, jobToJSON(job))
+}
+
+// bindIdempotencyKey derives the upstream idempotency key from the
+// client-supplied key and a SHA-256 fingerprint of everything that defines
+// the job (type, payload, priority, max_attempts). Dedup semantics after
+// binding: same key + same request → same upstream key → the jobs service
+// returns the original job; same key + different request → a different
+// upstream key → a NEW job instead of the wrong one. Without binding, the
+// jobs service dedupes on the bare key and a replay with a swapped payload
+// silently returns the original job (EDGE-03).
+//
+// The upstream key keeps the client key as a readable prefix and stays
+// within the jobs service's 255-char contract; keys too long for
+// "key:fingerprint" are fully hashed instead.
+func bindIdempotencyKey(clientKey string, req *createJobRequest) string {
+	key := strings.TrimSpace(clientKey)
+	if key == "" {
+		return ""
+	}
+	fp := sha256.Sum256([]byte(req.Type + "\x00" + string(req.Payload) + "\x00" +
+		strconv.Itoa(int(req.Priority)) + "\x00" + strconv.Itoa(int(req.MaxAttempts))))
+	suffix := hex.EncodeToString(fp[:])[:16]
+	if bound := key + ":" + suffix; len(bound) <= 255 {
+		return bound
+	}
+	full := sha256.Sum256([]byte(key + "\x00" + suffix))
+	return hex.EncodeToString(full[:])
 }
 
 // list handles GET /api/jobs?page=&page_size=&status=&type=.

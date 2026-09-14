@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -63,6 +64,7 @@ func run() error {
 		Presence:       presence,
 		JWTSecret:      config.Get("JWT_SECRET", "dev-only-secret-change-me"),
 		AllowAnonymous: config.GetBool("WS_ALLOW_ANONYMOUS", false),
+		AllowedOrigins: splitCSV(config.Get("WS_ALLOWED_ORIGINS", "")),
 		Logger:         log,
 		Metrics:        reg,
 		Health:         healthReg,
@@ -87,4 +89,15 @@ func run() error {
 	hub.Shutdown(shutdownCtx)
 
 	return err
+}
+
+// splitCSV parses the comma-separated WS_ALLOWED_ORIGINS list.
+func splitCSV(raw string) []string {
+	var out []string
+	for _, part := range strings.Split(raw, ",") {
+		if part = strings.TrimSpace(part); part != "" {
+			out = append(out, part)
+		}
+	}
+	return out
 }
