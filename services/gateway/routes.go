@@ -42,6 +42,11 @@ func (s *server) table() []route {
 		{"POST", "/api/jobs/{id}/requeue", ravenauth.PermJobsCreate, s.jobsH.requeue},
 		{"POST", "/api/jobs/{id}/replay", ravenauth.PermJobsCreate, s.jobsH.replay},
 
+		// Cron schedules (jobs service, migration 000004).
+		{"POST", "/api/crons", ravenauth.PermJobsCreate, s.jobsH.createCron},
+		{"GET", "/api/crons", ravenauth.PermJobsRead, s.jobsH.listCrons},
+		{"DELETE", "/api/crons/{id}", ravenauth.PermJobsCancel, s.jobsH.deleteCron},
+
 		// Live worker registry (from Redis).
 		{"GET", "/api/workers", ravenauth.PermJobsRead, s.jobsH.workers},
 

@@ -36,6 +36,10 @@ var expectedRoutes = []struct {
 	{"POST", "/api/jobs/{id}/requeue", ravenauth.PermJobsCreate},
 	{"POST", "/api/jobs/{id}/replay", ravenauth.PermJobsCreate},
 
+	{"POST", "/api/crons", ravenauth.PermJobsCreate},
+	{"GET", "/api/crons", ravenauth.PermJobsRead},
+	{"DELETE", "/api/crons/{id}", ravenauth.PermJobsCancel},
+
 	{"GET", "/api/workers", ravenauth.PermJobsRead},
 
 	{"GET", "/api/audit", ravenauth.PermUsersDelete}, // admin-only audit trail

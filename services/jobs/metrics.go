@@ -21,6 +21,8 @@ type ServiceMetrics struct {
 	dead             prometheus.GaugeFunc   // raven_jobs_dead
 	scheduled        prometheus.GaugeFunc   // raven_jobs_scheduled
 	dispatched       prometheus.Counter     // raven_jobs_scheduled_dispatched_total
+	cronCreated      prometheus.Counter     // raven_jobs_cron_created_total
+	cronSpawned      prometheus.Counter     // raven_jobs_cron_spawned_total
 	sweeperRuns      prometheus.Counter     // raven_jobs_sweeper_runs_total
 	sweeperRecovered *prometheus.CounterVec // raven_jobs_sweeper_recovered_total{outcome}
 }
@@ -77,6 +79,18 @@ func NewServiceMetrics(reg *metrics.Registry, countStatus func(Status) (int64, e
 			Name:      "scheduled_dispatched_total",
 			Help:      "Delayed jobs the dispatcher released to the broker (SCHEDULED -> QUEUED).",
 		}),
+		cronCreated: prometheus.NewCounter(prometheus.CounterOpts{
+			Namespace: "raven",
+			Subsystem: "jobs",
+			Name:      "cron_created_total",
+			Help:      "Cron schedules accepted by CreateCron.",
+		}),
+		cronSpawned: prometheus.NewCounter(prometheus.CounterOpts{
+			Namespace: "raven",
+			Subsystem: "jobs",
+			Name:      "cron_spawned_total",
+			Help:      "Job instances spawned by the cron scheduler.",
+		}),
 		sweeperRuns: prometheus.NewCounter(prometheus.CounterOpts{
 			Namespace: "raven",
 			Subsystem: "jobs",
@@ -91,7 +105,7 @@ func NewServiceMetrics(reg *metrics.Registry, countStatus func(Status) (int64, e
 		}, []string{"outcome"}),
 	}
 	reg.Register(m.jobsTotal, m.created, m.processing, m.queued, m.retrying, m.dead,
-		m.scheduled, m.dispatched, m.sweeperRuns, m.sweeperRecovered)
+		m.scheduled, m.dispatched, m.cronCreated, m.cronSpawned, m.sweeperRuns, m.sweeperRecovered)
 	return m
 }
 

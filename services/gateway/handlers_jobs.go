@@ -268,6 +268,137 @@ func (h *jobsHandlers) replay(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, jobToJSON(job))
 }
 
+// ---------------------------------------------------------------------------
+// Cron schedules: POST /api/crons, GET /api/crons, DELETE /api/crons/{id}
+// ---------------------------------------------------------------------------
+
+// cronJSON is the public wire shape of a cron schedule.
+type cronJSON struct {
+	ID        string          `json:"id"`
+	Name      string          `json:"name"`
+	CronExpr  string          `json:"cron_expr"`
+	Type      string          `json:"type"`
+	Payload   json.RawMessage `json:"payload"`
+	Priority  int32           `json:"priority"`
+	Enabled   bool            `json:"enabled"`
+	NextRunAt int64           `json:"next_run_at"`
+	LastRunAt int64           `json:"last_run_at"`
+	CreatedAt int64           `json:"created_at"`
+}
+
+func cronToJSON(c *genjobs.CronSchedule) cronJSON {
+	payload := json.RawMessage(c.GetPayloadJson())
+	if len(payload) == 0 || !json.Valid(payload) {
+		payload, _ = json.Marshal(c.GetPayloadJson())
+	}
+	return cronJSON{
+		ID:        c.GetId(),
+		Name:      c.GetName(),
+		CronExpr:  c.GetCronExpr(),
+		Type:      c.GetType(),
+		Payload:   payload,
+		Priority:  c.GetPriority(),
+		Enabled:   c.GetEnabled(),
+		NextRunAt: c.GetNextRunAt(),
+		LastRunAt: c.GetLastRunAt(),
+		CreatedAt: c.GetCreatedAt(),
+	}
+}
+
+// createCronRequest is the body of POST /api/crons. Enabled is a pointer so
+// an absent field defaults to true while an explicit false stays false.
+type createCronRequest struct {
+	Name     string          `json:"name"`
+	CronExpr string          `json:"cron_expr"`
+	Type     string          `json:"type"`
+	Payload  json.RawMessage `json:"payload"`
+	Priority int32           `json:"priority"`
+	Enabled  *bool           `json:"enabled"`
+}
+
+// createCron handles POST /api/crons.
+func (h *jobsHandlers) createCron(w http.ResponseWriter, r *http.Request) {
+	var req createCronRequest
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, r, err)
+		return
+	}
+	if strings.TrimSpace(req.Name) == "" {
+		writeError(w, r, errors.E(errors.KindInvalid, "cron_name_required",
+			"name is required", nil))
+		return
+	}
+	if strings.TrimSpace(req.CronExpr) == "" {
+		writeError(w, r, errors.E(errors.KindInvalid, "cron_expr_required",
+			"cron_expr is required", nil))
+		return
+	}
+	if strings.TrimSpace(req.Type) == "" {
+		writeError(w, r, errors.E(errors.KindInvalid, "type_required",
+			"job type is required", nil))
+		return
+	}
+	enabled := true
+	if req.Enabled != nil {
+		enabled = *req.Enabled
+	}
+
+	var cron *genjobs.CronSchedule
+	err := h.jobs.call(r.Context(), "CreateCron", false, func(ctx context.Context) error {
+		var err error
+		cron, err = h.client.CreateCron(ctx, &genjobs.CreateCronRequest{
+			Name:        req.Name,
+			CronExpr:    req.CronExpr,
+			Type:        req.Type,
+			PayloadJson: string(req.Payload),
+			Priority:    req.Priority,
+			Enabled:     enabled,
+		})
+		return err
+	})
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, cronToJSON(cron))
+}
+
+// listCrons handles GET /api/crons?page=&page_size=.
+func (h *jobsHandlers) listCrons(w http.ResponseWriter, r *http.Request) {
+	var resp *genjobs.ListCronsResponse
+	err := h.jobs.call(r.Context(), "ListCrons", true, func(ctx context.Context) error {
+		var err error
+		resp, err = h.client.ListCrons(ctx, &genjobs.ListCronsRequest{Page: pageRequest(r)})
+		return err
+	})
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+	crons := make([]cronJSON, 0, len(resp.GetCrons()))
+	for _, c := range resp.GetCrons() {
+		crons = append(crons, cronToJSON(c))
+	}
+	p := resp.GetPage()
+	writeJSON(w, http.StatusOK, map[string]any{
+		"crons": crons,
+		"page":  pageJSON{Page: p.GetPage(), PageSize: p.GetPageSize(), Total: p.GetTotal()},
+	})
+}
+
+// deleteCron handles DELETE /api/crons/{id}.
+func (h *jobsHandlers) deleteCron(w http.ResponseWriter, r *http.Request) {
+	err := h.jobs.call(r.Context(), "DeleteCron", false, func(ctx context.Context) error {
+		_, err := h.client.DeleteCron(ctx, &genjobs.DeleteCronRequest{Id: r.PathValue("id")})
+		return err
+	})
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
 // workers handles GET /api/workers by scanning the worker registry in Redis:
 // keys worker:<id> are hashes with a 15 s TTL, so whatever SCAN finds is a
 // live worker (modulo the scan/fetch race, which we skip silently).
