@@ -145,6 +145,39 @@ func assignRole(ctx context.Context, q querier, userID, role string) error {
 	return nil
 }
 
+// callerPermissions loads the distinct permission names a caller holds
+// through its roles. The RBAC tables are shared with the auth service
+// (single-schema trade-off, migration 000001); reads here keep object-level
+// authorization decisions fresh — no cache on the authorization path.
+func callerPermissions(ctx context.Context, q querier, userID string) ([]string, error) {
+	rows, err := q.Query(ctx, `
+		SELECT DISTINCT p.name
+		FROM permissions p
+		JOIN role_permissions rp ON rp.permission_id = p.id
+		JOIN user_roles ur ON ur.role_id = rp.role_id
+		WHERE ur.user_id = $1::uuid`, userID)
+	if err != nil {
+		return nil, errors.E(errors.KindUnknown, "perms_load_failed",
+			"could not load caller permissions", err)
+	}
+	defer rows.Close()
+
+	var out []string
+	for rows.Next() {
+		var s string
+		if err := rows.Scan(&s); err != nil {
+			return nil, errors.E(errors.KindUnknown, "perms_load_failed",
+				"could not read caller permissions", err)
+		}
+		out = append(out, s)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, errors.E(errors.KindUnknown, "perms_load_failed",
+			"could not load caller permissions", err)
+	}
+	return out, nil
+}
+
 // updateProfile upserts the profile fields owned by this service.
 func updateProfile(ctx context.Context, q querier, userID, bio, avatarURL string) error {
 	_, err := q.Exec(ctx, `

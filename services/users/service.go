@@ -29,7 +29,7 @@ type Config struct {
 	HTTPAddr    string // :8082 (ops)
 	DatabaseURL string
 	LogLevel    string
-	BcryptCost  int // USERS_BCRYPT_COST; tests use bcrypt.MinCost (4)
+	BcryptCost  int // USERS_BCRYPT_COST; clamped to [10, ∞) by HashPassword
 
 	// Tracing (OTel). Disabled by default locally; enabled in k8s via
 	// the raven-config ConfigMap.

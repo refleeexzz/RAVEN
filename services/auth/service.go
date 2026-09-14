@@ -31,7 +31,7 @@ type Config struct {
 	RedisAddr   string
 	JWTSecret   string
 	LogLevel    string
-	BcryptCost  int // AUTH_BCRYPT_COST; tests use bcrypt.MinCost (4)
+	BcryptCost  int // AUTH_BCRYPT_COST; clamped to [10, ∞) by HashPassword
 
 	// Tracing (OTel). Disabled by default locally; enabled in k8s via
 	// the raven-config ConfigMap.

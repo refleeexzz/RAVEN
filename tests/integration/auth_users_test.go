@@ -27,6 +27,7 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 
 	"github.com/refleeexzz/RAVEN/internal/database"
@@ -552,8 +553,11 @@ func TestAuthUsers_UsersCRUD(t *testing.T) {
 	_, err = env.Users.GetUser(ctx, &genusers.GetUserRequest{Id: "00000000-0000-0000-0000-000000000000"})
 	requireGRPCCode(t, err, codes.NotFound)
 
-	// Update profile fields.
-	updated, err := env.Users.UpdateUser(ctx, &genusers.UpdateUserRequest{
+	// Update profile fields. The users service enforces owner-or-admin
+	// (AUTH-02); the gateway forwards the caller id as x-user-id metadata,
+	// which the test reproduces directly.
+	ownerCtx := metadata.AppendToOutgoingContext(ctx, "x-user-id", created.GetId())
+	updated, err := env.Users.UpdateUser(ownerCtx, &genusers.UpdateUserRequest{
 		Id:          created.GetId(),
 		DisplayName: "Dave B",
 		Bio:         "learning distributed systems",
@@ -569,12 +573,12 @@ func TestAuthUsers_UsersCRUD(t *testing.T) {
 	}
 
 	// Soft delete: afterwards GetUser is NotFound and re-delete is NotFound.
-	if _, err := env.Users.DeleteUser(ctx, &genusers.DeleteUserRequest{Id: created.GetId()}); err != nil {
+	if _, err := env.Users.DeleteUser(ownerCtx, &genusers.DeleteUserRequest{Id: created.GetId()}); err != nil {
 		t.Fatalf("DeleteUser: %v", err)
 	}
 	_, err = env.Users.GetUser(ctx, &genusers.GetUserRequest{Id: created.GetId()})
 	requireGRPCCode(t, err, codes.NotFound)
-	_, err = env.Users.DeleteUser(ctx, &genusers.DeleteUserRequest{Id: created.GetId()})
+	_, err = env.Users.DeleteUser(ownerCtx, &genusers.DeleteUserRequest{Id: created.GetId()})
 	requireGRPCCode(t, err, codes.NotFound)
 
 	// A soft-deleted user can no longer log in.
@@ -663,7 +667,9 @@ func TestAuthUsers_UsersListPagination(t *testing.T) {
 	if graceID == "" {
 		t.Fatal("grace@list.example.com not found in listing")
 	}
-	if _, err := env.Users.DeleteUser(ctx, &genusers.DeleteUserRequest{Id: graceID}); err != nil {
+	// grace deletes her own account (owner-or-admin enforcement, AUTH-02).
+	graceCtx := metadata.AppendToOutgoingContext(ctx, "x-user-id", graceID)
+	if _, err := env.Users.DeleteUser(graceCtx, &genusers.DeleteUserRequest{Id: graceID}); err != nil {
 		t.Fatalf("DeleteUser: %v", err)
 	}
 
@@ -678,7 +684,22 @@ func TestAuthUsers_UsersListPagination(t *testing.T) {
 		t.Errorf("after delete: got total %d, want 2", visible.GetPage().GetTotal())
 	}
 
-	withDeleted, err := env.Users.ListUsers(ctx, &genusers.ListUsersRequest{
+	// include_deleted is admin-only (AUTH-04): register and promote a caller
+	// to ADMIN directly in the database (no public role-grant RPC exists).
+	adm, err := env.Auth.Register(ctx, &genauth.RegisterRequest{
+		Email: "listadmin@example.com", Password: "password-123"})
+	if err != nil {
+		t.Fatalf("Register admin: %v", err)
+	}
+	if _, err := env.pool.Exec(ctx, `
+		INSERT INTO user_roles (user_id, role_id)
+		SELECT $1::uuid, id FROM roles WHERE name = 'ADMIN'
+		ON CONFLICT DO NOTHING`, adm.GetUserId()); err != nil {
+		t.Fatalf("promote admin: %v", err)
+	}
+	adminCtx := metadata.AppendToOutgoingContext(ctx, "x-user-id", adm.GetUserId())
+
+	withDeleted, err := env.Users.ListUsers(adminCtx, &genusers.ListUsersRequest{
 		Page:           &gencommon.PageRequest{Page: 1, PageSize: 10},
 		EmailFilter:    "list.example.com",
 		IncludeDeleted: true,

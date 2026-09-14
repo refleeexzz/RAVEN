@@ -50,12 +50,21 @@ type Server struct {
 	secret     string
 	bcryptCost int
 	metrics    *ServiceMetrics
+	// dummyHash is a bcrypt hash of a throwaway password, built once at
+	// startup with the configured cost. Login compares against it when the
+	// email is unknown so the response time is indistinguishable from a
+	// real wrong-password compare (account-enumeration timing oracle).
+	dummyHash string
 }
+
+// dummyLoginPassword is never a real credential; it only feeds the timing
+// equalizer hash.
+const dummyLoginPassword = "raven-timing-equalizer-not-a-real-password"
 
 // NewServer wires the gRPC service implementation. rdb may be nil; every
 // Redis use degrades gracefully (see ValidateToken for the trade-off).
 func NewServer(pool *pgxpool.Pool, rdb redis.UniversalClient, log *slog.Logger, jwtSecret string, bcryptCost int, m *ServiceMetrics) *Server {
-	return &Server{
+	s := &Server{
 		pool:       pool,
 		rdb:        rdb,
 		log:        log,
@@ -63,6 +72,16 @@ func NewServer(pool *pgxpool.Pool, rdb redis.UniversalClient, log *slog.Logger, 
 		bcryptCost: bcryptCost,
 		metrics:    m,
 	}
+	// Pre-build the timing dummy at the same effective cost real passwords
+	// are hashed with, so unknown-email logins pay one bcrypt compare too.
+	if h, err := ravenauth.HashPassword(dummyLoginPassword, bcryptCost); err != nil {
+		// Never block startup on this; worst case the old timing oracle
+		// comes back and the security regression test catches it.
+		log.Warn("could not build login timing dummy hash", slog.Any("error", err))
+	} else {
+		s.dummyHash = h
+	}
+	return s
 }
 
 // ---------------------------------------------------------------------------
@@ -130,6 +149,12 @@ func (s *Server) Login(ctx context.Context, req *genauth.LoginRequest) (*genauth
 	user, err := userByEmail(ctx, s.pool, req.GetEmail())
 	if err != nil {
 		if errors.KindOf(err) == errors.KindNotFound {
+			// Timing parity: run a real bcrypt compare against the dummy
+			// hash so the response time does not reveal that the email is
+			// not registered (account-enumeration oracle, AUTH-01).
+			if s.dummyHash != "" {
+				_ = ravenauth.CheckPassword(s.dummyHash, req.GetPassword())
+			}
 			s.metrics.logins.WithLabelValues("failure").Inc()
 			_ = insertAudit(ctx, s.pool, "", auditLoginFailed, ip, ua,
 				map[string]any{"email": req.GetEmail(), "reason": "unknown_email"})

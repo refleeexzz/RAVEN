@@ -13,8 +13,14 @@ import (
 const MinPasswordLength = 8
 
 // DefaultBcryptCost is the production bcrypt work factor. Tests override it
-// (bcrypt.MinCost) via the AUTH_BCRYPT_COST env var to stay fast.
+// via the AUTH_BCRYPT_COST env var, but never below MinBcryptCost.
 const DefaultBcryptCost = 12
+
+// MinBcryptCost is the security floor for the bcrypt work factor. A
+// misconfigured env var (e.g. AUTH_BCRYPT_COST=5) can never push hashing
+// below it. Cost 10 is still fast enough for tests (~50 ms) while staying
+// outside trivially-brute-forceable territory.
+const MinBcryptCost = 10
 
 // emailRe is a deliberately simple email shape check: one @, non-empty
 // local and domain parts, a dot in the domain, no whitespace. Full RFC 5322
@@ -52,12 +58,16 @@ func ValidatePassword(password string) error {
 	return nil
 }
 
-// HashPassword hashes password with bcrypt at the given cost. Costs below
-// bcrypt.MinCost are clamped up to DefaultBcryptCost so a misconfigured env
-// var can never weaken production hashing.
+// HashPassword hashes password with bcrypt at the given cost. Two clamps
+// protect production from misconfiguration: costs below bcrypt.MinCost
+// (unset/garbage env) fall back to DefaultBcryptCost, and costs between
+// bcrypt.MinCost and MinBcryptCost (explicitly configured weak values like
+// AUTH_BCRYPT_COST=5) are raised to the MinBcryptCost floor.
 func HashPassword(password string, cost int) (string, error) {
 	if cost < bcrypt.MinCost {
 		cost = DefaultBcryptCost
+	} else if cost < MinBcryptCost {
+		cost = MinBcryptCost
 	}
 	hash, err := bcrypt.GenerateFromPassword([]byte(password), cost)
 	if err != nil {

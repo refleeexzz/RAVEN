@@ -12,6 +12,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"google.golang.org/grpc/metadata"
 
 	ravenauth "github.com/refleeexzz/RAVEN/internal/auth"
 	"github.com/refleeexzz/RAVEN/internal/database"
@@ -35,8 +36,65 @@ func NewServer(pool *pgxpool.Pool, log *slog.Logger, bcryptCost int, m *ServiceM
 	return &Server{pool: pool, log: log, bcryptCost: bcryptCost, metrics: m}
 }
 
+// ---------------------------------------------------------------------------
+// Object-level authorization (AUTH-02)
+// ---------------------------------------------------------------------------
+
+// callerIdentity returns the authenticated caller id the gateway forwards as
+// x-user-id metadata after AuthN (see upstream.call in the gateway). The
+// internal gRPC network is the trust boundary — the same model the jobs
+// service uses for job ownership. A missing or malformed identity is
+// Unauthenticated, not Forbidden: the caller was never authenticated.
+func callerIdentity(ctx context.Context) (string, error) {
+	md, ok := metadata.FromIncomingContext(ctx)
+	if ok {
+		if ids := md.Get("x-user-id"); len(ids) > 0 {
+			if id, err := uuid.Parse(ids[0]); err == nil {
+				return id.String(), nil // normalized for the owner comparison
+			}
+		}
+	}
+	return "", errors.E(errors.KindUnauthorized, "authentication_required",
+		"an authenticated caller identity is required", nil)
+}
+
+// requirePermission allows the call when the caller holds perm (admins match
+// via the admin:* wildcard in HasPermission). Permissions are read from the
+// shared RBAC tables — the single-schema trade-off documented in migration
+// 000001 — so a role change takes effect immediately, with no cache.
+func (s *Server) requirePermission(ctx context.Context, callerID, perm string) error {
+	perms, err := callerPermissions(ctx, s.pool, callerID)
+	if err != nil {
+		return err
+	}
+	if !ravenauth.HasPermission(perms, perm) {
+		return errors.E(errors.KindForbidden, "forbidden_not_owner",
+			"not allowed to change another user's data", nil)
+	}
+	return nil
+}
+
+// authorizeTarget enforces owner-or-privileged access to a user row: the
+// caller must BE the target or hold perm (users:write / users:delete).
+func (s *Server) authorizeTarget(ctx context.Context, targetID, perm string) error {
+	caller, err := callerIdentity(ctx)
+	if err != nil {
+		return err
+	}
+	if caller == targetID {
+		return nil // owner
+	}
+	return s.requirePermission(ctx, caller, perm)
+}
+
+// ---------------------------------------------------------------------------
+// RPCs
+// ---------------------------------------------------------------------------
+
 // GetUser returns one user. Soft-deleted users look identical to missing
-// ones (both NotFound) unless internal tooling opts into includeDeleted.
+// ones (both NotFound). Profiles of active users are platform-public by
+// design (docs/security/auth.md, AUTH-10): the gateway already requires
+// users:read, and the internal gRPC network is the trust boundary.
 func (s *Server) GetUser(ctx context.Context, req *genusers.GetUserRequest) (resp *genusers.User, err error) {
 	defer func() { s.metrics.observe("get_user", err) }()
 
@@ -54,8 +112,22 @@ func (s *Server) GetUser(ctx context.Context, req *genusers.GetUserRequest) (res
 
 // ListUsers pages over users with an optional case-insensitive email
 // substring filter. page_size is capped at 100 (platform contract).
+// include_deleted is admin tooling: it requires the users:delete permission
+// (held by ADMIN/SERVICE), because soft-deleted profiles are not public.
 func (s *Server) ListUsers(ctx context.Context, req *genusers.ListUsersRequest) (resp *genusers.ListUsersResponse, err error) {
 	defer func() { s.metrics.observe("list_users", err) }()
+
+	if req.GetIncludeDeleted() {
+		caller, aerr := callerIdentity(ctx)
+		if aerr != nil {
+			err = aerr
+			return nil, toStatus(err)
+		}
+		if aerr := s.requirePermission(ctx, caller, ravenauth.PermUsersDelete); aerr != nil {
+			err = aerr
+			return nil, toStatus(err)
+		}
+	}
 
 	page, pageSize := normalizePage(req.GetPage())
 	records, total, err := listUsers(ctx, s.pool,
@@ -129,12 +201,18 @@ func (s *Server) CreateUser(ctx context.Context, req *genusers.CreateUserRequest
 
 // UpdateUser touches only profile-level fields: display_name (users table),
 // bio and avatar_url (user_profiles table). Email, password and roles are
-// owned by the auth service and are not updatable here.
+// owned by the auth service and are not updatable here. Object-level
+// authorization: the caller must be the owner or hold users:write.
 func (s *Server) UpdateUser(ctx context.Context, req *genusers.UpdateUserRequest) (resp *genusers.User, err error) {
 	defer func() { s.metrics.observe("update_user", err) }()
 
-	if _, perr := uuid.Parse(req.GetId()); perr != nil {
+	id, perr := uuid.Parse(req.GetId())
+	if perr != nil {
 		err = errors.E(errors.KindInvalid, "user_id_invalid", "user id must be a uuid", perr)
+		return nil, toStatus(err)
+	}
+	if aerr := s.authorizeTarget(ctx, id.String(), ravenauth.PermUsersWrite); aerr != nil {
+		err = aerr
 		return nil, toStatus(err)
 	}
 
@@ -160,11 +238,18 @@ func (s *Server) UpdateUser(ctx context.Context, req *genusers.UpdateUserRequest
 }
 
 // DeleteUser soft-deletes via deleted_at. Hard delete is out of scope.
+// Object-level authorization: the caller must be the owner or hold
+// users:delete.
 func (s *Server) DeleteUser(ctx context.Context, req *genusers.DeleteUserRequest) (resp *genusers.DeleteUserResponse, err error) {
 	defer func() { s.metrics.observe("delete_user", err) }()
 
-	if _, perr := uuid.Parse(req.GetId()); perr != nil {
+	id, perr := uuid.Parse(req.GetId())
+	if perr != nil {
 		err = errors.E(errors.KindInvalid, "user_id_invalid", "user id must be a uuid", perr)
+		return nil, toStatus(err)
+	}
+	if aerr := s.authorizeTarget(ctx, id.String(), ravenauth.PermUsersDelete); aerr != nil {
+		err = aerr
 		return nil, toStatus(err)
 	}
 
