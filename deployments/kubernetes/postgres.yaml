@@ -50,6 +50,9 @@ spec:
           env:
             # Dev-only credentials — they match the DATABASE_URL in the
             # secrets template. Never reuse outside Docker Desktop.
+            # Password rotation: these envs only apply at FIRST init of the
+            # PVC — ALTER USER + raven-secrets DATABASE_URL is the real
+            # lever. Order matters: docs/security/rotation.md.
             - name: POSTGRES_USER
               value: raven
             - name: POSTGRES_PASSWORD

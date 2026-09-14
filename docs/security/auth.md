@@ -316,3 +316,10 @@ Audit-date note: the identity-layer gates above are green. The combined
 `tests/security` package additionally contains sibling suites owned by the
 gateway/jobs/broker audits; their red/green state is tracked in their own
 registers.
+
+---
+
+See also: [`rotation.md`](rotation.md) — how to rotate `JWT_SECRET` without
+dropping live sessions (dual-secret window in `internal/auth`, Prometheus
+signal for closing the window, k8s procedure + script), plus Postgres and
+broker-cert rotation.

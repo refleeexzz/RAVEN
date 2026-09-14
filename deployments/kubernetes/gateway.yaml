@@ -48,6 +48,8 @@ spec:
                 name: raven-config
             # optional: pods still start (with dev defaults) if you have
             # not applied secrets.yaml yet.
+            # JWT rotation: JWT_SECRET_PREVIOUS is honored during rotation
+            # windows — procedure in docs/security/rotation.md.
             - secretRef:
                 name: raven-secrets
                 optional: true

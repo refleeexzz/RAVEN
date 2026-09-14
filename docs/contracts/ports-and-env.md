@@ -40,7 +40,8 @@ prometheus 9090, grafana 3000, jaeger 16686 (UI) / 4317 (OTLP gRPC).
 | `LOG_LEVEL`      | all                | `info`                                            |
 | `DATABASE_URL`   | auth, users, jobs, worker, migrate | `postgres://raven:raven@localhost:5432/raven?sslmode=disable` |
 | `REDIS_ADDR`     | auth, gateway, websocket, worker   | `localhost:6379`                    |
-| `JWT_SECRET`     | auth, gateway      | `dev-only-secret-change-me` (never in prod)       |
+| `JWT_SECRET`     | auth, gateway, websocket | `dev-only-secret-change-me` (never in prod)  |
+| `JWT_SECRET_PREVIOUS` | auth, gateway, websocket | empty — set only during a rotation window; verification fallback while signing uses `JWT_SECRET` (see docs/security/rotation.md) |
 | `BROKER_ADDR`    | jobs, worker       | `localhost:9100`                                  |
 | `BROKER_DATA_DIR`| broker             | `./data`                                          |
 | `BROKER_MAX_CONNECTIONS` | broker   | `1024` (extra conns get BROKER_BUSY + close)      |

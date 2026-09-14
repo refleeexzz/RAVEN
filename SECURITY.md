@@ -73,3 +73,25 @@ Internal security audits live in [`docs/security/`](docs/security/):
   `.gitignore` already covers `.env`, `secrets.yaml`, `*.secrets.yaml`.
 - If you ever commit a real secret by accident: rotate it immediately,
   then rewrite history. Treat it as compromised the moment it lands.
+
+## Rotation
+
+Every secret RAVEN trusts has a rotation procedure — most of them
+zero-downtime. The full runbook lives in
+[`docs/security/rotation.md`](docs/security/rotation.md); the short
+version:
+
+- **`JWT_SECRET`** rotates through a dual-secret window: verification
+  accepts the previous secret while signing always uses the new one
+  (`internal/auth` `Verifier`), so no live session is dropped. The metric
+  `raven_auth_jwt_previous_secret_used_total` tells you when the window
+  can close, and `scripts/rotate-jwt-secret.sh` automates the whole
+  procedure (with `--dry-run`).
+- **Refresh tokens** rotate themselves on every use, with reuse
+  detection — a JWT rotation never logs anyone out.
+- **Postgres password** and **broker TLS certs** have their own
+  step-by-step procedures in the runbook, ordered so pods never restart
+  into a mismatch.
+
+Rotate on a schedule, and always rotate on suspicion: a secret everyone
+has forgotten about is a secret someone else may remember.
