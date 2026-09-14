@@ -56,6 +56,7 @@ prometheus 9090, grafana 3000, jaeger 16686 (UI) / 4317 (OTLP gRPC).
 | `JOBS_SCHEDULER_INTERVAL` | jobs      | `1s` (delayed-job dispatcher + cron scheduler tick; `0` disables both) |
 | `JOBS_LEGACY_TOPIC_FANOUT` | jobs      | `true` (mirror execution publishes onto the legacy `jobs` topic until workers subscribe to `jobs.p1..p9`) |
 | `API_KEYS_DATABASE_URL` | gateway          | falls back to `DATABASE_URL`; unset disables /api/keys + the `ApiKey` scheme (503) |
+| `RATE_LIMIT_STORE` | gateway                 | `redis` (default — buckets shared across replicas, fail-open to memory) or `memory` (per-process) |
 
 Service discovery inside Docker/K8s uses service names:
 `http://auth`, `auth:9081`, `broker:9100`, ...

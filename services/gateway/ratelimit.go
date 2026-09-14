@@ -1,8 +1,17 @@
 // ratelimit.go is the per-key token bucket limiter. Keys are the user id for
-// authenticated requests and the client IP for public ones. Buckets live in
-// an in-memory map swept by a janitor goroutine so idle keys cannot grow the
-// map forever. This is per-process limiting — good enough for the learning
-// platform; a multi-replica deployment would move this to Redis.
+// authenticated requests and the client IP for public ones.
+//
+// Two backends share the same token-bucket semantics (RATE_LIMIT_STORE):
+//
+//   - redis (default): buckets live in Redis, updated by an atomic Lua
+//     script, so N gateway replicas enforce ONE shared budget per key
+//     (ratelimit_redis.go). Redis down fails OPEN onto the in-process
+//     limiter below — availability over exactness, documented there.
+//   - memory: the in-process limiter below, per replica (the historical
+//     behavior; with N replicas you effectively get N × the limit).
+//
+// Buckets live in an in-memory map swept by a janitor goroutine so idle
+// keys cannot grow the map forever.
 package gateway
 
 import (
@@ -130,12 +139,24 @@ func rateLimitKey(r *http.Request) string {
 	return "ip:" + host
 }
 
+// requestLimiter is what the middleware needs from any backend: take one
+// token for key, or say how long to wait before retrying.
+type requestLimiter interface {
+	allowRequest(ctx context.Context, key string) (allowed bool, retryAfter time.Duration)
+}
+
+// allowRequest adapts the in-process bucket to requestLimiter (the memory
+// backend ignores ctx — it never blocks).
+func (l *rateLimiter) allowRequest(_ context.Context, key string) (bool, time.Duration) {
+	return l.allow(key)
+}
+
 // rateLimit rejects requests over the limit with 429 and a Retry-After
 // header. It runs after AuthN in the chain so authenticated users get their
 // own bucket instead of sharing the IP bucket.
 func (s *server) rateLimit(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		allowed, retryAfter := s.limiter.allow(rateLimitKey(r))
+		allowed, retryAfter := s.limiter.allowRequest(r.Context(), rateLimitKey(r))
 		if !allowed {
 			s.metrics.rateLimited.Inc()
 			// Round up: waiting exactly retryAfter may still land under 1 token.

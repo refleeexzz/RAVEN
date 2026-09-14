@@ -56,6 +56,11 @@ type Config struct {
 	OtelEndpoint   string
 	RateLimitRPM   int // RATE_LIMIT_RPM, default 100
 	RateLimitBurst int // RATE_LIMIT_BURST, default 20
+	// RateLimitStore picks the rate-limit backend (RATE_LIMIT_STORE):
+	// "redis" (default — one shared budget per key across gateway replicas,
+	// fail-open to in-process buckets when Redis errors) or "memory"
+	// (per-process buckets, the pre-distribution behavior).
+	RateLimitStore string
 	// APIKeysDatabaseURL points at the Postgres holding the api_keys table
 	// (API_KEYS_DATABASE_URL, falling back to DATABASE_URL). Empty disables
 	// API keys: the /api/keys endpoints and the ApiKey auth scheme answer
@@ -75,7 +80,7 @@ type server struct {
 	log       *slog.Logger
 	metr      *metrics.Registry
 	metrics   *serviceMetrics
-	limiter   *rateLimiter
+	limiter   requestLimiter
 	authn     *authenticator
 	authH     *authHandlers
 	usersH    *usersHandlers
@@ -134,10 +139,26 @@ func Run(ctx context.Context, cfg Config) error {
 	}
 	defer func() { _ = jobsUp.conn.Close() }()
 
-	// The janitors sweep the auth cache and the rate-limit buckets; both stop
-	// when ctx is cancelled at shutdown.
-	limiter := newRateLimiter(cfg.RateLimitRPM, cfg.RateLimitBurst)
-	go limiter.sweep(ctx)
+	// The janitors sweep the auth cache and the in-process rate-limit
+	// buckets; both stop when ctx is cancelled at shutdown. The in-process
+	// limiter is always built: in "redis" mode it doubles as the fail-open
+	// fallback, in "memory" mode it IS the limiter.
+	memLimiter := newRateLimiter(cfg.RateLimitRPM, cfg.RateLimitBurst)
+	go memLimiter.sweep(ctx)
+	var limiter requestLimiter = memLimiter
+	switch strings.ToLower(strings.TrimSpace(cfg.RateLimitStore)) {
+	case "memory":
+		log.Info("rate limit store: memory (per-process buckets)")
+	case "", "redis":
+		limiter = newFallbackLimiter(newRedisLimiter(rdb, cfg.RateLimitRPM, cfg.RateLimitBurst),
+			memLimiter, log, gatewayMetrics)
+		log.Info("rate limit store: redis (shared buckets, fail-open to memory)")
+	default:
+		log.Warn("unknown RATE_LIMIT_STORE, using redis",
+			slog.String("value", cfg.RateLimitStore))
+		limiter = newFallbackLimiter(newRedisLimiter(rdb, cfg.RateLimitRPM, cfg.RateLimitBurst),
+			memLimiter, log, gatewayMetrics)
+	}
 	cache := newAuthCache()
 	go cache.sweep(ctx)
 

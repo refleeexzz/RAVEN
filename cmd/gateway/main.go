@@ -32,6 +32,7 @@ func main() {
 		OtelEndpoint:   config.Get("OTEL_ENDPOINT", "localhost:4317"),
 		RateLimitRPM:   config.GetInt("RATE_LIMIT_RPM", 100),
 		RateLimitBurst: config.GetInt("RATE_LIMIT_BURST", 20),
+		RateLimitStore: config.Get("RATE_LIMIT_STORE", "redis"),
 		// Empty here falls back to DATABASE_URL inside gateway.Run.
 		APIKeysDatabaseURL: config.Get("API_KEYS_DATABASE_URL", ""),
 	}

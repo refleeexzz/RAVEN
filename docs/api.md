@@ -73,9 +73,19 @@ Retry-After: 1
 {"error":{"code":"rate_limited","message":"too many requests, slow down and try again","request_id":"..."}}
 ```
 
-`Retry-After` is whole seconds until at least one new token exists. The
-limiter is per gateway process — with N replicas you effectively get
-N × the limit. Known limitation, documented in the README.
+`Retry-After` is whole seconds until at least one new token exists.
+
+Buckets are **shared across gateway replicas**: with the default
+`RATE_LIMIT_STORE=redis` the bucket state lives in Redis, updated by an
+atomic Lua token-bucket script (clock: Redis `TIME`), so N replicas enforce
+one budget per key — not N × the limit. `RATE_LIMIT_STORE=memory` restores
+the old per-process behavior for single-node or air-gapped runs.
+
+Fail-open: if Redis errors, the limiter degrades to in-process buckets for
+30 s per replica (circuit breaker, self-healing) and counts
+`raven_gateway_rate_limit_fallback_total`. Rate limiting is a protective
+control, not a correctness one — a Redis blip must not take the API down.
+See [api-keys-rate-limit.md](api-keys-rate-limit.md).
 
 ### Pagination
 

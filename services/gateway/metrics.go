@@ -11,11 +11,12 @@ import (
 )
 
 type serviceMetrics struct {
-	upstreamDuration *prometheus.HistogramVec // raven_gateway_upstream_duration_seconds{upstream,rpc,code}
-	rateLimited      prometheus.Counter       // raven_gateway_rate_limited_total
-	authCacheHits    prometheus.Counter       // raven_gateway_auth_cache_hits_total
-	authCacheMisses  prometheus.Counter       // raven_gateway_auth_cache_misses_total
-	breakerState     *prometheus.GaugeVec     // raven_gateway_circuit_breaker_state{upstream} 0/1/2
+	upstreamDuration   *prometheus.HistogramVec // raven_gateway_upstream_duration_seconds{upstream,rpc,code}
+	rateLimited        prometheus.Counter       // raven_gateway_rate_limited_total
+	authCacheHits      prometheus.Counter       // raven_gateway_auth_cache_hits_total
+	authCacheMisses    prometheus.Counter       // raven_gateway_auth_cache_misses_total
+	rateLimitFallbacks prometheus.Counter       // raven_gateway_rate_limit_fallback_total
+	breakerState       *prometheus.GaugeVec     // raven_gateway_circuit_breaker_state{upstream} 0/1/2
 }
 
 func newServiceMetrics(reg *metrics.Registry) *serviceMetrics {
@@ -45,6 +46,12 @@ func newServiceMetrics(reg *metrics.Registry) *serviceMetrics {
 			Name:      "auth_cache_misses_total",
 			Help:      "Token validations that had to call the auth service.",
 		}),
+		rateLimitFallbacks: prometheus.NewCounter(prometheus.CounterOpts{
+			Namespace: "raven",
+			Subsystem: "gateway",
+			Name:      "rate_limit_fallback_total",
+			Help:      "Rate-limit decisions served by the in-process fallback because Redis errored (fail-open).",
+		}),
 		breakerState: prometheus.NewGaugeVec(prometheus.GaugeOpts{
 			Namespace: "raven",
 			Subsystem: "gateway",
@@ -52,6 +59,6 @@ func newServiceMetrics(reg *metrics.Registry) *serviceMetrics {
 			Help:      "Circuit breaker state per upstream: 0 closed, 1 open, 2 half-open.",
 		}, []string{"upstream"}),
 	}
-	reg.Register(m.upstreamDuration, m.rateLimited, m.authCacheHits, m.authCacheMisses, m.breakerState)
+	reg.Register(m.upstreamDuration, m.rateLimited, m.authCacheHits, m.authCacheMisses, m.rateLimitFallbacks, m.breakerState)
 	return m
 }
