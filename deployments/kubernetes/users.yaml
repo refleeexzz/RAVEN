@@ -29,7 +29,7 @@ spec:
           type: RuntimeDefault
       containers:
         - name: users
-          image: raven/users:latest
+          image: raven/users:sec-20260913
           imagePullPolicy: IfNotPresent   # local build, never pushed
           securityContext:
             allowPrivilegeEscalation: false
