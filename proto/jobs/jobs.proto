@@ -16,6 +16,15 @@ service JobService {
   // RequeueJob moves a DEAD job back to QUEUED so it can be retried
   // from the dead-letter queue. Only DEAD jobs can be requeued.
   rpc RequeueJob(RequeueJobRequest) returns (Job);
+  // ReplayJob creates a NEW job copying type/payload/priority from the
+  // given one: fresh id, zero attempts, no schedule. The new job carries
+  // replayed_from pointing at the original for audit.
+  rpc ReplayJob(ReplayJobRequest) returns (Job);
+  // Cron: recurring schedules that spawn a job instance every time the
+  // 5-field expression comes due.
+  rpc CreateCron(CreateCronRequest) returns (CronSchedule);
+  rpc ListCrons(ListCronsRequest) returns (ListCronsResponse);
+  rpc DeleteCron(DeleteCronRequest) returns (DeleteCronResponse);
 }
 
 enum JobStatus {
@@ -27,6 +36,9 @@ enum JobStatus {
   JOB_STATUS_RETRYING = 5;
   JOB_STATUS_CANCELLED = 6;
   JOB_STATUS_DEAD = 7;
+  // SCHEDULED: created with scheduled_at in the future; not published to
+  // the broker until the dispatcher flips it to QUEUED when due.
+  JOB_STATUS_SCHEDULED = 8;
 }
 
 message Job {
@@ -42,14 +54,20 @@ message Job {
   int64 finished_at = 10; // unix seconds, 0 when not finished
   string error = 11;
   string worker_id = 12;
+  int64 scheduled_at = 13;   // unix seconds, 0 when not scheduled
+  string replayed_from = 14; // source job id when created by ReplayJob
 }
 
 message CreateJobRequest {
   string type = 1;           // e.g. "send_email", "resize_image", "webhook"
   string payload_json = 2;
-  int32 priority = 3;
+  int32 priority = 3;        // 1-9 (1 = most urgent), 0 → server default (5)
   int32 max_attempts = 4;    // 0 → server default (4)
   string idempotency_key = 5; // optional; same key → same job
+  // scheduled_at: unix seconds. 0 → run now. A future time creates the job
+  // in SCHEDULED status; it is published only when the time comes. A time
+  // more than a minute in the past is rejected.
+  int64 scheduled_at = 6;
 }
 
 message GetJobRequest {
@@ -73,4 +91,50 @@ message CancelJobRequest {
 
 message RequeueJobRequest {
   string id = 1;
+}
+
+message ReplayJobRequest {
+  string id = 1; // job to copy
+}
+
+// CronSchedule is one recurring schedule. cron_expr is the classic 5-field
+// form "min hour day-of-month month day-of-week" (numbers plus '*', ',',
+// '-', '/'; no names). Times are unix seconds in UTC.
+message CronSchedule {
+  string id = 1;
+  string name = 2;
+  string cron_expr = 3;
+  string type = 4;
+  string payload_json = 5;
+  int32 priority = 6;
+  bool enabled = 7;
+  int64 next_run_at = 8; // unix seconds, 0 when disabled
+  int64 last_run_at = 9; // unix seconds, 0 when never fired
+  int64 created_at = 10; // unix seconds
+}
+
+message CreateCronRequest {
+  string name = 1;
+  string cron_expr = 2;
+  string type = 3;           // same known job types as CreateJob
+  string payload_json = 4;   // same rules as CreateJob (64 KiB cap)
+  int32 priority = 5;        // 1-9, 0 → server default (5)
+  bool enabled = 6;          // the REST gateway always sends it (default true)
+}
+
+message ListCronsRequest {
+  raven.common.v1.PageRequest page = 1;
+}
+
+message ListCronsResponse {
+  repeated CronSchedule crons = 1;
+  raven.common.v1.PageResponse page = 2;
+}
+
+message DeleteCronRequest {
+  string id = 1;
+}
+
+message DeleteCronResponse {
+  bool ok = 1;
 }

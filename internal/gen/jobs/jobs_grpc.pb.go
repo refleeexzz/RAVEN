@@ -24,6 +24,10 @@ const (
 	JobService_ListJobs_FullMethodName   = "/raven.jobs.v1.JobService/ListJobs"
 	JobService_CancelJob_FullMethodName  = "/raven.jobs.v1.JobService/CancelJob"
 	JobService_RequeueJob_FullMethodName = "/raven.jobs.v1.JobService/RequeueJob"
+	JobService_ReplayJob_FullMethodName  = "/raven.jobs.v1.JobService/ReplayJob"
+	JobService_CreateCron_FullMethodName = "/raven.jobs.v1.JobService/CreateCron"
+	JobService_ListCrons_FullMethodName  = "/raven.jobs.v1.JobService/ListCrons"
+	JobService_DeleteCron_FullMethodName = "/raven.jobs.v1.JobService/DeleteCron"
 )
 
 // JobServiceClient is the client API for JobService service.
@@ -40,6 +44,15 @@ type JobServiceClient interface {
 	// RequeueJob moves a DEAD job back to QUEUED so it can be retried
 	// from the dead-letter queue. Only DEAD jobs can be requeued.
 	RequeueJob(ctx context.Context, in *RequeueJobRequest, opts ...grpc.CallOption) (*Job, error)
+	// ReplayJob creates a NEW job copying type/payload/priority from the
+	// given one: fresh id, zero attempts, no schedule. The new job carries
+	// replayed_from pointing at the original for audit.
+	ReplayJob(ctx context.Context, in *ReplayJobRequest, opts ...grpc.CallOption) (*Job, error)
+	// Cron: recurring schedules that spawn a job instance every time the
+	// 5-field expression comes due.
+	CreateCron(ctx context.Context, in *CreateCronRequest, opts ...grpc.CallOption) (*CronSchedule, error)
+	ListCrons(ctx context.Context, in *ListCronsRequest, opts ...grpc.CallOption) (*ListCronsResponse, error)
+	DeleteCron(ctx context.Context, in *DeleteCronRequest, opts ...grpc.CallOption) (*DeleteCronResponse, error)
 }
 
 type jobServiceClient struct {
@@ -100,6 +113,46 @@ func (c *jobServiceClient) RequeueJob(ctx context.Context, in *RequeueJobRequest
 	return out, nil
 }
 
+func (c *jobServiceClient) ReplayJob(ctx context.Context, in *ReplayJobRequest, opts ...grpc.CallOption) (*Job, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(Job)
+	err := c.cc.Invoke(ctx, JobService_ReplayJob_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *jobServiceClient) CreateCron(ctx context.Context, in *CreateCronRequest, opts ...grpc.CallOption) (*CronSchedule, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(CronSchedule)
+	err := c.cc.Invoke(ctx, JobService_CreateCron_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *jobServiceClient) ListCrons(ctx context.Context, in *ListCronsRequest, opts ...grpc.CallOption) (*ListCronsResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListCronsResponse)
+	err := c.cc.Invoke(ctx, JobService_ListCrons_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *jobServiceClient) DeleteCron(ctx context.Context, in *DeleteCronRequest, opts ...grpc.CallOption) (*DeleteCronResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(DeleteCronResponse)
+	err := c.cc.Invoke(ctx, JobService_DeleteCron_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // JobServiceServer is the server API for JobService service.
 // All implementations must embed UnimplementedJobServiceServer
 // for forward compatibility.
@@ -114,6 +167,15 @@ type JobServiceServer interface {
 	// RequeueJob moves a DEAD job back to QUEUED so it can be retried
 	// from the dead-letter queue. Only DEAD jobs can be requeued.
 	RequeueJob(context.Context, *RequeueJobRequest) (*Job, error)
+	// ReplayJob creates a NEW job copying type/payload/priority from the
+	// given one: fresh id, zero attempts, no schedule. The new job carries
+	// replayed_from pointing at the original for audit.
+	ReplayJob(context.Context, *ReplayJobRequest) (*Job, error)
+	// Cron: recurring schedules that spawn a job instance every time the
+	// 5-field expression comes due.
+	CreateCron(context.Context, *CreateCronRequest) (*CronSchedule, error)
+	ListCrons(context.Context, *ListCronsRequest) (*ListCronsResponse, error)
+	DeleteCron(context.Context, *DeleteCronRequest) (*DeleteCronResponse, error)
 	mustEmbedUnimplementedJobServiceServer()
 }
 
@@ -138,6 +200,18 @@ func (UnimplementedJobServiceServer) CancelJob(context.Context, *CancelJobReques
 }
 func (UnimplementedJobServiceServer) RequeueJob(context.Context, *RequeueJobRequest) (*Job, error) {
 	return nil, status.Error(codes.Unimplemented, "method RequeueJob not implemented")
+}
+func (UnimplementedJobServiceServer) ReplayJob(context.Context, *ReplayJobRequest) (*Job, error) {
+	return nil, status.Error(codes.Unimplemented, "method ReplayJob not implemented")
+}
+func (UnimplementedJobServiceServer) CreateCron(context.Context, *CreateCronRequest) (*CronSchedule, error) {
+	return nil, status.Error(codes.Unimplemented, "method CreateCron not implemented")
+}
+func (UnimplementedJobServiceServer) ListCrons(context.Context, *ListCronsRequest) (*ListCronsResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ListCrons not implemented")
+}
+func (UnimplementedJobServiceServer) DeleteCron(context.Context, *DeleteCronRequest) (*DeleteCronResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method DeleteCron not implemented")
 }
 func (UnimplementedJobServiceServer) mustEmbedUnimplementedJobServiceServer() {}
 func (UnimplementedJobServiceServer) testEmbeddedByValue()                    {}
@@ -250,6 +324,78 @@ func _JobService_RequeueJob_Handler(srv interface{}, ctx context.Context, dec fu
 	return interceptor(ctx, in, info, handler)
 }
 
+func _JobService_ReplayJob_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ReplayJobRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(JobServiceServer).ReplayJob(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: JobService_ReplayJob_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(JobServiceServer).ReplayJob(ctx, req.(*ReplayJobRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _JobService_CreateCron_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(CreateCronRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(JobServiceServer).CreateCron(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: JobService_CreateCron_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(JobServiceServer).CreateCron(ctx, req.(*CreateCronRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _JobService_ListCrons_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListCronsRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(JobServiceServer).ListCrons(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: JobService_ListCrons_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(JobServiceServer).ListCrons(ctx, req.(*ListCronsRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _JobService_DeleteCron_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(DeleteCronRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(JobServiceServer).DeleteCron(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: JobService_DeleteCron_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(JobServiceServer).DeleteCron(ctx, req.(*DeleteCronRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // JobService_ServiceDesc is the grpc.ServiceDesc for JobService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -276,6 +422,22 @@ var JobService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "RequeueJob",
 			Handler:    _JobService_RequeueJob_Handler,
+		},
+		{
+			MethodName: "ReplayJob",
+			Handler:    _JobService_ReplayJob_Handler,
+		},
+		{
+			MethodName: "CreateCron",
+			Handler:    _JobService_CreateCron_Handler,
+		},
+		{
+			MethodName: "ListCrons",
+			Handler:    _JobService_ListCrons_Handler,
+		},
+		{
+			MethodName: "DeleteCron",
+			Handler:    _JobService_DeleteCron_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},
