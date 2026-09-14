@@ -30,8 +30,19 @@ async function request<T>(
   if (!res.ok) {
     let detail = res.statusText;
     try {
-      const body = (await res.json()) as { error?: string; message?: string };
-      detail = body.error ?? body.message ?? detail;
+      // The gateway sends {"error":{"code","message","request_id"}}; some
+      // middleware (timeout/recovery) send a bare {"error":"..."}. Handle both.
+      const body = (await res.json()) as {
+        error?: string | { code?: string; message?: string };
+        message?: string;
+      };
+      if (typeof body.error === "string") {
+        detail = body.error;
+      } else if (body.error && typeof body.error === "object" && body.error.message) {
+        detail = body.error.message;
+      } else if (body.message) {
+        detail = body.message;
+      }
     } catch {
       // non-JSON error body — keep statusText
     }
