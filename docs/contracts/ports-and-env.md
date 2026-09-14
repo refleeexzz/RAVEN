@@ -52,6 +52,8 @@ prometheus 9090, grafana 3000, jaeger 16686 (UI) / 4317 (OTLP gRPC).
 | `WORKER_JOB_TIMEOUT` | worker         | `30s` (keep below the lease)                      |
 | `WORKER_JOB_LEASE_MS` | worker        | `30000` (milliseconds; lease claimed with each job, renewed every lease/3) |
 | `JOBS_SWEEP_INTERVAL` | jobs          | `15s` (`0` disables the stranded-job sweeper — do not disable in prod) |
+| `JOBS_SCHEDULER_INTERVAL` | jobs      | `1s` (delayed-job dispatcher + cron scheduler tick; `0` disables both) |
+| `JOBS_LEGACY_TOPIC_FANOUT` | jobs      | `true` (mirror execution publishes onto the legacy `jobs` topic until workers subscribe to `jobs.p1..p9`) |
 
 Service discovery inside Docker/K8s uses service names:
 `http://auth`, `auth:9081`, `broker:9100`, ...
@@ -73,6 +75,10 @@ GET  /api/jobs            (auth: jobs:read)
 GET  /api/jobs/{id}       (auth: jobs:read)
 POST /api/jobs/{id}/cancel (auth: jobs:cancel)
 POST /api/jobs/{id}/requeue (auth: jobs:create) — DLQ requeue, DEAD jobs only
+POST /api/jobs/{id}/replay (auth: jobs:create) — clone a job (fresh id, replayed_from audit)
+POST /api/crons           (auth: jobs:create) — cron schedule (5-field expr, migration 000004)
+GET  /api/crons           (auth: jobs:read)
+DELETE /api/crons/{id}    (auth: jobs:cancel)
 GET  /api/workers         (auth: jobs:read) — live worker registry from Redis
 GET  /api/health/services (public) — aggregated service health for the console
 GET  /ws                  (websocket upgrade, auth via ?token=)
@@ -91,10 +97,12 @@ Workers register themselves for discovery and the console UI:
 
 Job JSON fields: `id, type, payload, status, priority, attempts,
 max_attempts, created_at, started_at, finished_at, error, worker_id,
-execution_generation`.
+execution_generation`. Scheduling adds (migration 000004):
+`scheduled_at` (delayed jobs) and `replayed_from` (replay audit).
 
 Status flow: `QUEUED → PROCESSING → SUCCESS | FAILED → RETRYING →
-SUCCESS | DEAD`, plus `CANCELLED`.
+SUCCESS | DEAD`, plus `CANCELLED` and `SCHEDULED` (delayed jobs; the
+dispatcher flips `SCHEDULED → QUEUED` when `scheduled_at` comes due).
 
 Leases (ADR 009, migration 000003): a claimed job carries `heartbeat_at` and
 `lease_until`; the worker renews while executing; the jobs-service sweeper
@@ -103,7 +111,9 @@ write is fenced by the generation. Broker messages carry
 `execution_generation`; `0` means "unknown" (pre-lease messages) and is
 accepted as the row's current generation.
 
-Broker topics: `jobs` (work), `jobs.dlq` (dead letters),
+Broker topics: `jobs.p1`..`jobs.p9` (execution, routed by priority — p1 is
+most urgent), `jobs` (legacy execution topic; still receives a mirror copy
+while `JOBS_LEGACY_TOPIC_FANOUT` is on), `jobs.dlq` (dead letters),
 `jobs.retry` (delayed retries).
 
 ## Live events (Redis pub/sub → websocket service)

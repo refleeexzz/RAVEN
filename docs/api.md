@@ -237,7 +237,8 @@ Soft delete: sets `deleted_at`, keeps the row. Response `200 {"ok": true}`.
 
 ### `POST /api/jobs` — `jobs:create`
 
-Creates a job and queues it on the broker.
+Creates a job and queues it on the broker — right away, or later when
+`scheduled_at` is set (see [docs/scheduling.md](scheduling.md)).
 
 Headers: `Idempotency-Key: <string>` optional but recommended (max 255
 chars). The same key always returns the same job: the gateway forwards the
@@ -252,7 +253,8 @@ Request:
   "type": "send_email",
   "payload": { "to": "me@example.com", "subject": "hi", "body": "from raven" },
   "priority": 5,
-  "max_attempts": 4
+  "max_attempts": 4,
+  "scheduled_at": 0
 }
 ```
 
@@ -264,7 +266,12 @@ Rules:
 - `payload` must be a JSON object. Required fields per type:
   `send_email` needs `to`; `webhook` needs `url`; `resize_image` accepts any
   object.
-- `priority` 1–10, default 5. `max_attempts` 1–25, default 4.
+- `priority` 1–9, default 5 (1 = most urgent; it picks the broker topic
+  `jobs.p<priority>`). `max_attempts` 1–25, default 4.
+- `scheduled_at` optional, Unix seconds. `0` or absent runs now; a future
+  time creates the job in `SCHEDULED` and it is published only when the
+  time comes; more than a minute in the past is rejected
+  (`400 scheduled_at_in_past`).
 
 Response `201`:
 
@@ -281,20 +288,22 @@ Response `201`:
   "started_at": 0,
   "finished_at": 0,
   "error": "",
-  "worker_id": ""
+  "worker_id": "",
+  "scheduled_at": 0
 }
 ```
 
-Timestamps are Unix seconds; `0` means "not set". If the broker is
-unreachable the row is still written but marked `FAILED`, and you get
+Timestamps are Unix seconds; `0` means "not set". Replayed jobs also carry
+`replayed_from` with the source job id. If the broker is unreachable the
+row is still written but marked `FAILED`, and you get
 `503 broker_produce_failed` — the failure is loud, never silent.
 
 ### `GET /api/jobs` — `jobs:read`
 
 Query params: `page`, `page_size`, `status` (accepts `queued`, `QUEUED` or
 `JOB_STATUS_QUEUED`; one of `QUEUED PROCESSING SUCCESS FAILED RETRYING
-CANCELLED DEAD`), `type` (exact match). Ordered by priority descending,
-then oldest first.
+CANCELLED DEAD SCHEDULED`), `type` (exact match). Ordered by priority
+descending, then oldest first.
 
 Response `200`:
 
@@ -311,11 +320,12 @@ Response `200`: one job object. `404 job_not_found`.
 
 ### `POST /api/jobs/{id}/cancel` — `jobs:cancel`
 
-Moves `QUEUED`/`RETRYING` → `CANCELLED` atomically. If the job already
-moved on (`PROCESSING` or a terminal state) you get
-`409 job_not_cancellable` with the current status in the message. A
-cancelled job that is still sitting on the broker is skipped by the
-worker's fence when delivered — cancel never needs broker traffic.
+Moves `QUEUED`/`RETRYING`/`SCHEDULED` → `CANCELLED` atomically (cancelling
+a scheduled job simply drops the schedule). If the job already moved on
+(`PROCESSING` or a terminal state) you get `409 job_not_cancellable` with
+the current status in the message. A cancelled job that is still sitting
+on the broker is skipped by the worker's fence when delivered — cancel
+never needs broker traffic.
 
 Response `200`: the updated job object.
 
@@ -325,6 +335,54 @@ DLQ requeue: resurrects a `DEAD` job to `QUEUED`, resets attempts and
 timestamps, and republishes it. `job_attempts` history is kept. Any other
 status → `409 job_not_dead`. If the republish fails, the row is put back to
 `DEAD` and you get `503 broker_produce_failed`.
+
+### `POST /api/jobs/{id}/replay` — `jobs:create`
+
+Clones the job into a NEW one: same `type`, `payload`, `priority` and
+`max_attempts`, but a fresh id, zero attempts and no schedule. The clone
+carries `replayed_from` with the source id for audit. Works on a job in
+any state; replaying another user's job answers `404 job_not_found`.
+Response `201`: the new job object.
+
+## Cron schedules
+
+Recurring jobs, backed by `cron_schedules` — full semantics in
+[docs/scheduling.md](scheduling.md).
+
+### `POST /api/crons` — `jobs:create`
+
+```json
+{
+  "name": "nightly-report",
+  "cron_expr": "0 3 * * *",
+  "type": "webhook",
+  "payload": { "url": "https://example.com/hook", "event": "nightly" },
+  "priority": 5,
+  "enabled": true
+}
+```
+
+`cron_expr` is the classic 5-field form `min hour dom month dow` (numbers,
+`*`, `,`, `-`, `/`; no names). Job fields follow the same rules as
+`POST /api/jobs`; invalid or never-firing expressions are rejected with
+`400 cron_expr_invalid` / `400 cron_expr_never_fires`. Response `201`: the
+schedule including `next_run_at`.
+
+### `GET /api/crons` — `jobs:read`
+
+Your schedules, paged like `GET /api/jobs` (`page`, `page_size`):
+
+```json
+{
+  "crons": [ { "id": "cron_...", "cron_expr": "0 3 * * *", "next_run_at": 1767225600, "...": "..." } ],
+  "page": { "page": 1, "page_size": 20, "total": 3 }
+}
+```
+
+### `DELETE /api/crons/{id}` — `jobs:cancel`
+
+Hard-deletes the schedule: it stops firing immediately. `404 cron_not_found`
+for unknown or foreign ids.
 
 ### `GET /api/workers` — `jobs:read`
 
