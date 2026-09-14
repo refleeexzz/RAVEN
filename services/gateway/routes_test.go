@@ -34,6 +34,7 @@ var expectedRoutes = []struct {
 	{"GET", "/api/jobs/{id}", ravenauth.PermJobsRead},
 	{"POST", "/api/jobs/{id}/cancel", ravenauth.PermJobsCancel},
 	{"POST", "/api/jobs/{id}/requeue", ravenauth.PermJobsCreate},
+	{"POST", "/api/jobs/{id}/replay", ravenauth.PermJobsCreate},
 
 	{"GET", "/api/workers", ravenauth.PermJobsRead},
 

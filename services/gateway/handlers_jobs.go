@@ -251,6 +251,23 @@ func (h *jobsHandlers) requeue(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, jobToJSON(job))
 }
 
+// replay handles POST /api/jobs/{id}/replay: creates a NEW job copying
+// type/payload/priority from the original. The jobs service enforces
+// owner-scoping; the response carries replayed_from pointing at the source.
+func (h *jobsHandlers) replay(w http.ResponseWriter, r *http.Request) {
+	var job *genjobs.Job
+	err := h.jobs.call(r.Context(), "ReplayJob", false, func(ctx context.Context) error {
+		var err error
+		job, err = h.client.ReplayJob(ctx, &genjobs.ReplayJobRequest{Id: r.PathValue("id")})
+		return err
+	})
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, jobToJSON(job))
+}
+
 // workers handles GET /api/workers by scanning the worker registry in Redis:
 // keys worker:<id> are hashes with a 15 s TTL, so whatever SCAN finds is a
 // live worker (modulo the scan/fetch race, which we skip silently).

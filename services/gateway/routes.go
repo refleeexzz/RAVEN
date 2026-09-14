@@ -40,6 +40,7 @@ func (s *server) table() []route {
 		{"GET", "/api/jobs/{id}", ravenauth.PermJobsRead, s.jobsH.get},
 		{"POST", "/api/jobs/{id}/cancel", ravenauth.PermJobsCancel, s.jobsH.cancel},
 		{"POST", "/api/jobs/{id}/requeue", ravenauth.PermJobsCreate, s.jobsH.requeue},
+		{"POST", "/api/jobs/{id}/replay", ravenauth.PermJobsCreate, s.jobsH.replay},
 
 		// Live worker registry (from Redis).
 		{"GET", "/api/workers", ravenauth.PermJobsRead, s.jobsH.workers},
