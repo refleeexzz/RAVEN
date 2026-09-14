@@ -129,3 +129,26 @@ type HeartbeatRequest struct {
 }
 
 type HeartbeatResponse struct{}
+
+// ---- AUTH (v1.1) ----
+
+// AuthRequest authenticates the connection against the broker's
+// configured API keys. It must be the first frame on an auth-enabled
+// connection: every other opcode is rejected with UNAUTHENTICATED
+// until AUTH succeeds. The secret travels as plaintext inside the
+// payload — pair auth with TLS (BROKER_TLS_*) on any real network; the
+// broker only ever stores and compares its SHA-256, in constant time.
+type AuthRequest struct {
+	ID     string `json:"id"`
+	Secret string `json:"secret"`
+}
+
+// AuthResponse confirms authentication and echoes the granted ACL, so
+// clients can fail fast locally instead of discovering denials one
+// request at a time.
+type AuthResponse struct {
+	ID          string   `json:"id"`
+	TopicsRead  []string `json:"topics_read"`
+	TopicsWrite []string `json:"topics_write"`
+	Admin       bool     `json:"admin"`
+}

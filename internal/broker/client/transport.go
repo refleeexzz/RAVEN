@@ -6,6 +6,7 @@ package client
 import (
 	"context"
 	"crypto/tls"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -28,6 +29,11 @@ type transport struct {
 	// tlsCfg, when non-nil, upgrades every dialed connection to TLS
 	// before any frame is written. Set via the With*TLS options.
 	tlsCfg *tls.Config
+	// authID/authSecret, when authID is non-empty, are sent in an AUTH
+	// frame right after connect (and after the TLS handshake), before
+	// the connection serves any request. Set via the With*Auth options.
+	authID     string
+	authSecret string
 
 	mu      sync.Mutex // guards conn, pending
 	conn    net.Conn
@@ -158,6 +164,35 @@ func (t *transport) ensureConnected(ctx context.Context) (net.Conn, error) {
 			}
 			conn = tc
 		}
+		if t.authID != "" {
+			err := t.authHandshake(conn)
+			if err != nil {
+				_ = conn.Close()
+				var pe *protocol.Error
+				if errors.As(err, &pe) {
+					// The broker answered with a protocol error (bad
+					// credentials): retrying with the same secret can
+					// never succeed, so fail fast and typed. The next
+					// call dials again — key rotation on the broker
+					// side is picked up without a client restart.
+					return nil, fmt.Errorf("client: auth: %w", err)
+				}
+				// Transport-level failure mid-AUTH: treat like a dial
+				// failure and retry with backoff.
+				t.log.Debug("broker AUTH exchange failed, retrying",
+					slog.String("addr", t.addr), slog.Any("err", err))
+				select {
+				case <-time.After(backoff):
+				case <-ctx.Done():
+					return nil, ctx.Err()
+				}
+				backoff *= 2
+				if backoff > 2*time.Second {
+					backoff = 2 * time.Second
+				}
+				continue
+			}
+		}
 		t.mu.Lock()
 		if t.conn != nil {
 			// Another goroutine won the dial race.
@@ -170,6 +205,40 @@ func (t *transport) ensureConnected(ctx context.Context) (net.Conn, error) {
 		go t.readLoop(conn)
 		return conn, nil
 	}
+}
+
+// authHandshake performs the AUTH round trip on a fresh connection,
+// synchronously: the read loop is not running yet and no other
+// goroutine can touch the conn, so a plain write+read is race-free.
+//
+// Compatibility: an open-mode (or v1) broker answers AUTH with
+// UNKNOWN_OPCODE — that is not a failure, it means "no auth required"
+// and the connection proceeds unauthenticated (a debug log says so).
+// Any other error frame is returned as the typed *protocol.Error.
+func (t *transport) authHandshake(conn net.Conn) error {
+	payload, _ := json.Marshal(protocol.AuthRequest{ID: t.authID, Secret: t.authSecret})
+	_ = conn.SetDeadline(time.Now().Add(t.dialTimeout))
+	defer conn.SetDeadline(time.Time{})
+	if err := protocol.WriteFrame(conn, &protocol.Frame{Opcode: protocol.OpAuth, CorrelationID: 1, Payload: payload}); err != nil {
+		return fmt.Errorf("write AUTH: %w", err)
+	}
+	f, err := protocol.ReadFrame(conn)
+	if err != nil {
+		return fmt.Errorf("read AUTH response: %w", err)
+	}
+	if f.Opcode == protocol.OpError {
+		e := protocol.DecodeErrorFrame(f.Payload)
+		if e.Code == protocol.CodeUnknownOpcode {
+			t.log.Debug("broker does not require authentication, proceeding in open mode",
+				slog.String("addr", t.addr))
+			return nil
+		}
+		return e
+	}
+	if f.Opcode != protocol.OpAuth {
+		return fmt.Errorf("unexpected AUTH response opcode %s", f.Opcode)
+	}
+	return nil
 }
 
 // readLoop routes responses to pending calls. On any error it tears

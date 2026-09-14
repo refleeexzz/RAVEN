@@ -62,6 +62,14 @@ const (
 	// slow-loris client could park a connection goroutine before the
 	// first frame for the whole idle timeout.
 	defaultHandshakeTimeout = 10 * time.Second
+	// defaultMaxAuthFailures is how many rejected AUTH attempts (or
+	// pre-auth frames) one connection gets before the broker answers a
+	// final UNAUTHENTICATED and closes it.
+	defaultMaxAuthFailures = 5
+	// defaultAuthTimeout is how long a connection may stay
+	// unauthenticated. Much shorter than the idle timeout so half-open
+	// unauth connections cannot hold connection slots.
+	defaultAuthTimeout = 10 * time.Second
 )
 
 // Option customizes a Server. Options exist so tests and the broker can
@@ -132,6 +140,11 @@ type Server struct {
 	tlsCfg           *tls.Config
 	handshakeTimeout time.Duration
 
+	authenticator    Authenticator
+	maxAuthFailures  int
+	authTimeout      time.Duration
+	hooks            SecurityHooks
+
 	ln      net.Listener
 	mu      sync.Mutex
 	conns   map[net.Conn]struct{}
@@ -145,15 +158,17 @@ func New(addr string, backend Backend, drainTimeout time.Duration, log *slog.Log
 		log = slog.Default()
 	}
 	s := &Server{
-		addr:             addr,
-		backend:          backend,
-		log:              log,
-		drain:            drainTimeout,
-		maxConns:         defaultMaxConnections,
-		idleTimeout:      defaultIdleTimeout,
-		writeTimeout:     defaultWriteTimeout,
+		addr:            addr,
+		backend:         backend,
+		log:             log,
+		drain:           drainTimeout,
+		maxConns:        defaultMaxConnections,
+		idleTimeout:     defaultIdleTimeout,
+		writeTimeout:    defaultWriteTimeout,
 		handshakeTimeout: defaultHandshakeTimeout,
-		conns:            make(map[net.Conn]struct{}),
+		maxAuthFailures: defaultMaxAuthFailures,
+		authTimeout:     defaultAuthTimeout,
+		conns:           make(map[net.Conn]struct{}),
 	}
 	for _, o := range opts {
 		o(s)
@@ -379,11 +394,24 @@ func (s *Server) serveConn(ctx context.Context, conn net.Conn) {
 	connDone := make(chan struct{})
 	defer close(connDone)
 
+	// Per-connection auth state. principal is nil until a successful
+	// AUTH (or forever in open mode); it is written once by the read
+	// loop and read by handler goroutines via dispatch, so an atomic
+	// pointer keeps it race-free. failures budgets rejected attempts.
+	var principal atomic.Pointer[Principal]
+	authFailures := 0
+
 	for {
 		// Idle deadline: refreshed before every frame, so only genuinely
 		// silent connections trip it. This is what reaps half-open
 		// connections (client crashed without closing the socket).
-		_ = conn.SetReadDeadline(time.Now().Add(s.idleTimeout))
+		// Unauthenticated connections get the much shorter auth timeout
+		// instead: AUTH must come promptly after connect.
+		readDeadline := s.idleTimeout
+		if s.authenticator != nil && principal.Load() == nil {
+			readDeadline = s.authTimeout
+		}
+		_ = conn.SetReadDeadline(time.Now().Add(readDeadline))
 		f, err := protocol.ReadFrame(conn)
 		if err != nil {
 			var ne net.Error
@@ -402,6 +430,29 @@ func (s *Server) serveConn(ctx context.Context, conn net.Conn) {
 			}
 			break
 		}
+		// Pre-auth gate: until AUTH succeeds, only AUTH frames pass.
+		// AUTH is handled synchronously here (never pipelined to
+		// handlers), so authentication is strictly ordered before every
+		// dispatched frame. No handlers are running at this point, so
+		// the read loop is the only sender to resCh besides the writer
+		// drain — the terminal failure path (keepGoing == false) breaks
+		// to the drain epilogue, which flushes the error frame through
+		// the writer before the connection closes.
+		if s.authenticator != nil && principal.Load() == nil {
+			resp, keepGoing := s.handlePreAuth(connCtx, conn, f, &authFailures, &principal)
+			select {
+			case resCh <- resp:
+			case <-connDone:
+				return
+			}
+			if !keepGoing {
+				s.log.Warn("auth failure budget exhausted, closing connection",
+					slog.String("remote", conn.RemoteAddr().String()),
+					slog.Int("failures", authFailures))
+				break
+			}
+			continue
+		}
 		// Prefer a free in-flight slot over the shutdown signal: any
 		// frame we managed to read gets dispatched, even mid-drain.
 		// Only when the cap is genuinely full do we honor ctx.
@@ -416,11 +467,12 @@ func (s *Server) serveConn(ctx context.Context, conn net.Conn) {
 				goto drain
 			}
 		}
+		p := principal.Load() // nil in open mode; set before any dispatch otherwise
 		handlers.Add(1)
 		go func(f *protocol.Frame) {
 			defer handlers.Done()
 			defer func() { <-sem }()
-			resp := s.dispatch(connCtx, f)
+			resp := s.dispatch(connCtx, f, p)
 			select {
 			case resCh <- resp:
 			case <-connDone:
@@ -438,8 +490,9 @@ drain:
 }
 
 // dispatch routes one frame to the backend and always returns exactly
-// one response frame.
-func (s *Server) dispatch(ctx context.Context, f *protocol.Frame) *protocol.Frame {
+// one response frame. p is the connection's authenticated principal
+// (nil in open mode); authorize() consults it per operation.
+func (s *Server) dispatch(ctx context.Context, f *protocol.Frame, p *Principal) *protocol.Frame {
 	resp := &protocol.Frame{Opcode: f.Opcode, CorrelationID: f.CorrelationID}
 	fail := func(err error) *protocol.Frame {
 		return protocol.ErrorFrame(f.CorrelationID, err)
@@ -449,6 +502,15 @@ func (s *Server) dispatch(ctx context.Context, f *protocol.Frame) *protocol.Fram
 	}
 
 	switch f.Opcode {
+	case protocol.OpAuth:
+		// AUTH is handled by the read-loop gate. Reaching dispatch
+		// means either open mode (no authenticator: tell the client
+		// auth is unsupported so it proceeds, mirroring a v1 server) or
+		// a second AUTH on an authenticated connection.
+		if s.authenticator == nil {
+			return fail(protocol.NewError(protocol.CodeUnknownOpcode, "auth not required: server runs in open mode"))
+		}
+		return fail(protocol.NewError(protocol.CodeBadRequest, "connection already authenticated"))
 	case protocol.OpCreateTopic:
 		var req protocol.CreateTopicRequest
 		if err := json.Unmarshal(f.Payload, &req); err != nil {

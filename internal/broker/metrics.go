@@ -14,6 +14,10 @@ type Metrics struct {
 	fetched       *prometheus.CounterVec
 	consumed      *prometheus.CounterVec
 	appendLatency *prometheus.HistogramVec
+
+	// Security counters. Label-free on purpose: key ids would be a
+	// cardinality leak, and the broker logs carry the detail.
+	authFailures prometheus.Counter
 }
 
 // CollectorRegistrar is satisfied by pkg/metrics.Registry; defined as
@@ -53,6 +57,12 @@ func newMetrics() *Metrics {
 			Help:      "Time in seconds to append one produce batch to the partition log (encode + write, before fsync), by topic and partition.",
 			Buckets:   []float64{0.0001, 0.0005, 0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1},
 		}, []string{"topic", "partition"}),
+		authFailures: prometheus.NewCounter(prometheus.CounterOpts{
+			Namespace: "raven",
+			Subsystem: "broker",
+			Name:      "auth_failures_total",
+			Help:      "Total rejected authentication attempts and pre-auth frames (bad secret, unknown key, frame before AUTH).",
+		}),
 	}
 }
 
@@ -65,6 +75,7 @@ func (b *Broker) registerMetrics(reg CollectorRegistrar) {
 		b.metrics.fetched,
 		b.metrics.consumed,
 		b.metrics.appendLatency,
+		b.metrics.authFailures,
 		&offsetCollector{
 			b: b,
 			pendingDesc: prometheus.NewDesc(

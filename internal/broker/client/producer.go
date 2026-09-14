@@ -15,7 +15,8 @@ import (
 type Producer struct {
 	t *transport
 
-	tlsCfg *tls.Config
+	tlsCfg              *tls.Config
+	authID, authSecret string
 
 	batch      bool
 	flushEvery time.Duration
@@ -66,6 +67,18 @@ func WithProducerTLS(cfg *tls.Config) ProducerOption {
 	return func(p *Producer) { p.tlsCfg = cfg }
 }
 
+// WithProducerAuth sends an AUTH frame (API key id + plaintext secret)
+// right after every connect, before any PRODUCE. Against an open-mode
+// broker the AUTH is a no-op, so the same client config works in dev
+// and prod. Pair with WithProducerTLS on real networks: the secret
+// travels inside the frame payload.
+func WithProducerAuth(id, secret string) ProducerOption {
+	return func(p *Producer) {
+		p.authID = id
+		p.authSecret = secret
+	}
+}
+
 // NewProducer creates a producer. It dials lazily on the first Produce
 // and reconnects automatically with exponential backoff.
 func NewProducer(addr string, opts ...ProducerOption) *Producer {
@@ -79,6 +92,8 @@ func NewProducer(addr string, opts ...ProducerOption) *Producer {
 	}
 	p.t.log = p.log
 	p.t.tlsCfg = p.tlsCfg
+	p.t.authID = p.authID
+	p.t.authSecret = p.authSecret
 	if p.batch {
 		p.batchCh = make(chan batchMsg, p.flushCount*4)
 		p.batchDone = make(chan struct{})

@@ -22,7 +22,10 @@
 // by correlation id.
 package protocol
 
-import "fmt"
+import (
+	"errors"
+	"fmt"
+)
 
 // MaxPayloadSize is the hard cap for one frame payload (4 MiB).
 // The full frame on the wire is MaxPayloadSize + headerSize.
@@ -35,6 +38,13 @@ const headerSize = 4 + 1 + 8
 type Opcode uint8
 
 // Opcodes, v1. OpError is only used for responses.
+//
+// v1.1 adds OpAuth (0x0A). The frame format is unchanged and the new
+// opcode is purely additive: a v1 server answers AUTH with
+// UNKNOWN_OPCODE (which the v1.1 client reads as "auth not required"
+// and proceeds in open mode), and a v1 client talking to an
+// auth-enabled v1.1 server gets a clear UNAUTHENTICATED error frame on
+// its first non-AUTH request. No handshake negotiation needed.
 const (
 	OpError        Opcode = 0x00
 	OpCreateTopic  Opcode = 0x01
@@ -46,6 +56,7 @@ const (
 	OpJoinGroup    Opcode = 0x07
 	OpLeaveGroup   Opcode = 0x08
 	OpHeartbeat    Opcode = 0x09
+	OpAuth         Opcode = 0x0A
 )
 
 func (o Opcode) String() string {
@@ -70,6 +81,8 @@ func (o Opcode) String() string {
 		return "LEAVE_GROUP"
 	case OpHeartbeat:
 		return "HEARTBEAT"
+	case OpAuth:
+		return "AUTH"
 	default:
 		return fmt.Sprintf("UNKNOWN(0x%02x)", uint8(o))
 	}
@@ -86,6 +99,13 @@ const (
 	CodeUnknownMember    = "UNKNOWN_MEMBER"
 	CodeOffsetOutOfRange = "OFFSET_OUT_OF_RANGE"
 	CodeInternal         = "INTERNAL"
+	// CodeUnauthenticated: the broker requires authentication and the
+	// connection has not completed a successful AUTH yet (or the AUTH
+	// credentials were rejected). v1.1.
+	CodeUnauthenticated = "UNAUTHENTICATED"
+	// CodeUnauthorized: the connection is authenticated but the
+	// principal's ACL does not allow the operation on that topic. v1.1.
+	CodeUnauthorized = "UNAUTHORIZED"
 )
 
 // Error is a broker-side failure that maps 1:1 onto an OpError frame.
@@ -110,4 +130,15 @@ func ErrorCode(err error) string {
 		return e.Code
 	}
 	return CodeInternal
+}
+
+// IsCode reports whether err is (or wraps) a protocol *Error with the
+// given code. It is the typed-error check clients use for auth
+// failures, e.g. protocol.IsCode(err, protocol.CodeUnauthorized).
+func IsCode(err error, code string) bool {
+	var e *Error
+	if errors.As(err, &e) {
+		return e.Code == code
+	}
+	return false
 }

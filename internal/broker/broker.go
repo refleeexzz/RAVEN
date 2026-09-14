@@ -145,6 +145,29 @@ func New(cfg Config, log *slog.Logger, reg CollectorRegistrar) (*Broker, error) 
 		_ = store.Close()
 		return nil, err
 	}
+	// Authentication is resolved the same way: a malformed
+	// BROKER_API_KEYS must fail the boot (fail closed) — silently
+	// starting in open mode would turn a config typo into an outage of
+	// the security model, which nobody notices until it matters.
+	if cfg.apiKeysErr != nil {
+		_ = groups.Close()
+		_ = store.Close()
+		return nil, fmt.Errorf("BROKER_API_KEYS: %w", cfg.apiKeysErr)
+	}
+	var authenticator server.Authenticator
+	if len(cfg.APIKeys) > 0 {
+		authenticator, err = newStaticAuthenticator(cfg.APIKeys)
+		if err != nil {
+			_ = groups.Close()
+			_ = store.Close()
+			return nil, fmt.Errorf("BROKER_API_KEYS: %w", err)
+		}
+		log.Info("broker API-key authentication enabled", slog.Int("keys", len(cfg.APIKeys)))
+	} else {
+		log.Warn("broker authentication DISABLED: no BROKER_API_KEYS configured — " +
+			"any client that can reach the TCP port can produce, consume and admin. " +
+			"Fine for local dev, wrong for anything else.")
+	}
 	b := &Broker{
 		cfg:       cfg,
 		log:       log,
@@ -186,6 +209,10 @@ func New(cfg Config, log *slog.Logger, reg CollectorRegistrar) (*Broker, error) 
 		server.WithIdleTimeout(cfg.IdleTimeout),
 		server.WithWriteTimeout(cfg.WriteTimeout),
 		server.WithTLS(tlsCfg),
+		server.WithAuthenticator(authenticator),
+		server.WithSecurityHooks(server.SecurityHooks{
+			OnAuthFailure: func() { b.metrics.authFailures.Inc() },
+		}),
 	)
 	if reg != nil {
 		b.registerMetrics(reg)

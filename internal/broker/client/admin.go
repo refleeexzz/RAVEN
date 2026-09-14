@@ -27,6 +27,17 @@ func WithAdminTLS(cfg *tls.Config) AdminOption {
 	return func(a *Admin) { a.t.tlsCfg = cfg }
 }
 
+// WithAdminAuth sends an AUTH frame (API key id + plaintext secret)
+// right after every connect. Admin operations require a key with the
+// admin flag when the broker enforces ACLs. Pair with WithAdminTLS on
+// real networks: the secret travels inside the frame payload.
+func WithAdminAuth(id, secret string) AdminOption {
+	return func(a *Admin) {
+		a.t.authID = id
+		a.t.authSecret = secret
+	}
+}
+
 // NewAdmin creates an admin client (lazy dial).
 func NewAdmin(addr string, opts ...AdminOption) *Admin {
 	a := &Admin{t: newTransport(addr, 5*time.Second, nil)}

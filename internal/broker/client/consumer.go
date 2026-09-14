@@ -38,7 +38,8 @@ type Consumer struct {
 	topics  []string
 	handler Handler
 
-	tlsCfg *tls.Config
+	tlsCfg              *tls.Config
+	authID, authSecret string
 
 	memberID       string
 	heartbeatEvery time.Duration
@@ -63,6 +64,17 @@ func WithConsumerLogger(log *slog.Logger) ConsumerOption {
 // authentication.
 func WithConsumerTLS(cfg *tls.Config) ConsumerOption {
 	return func(c *Consumer) { c.tlsCfg = cfg }
+}
+
+// WithConsumerAuth sends an AUTH frame (API key id + plaintext secret)
+// right after every connect, before any group operation. Against an
+// open-mode broker it is a no-op. Pair with WithConsumerTLS on real
+// networks: the secret travels inside the frame payload.
+func WithConsumerAuth(id, secret string) ConsumerOption {
+	return func(c *Consumer) {
+		c.authID = id
+		c.authSecret = secret
+	}
 }
 
 // WithFetchLimits sets per-fetch batch bounds (defaults 100 records / 1 MiB).
@@ -116,6 +128,8 @@ func NewConsumer(addr, group string, topics []string, handler Handler, opts ...C
 	}
 	c.t.log = c.log
 	c.t.tlsCfg = c.tlsCfg
+	c.t.authID = c.authID
+	c.t.authSecret = c.authSecret
 	return c
 }
 

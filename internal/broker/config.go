@@ -101,6 +101,17 @@ type Config struct {
 	// BROKER_TLS_RELOAD_SEC, default 5s). See certReloader for why this
 	// is polling rather than stat-per-handshake.
 	TLSReloadInterval time.Duration
+	// APIKeys are the static authentication credentials (env
+	// BROKER_API_KEYS, JSON array — see the APIKey doc). Empty means
+	// open mode: every op is served without AUTH (dev compatibility,
+	// and the broker warns loudly at boot). When keys are configured, a
+	// connection must complete AUTH before any other frame.
+	APIKeys []APIKey
+
+	// apiKeysErr carries a BROKER_API_KEYS parse failure into New so a
+	// malformed security config fails the boot instead of silently
+	// running without authentication (fail closed).
+	apiKeysErr error
 }
 
 // policyFor resolves the effective cleanup policy for one topic: global
@@ -124,6 +135,7 @@ func (c Config) policyFor(topic string) storage.Policy {
 
 // ConfigFromEnv loads the broker configuration from the environment.
 func ConfigFromEnv() Config {
+	keys, keysErr := parseAPIKeys(config.Get("BROKER_API_KEYS", ""))
 	return Config{
 		TCPAddr:            config.Get("BROKER_TCP_ADDR", ":9100"),
 		DataDir:            config.Get("BROKER_DATA_DIR", "./data"),
@@ -148,6 +160,8 @@ func ConfigFromEnv() Config {
 		TLSKeyFile:         config.Get("BROKER_TLS_KEY_FILE", ""),
 		TLSClientCAFile:    config.Get("BROKER_TLS_CLIENT_CA_FILE", ""),
 		TLSReloadInterval:  time.Duration(config.GetInt("BROKER_TLS_RELOAD_SEC", 5)) * time.Second,
+		APIKeys:            keys,
+		apiKeysErr:         keysErr,
 	}
 }
 
@@ -251,5 +265,9 @@ func (c Config) withDefaults() Config {
 	if c.TLSReloadInterval > 0 {
 		def.TLSReloadInterval = c.TLSReloadInterval
 	}
+	// API keys pass through untouched: empty means open mode, and a
+	// recorded parse error must survive so New can fail closed.
+	def.APIKeys = c.APIKeys
+	def.apiKeysErr = c.apiKeysErr
 	return def
 }
