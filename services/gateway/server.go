@@ -21,6 +21,9 @@ import (
 
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 
+	"github.com/refleeexzz/RAVEN/internal/audit"
+	"github.com/refleeexzz/RAVEN/internal/config"
+	"github.com/refleeexzz/RAVEN/internal/database"
 	"github.com/refleeexzz/RAVEN/internal/health"
 	"github.com/refleeexzz/RAVEN/internal/httpserver"
 	"github.com/refleeexzz/RAVEN/internal/middleware"
@@ -53,6 +56,13 @@ type Config struct {
 	OtelEndpoint   string
 	RateLimitRPM   int // RATE_LIMIT_RPM, default 100
 	RateLimitBurst int // RATE_LIMIT_BURST, default 20
+	// AuditDatabaseURL points at the Postgres the audit trail lives in
+	// (AUDIT_DATABASE_URL, falling back to DATABASE_URL). Empty disables
+	// auditing: the middleware becomes a pass-through and GET /api/audit
+	// answers 503. AuditBuffer is the in-memory queue (AUDIT_BUFFER,
+	// default 4096); a full queue drops events instead of blocking requests.
+	AuditDatabaseURL string
+	AuditBuffer      int
 }
 
 // server bundles the dependencies the route table and middleware need.
@@ -65,6 +75,9 @@ type server struct {
 	authH     *authHandlers
 	usersH    *usersHandlers
 	jobsH     *jobsHandlers
+	audit     auditEmitter // nil → the audit middleware is a pass-through
+	auditH    *auditHandlers
+	jwtSecret string // lets the audit middleware attribute login successes
 	health    *health.Registry
 	healthAgg *healthAgg
 	wsProxy   http.Handler
@@ -133,6 +146,46 @@ func Run(ctx context.Context, cfg Config) error {
 	healthReg.Register("jobs_grpc", grpcConnectivityChecker(jobsUp.conn))
 	healthReg.Register("redis", redisChecker(rdb))
 
+	// Audit trail (internal/audit, migration 000006). The gateway owns its
+	// own small Postgres pool for it. Config normally arrives via Config;
+	// the env fallback keeps older entrypoints (and tests) working.
+	if cfg.AuditDatabaseURL == "" {
+		cfg.AuditDatabaseURL = config.Get("AUDIT_DATABASE_URL", config.Get("DATABASE_URL", ""))
+	}
+	if cfg.AuditBuffer <= 0 {
+		cfg.AuditBuffer = config.GetInt("AUDIT_BUFFER", 4096)
+	}
+	var (
+		auditSink   auditEmitter
+		auditReader auditLister
+		stopAudit   = func() {}
+	)
+	if cfg.AuditDatabaseURL == "" {
+		log.Warn("audit trail disabled: AUDIT_DATABASE_URL/DATABASE_URL not set")
+	} else if pool, err := database.NewPool(ctx, cfg.AuditDatabaseURL); err != nil {
+		// Same degraded-mode philosophy as Redis above: the API keeps
+		// serving, /ready stays green for the core path, and the failure is
+		// loud in the logs. Events are only emitted when the writer exists.
+		log.Error("audit database unreachable, audit trail disabled",
+			slog.Any("error", err))
+	} else {
+		met := newAuditMetrics(metr)
+		writer := audit.NewWriter(pool, log, met, audit.Options{BufferSize: cfg.AuditBuffer})
+		writerCtx, stopWriter := context.WithCancel(context.Background())
+		go writer.Run(writerCtx)
+		healthReg.Register("audit_postgres", database.Checker(pool))
+		auditSink = writer
+		auditReader = audit.NewStore(pool)
+		// The writer stops only after ListenAndServe has drained every
+		// in-flight request, so the last audited mutations still land.
+		stopAudit = func() {
+			stopWriter()
+			writer.Wait()
+			pool.Close()
+		}
+	}
+	defer stopAudit()
+
 	s := &server{
 		log:     log,
 		metr:    metr,
@@ -146,6 +199,9 @@ func Run(ctx context.Context, cfg Config) error {
 		authH:     newAuthHandlers(authUp),
 		usersH:    newUsersHandlers(usersUp),
 		jobsH:     newJobsHandlers(jobsUp, rdb),
+		audit:     auditSink,
+		auditH:    newAuditHandlers(auditReader),
+		jwtSecret: cfg.JWTSecret,
 		health:    healthReg,
 		healthAgg: newHealthAggregator(cfg, authUp, usersUp, jobsUp, rdb, log),
 		wsProxy:   wsProxy,
@@ -188,10 +244,13 @@ func (s *server) handler() http.Handler {
 // wrapAPI applies the API middleware chain to one route:
 //
 //	RequestID → Logging → Recovery → metrics → otel (when enabled) →
-//	Timeout(10s) → AuthN → AuthZ → RateLimit → handler
+//	auditRecord → Timeout(10s) → AuthN → auditActor → AuthZ → RateLimit → handler
 //
-// AuthN/AuthZ are skipped on public routes; RateLimit then keys on the
-// client IP instead of the user id.
+// auditRecord sits OUTSIDE the timeout so a timed-out mutation is audited
+// with the 503 the client actually received; auditActor runs right after
+// AuthN so denied (403) attempts are still attributed. AuthN/AuthZ are
+// skipped on public routes; RateLimit then keys on the client IP instead
+// of the user id.
 func (s *server) wrapAPI(rt route) http.Handler {
 	chain := []middleware.Middleware{
 		middleware.RequestID,
@@ -199,10 +258,11 @@ func (s *server) wrapAPI(rt route) http.Handler {
 		middleware.Recovery(s.log),
 		s.metr.Middleware,
 		s.otelMW,
+		s.auditRecord,
 		middleware.Timeout(apiTimeout),
 	}
 	if rt.perm != "" {
-		chain = append(chain, s.authn.middleware, s.authorize(rt.perm))
+		chain = append(chain, s.authn.middleware, s.auditActor, s.authorize(rt.perm))
 	}
 	chain = append(chain, s.rateLimit)
 	return middleware.Chain(rt.handler, chain...)

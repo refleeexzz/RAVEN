@@ -44,6 +44,10 @@ func (s *server) table() []route {
 		// Live worker registry (from Redis).
 		{"GET", "/api/workers", ravenauth.PermJobsRead, s.jobsH.workers},
 
+		// Platform audit trail, admin-only: users:delete is held by ADMIN
+		// (via admin:*) and SERVICE in the seed RBAC and by nobody else.
+		{"GET", "/api/audit", ravenauth.PermUsersDelete, s.auditH.list},
+
 		// Aggregated service health for the console (public; light probes).
 		{"GET", "/api/health/services", "", s.healthAgg.handler},
 	}

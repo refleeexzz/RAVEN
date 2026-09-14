@@ -37,6 +37,8 @@ var expectedRoutes = []struct {
 
 	{"GET", "/api/workers", ravenauth.PermJobsRead},
 
+	{"GET", "/api/audit", ravenauth.PermUsersDelete}, // admin-only audit trail
+
 	{"GET", "/api/health/services", ""}, // aggregated service health for the console
 }
 
