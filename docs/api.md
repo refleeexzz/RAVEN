@@ -29,6 +29,13 @@ So a freshly registered user can create and watch jobs, read users, and
 cancel — but cannot create/update/delete users. That needs `users:write` /
 `users:delete`, i.e. an admin.
 
+There is a second credential scheme for machines: `Authorization: ApiKey
+rav_live_...`. An API key authenticates as its owner with the key's
+**scopes** as the permission set — a key with `["jobs:read"]` can list jobs
+but gets `403` on `POST /api/jobs`. Keys are created over JWT auth at
+`POST /api/keys` (see [API keys](#api-keys)); revocation takes effect
+immediately (the key path is deliberately not cached).
+
 ### Error envelope
 
 Every error, from any route, has the same shape:
@@ -167,6 +174,86 @@ return `200 {"ok": true}`, so clients can retry safely.
 ```json
 { "refresh_token": "q9d8f7a..." }
 ```
+
+## API keys
+
+Programmatic credentials for scripts and CI (migration 000007). A key is
+shown **exactly once** at creation; only its SHA-256 hash is stored. All
+three routes need any valid credential — but `POST` is **JWT-only**: an API
+key cannot mint more API keys.
+
+Key format: `rav_live_<43 base64url chars>` (256 bits of entropy). Scopes
+are a subset of the platform permissions — `users:read`, `users:write`,
+`users:delete`, `jobs:create`, `jobs:read`, `jobs:cancel`. `admin:*` is
+never issuable: a key with a wildcard would be a root credential that never
+expires, which is exactly what keys exist to avoid.
+
+### `POST /api/keys` — authenticated (JWT only)
+
+Request:
+
+```json
+{
+  "name": "ci deploy bot",
+  "scopes": ["jobs:create", "jobs:read"]
+}
+```
+
+Response `201` — save `key`, it is never shown again:
+
+```json
+{
+  "key": "rav_live_9f2kQ...",
+  "api_key": {
+    "id": "7c9e...",
+    "name": "ci deploy bot",
+    "prefix": "rav_live_9f2kQp2m",
+    "scopes": ["jobs:create", "jobs:read"],
+    "created_at": "2026-01-01T12:00:00Z",
+    "last_used_at": null
+  }
+}
+```
+
+Errors: `400 name_required` / `scopes_required` / `scope_unknown` /
+`scope_not_issuable` (`admin:*`), `403 api_key_cannot_create_keys` when an
+API key tries to create keys.
+
+### `GET /api/keys` — authenticated
+
+Lists the caller's **active** keys (revoked ones disappear), newest first.
+The hash is never returned. Owner-scoped for everyone, including admins.
+
+Response `200`:
+
+```json
+{
+  "api_keys": [
+    {
+      "id": "7c9e...",
+      "name": "ci deploy bot",
+      "prefix": "rav_live_9f2kQp2m",
+      "scopes": ["jobs:read"],
+      "created_at": "2026-01-01T12:00:00Z",
+      "last_used_at": "2026-01-02T08:30:00Z"
+    }
+  ]
+}
+```
+
+### `DELETE /api/keys/{id}` — authenticated
+
+Revokes a key (soft: `revoked_at` is set, the row stays for the audit
+trail). The owner revokes their own keys; an admin (`users:delete`) revokes
+anyone's — that is the incident path for a leaked key. A key belonging to
+someone else answers `404 api_key_not_found`, never `403`: no ownership
+oracle. Revocation is effective immediately.
+
+Response `200`: `{"ok": true}`
+
+When the gateway runs without a keys database (`API_KEYS_DATABASE_URL` /
+`DATABASE_URL` unset), all three endpoints and the `ApiKey` scheme answer
+`503 api_keys_unavailable`; JWT auth is unaffected.
 
 ## Users
 

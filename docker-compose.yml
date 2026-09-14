@@ -236,6 +236,9 @@ services:
       USERS_GRPC_ADDR: users:9082
       JOBS_GRPC_ADDR: jobs:9083
       WEBSOCKET_ADDR: websocket:8084
+      # API keys (migration 000007) live in the platform Postgres; drop
+      # this var to run the gateway without the /api/keys feature.
+      API_KEYS_DATABASE_URL: postgres://raven:raven@postgres:5432/raven?sslmode=disable
       LOG_LEVEL: ${LOG_LEVEL:-info}
       OTEL_ENABLED: "true"
       OTEL_ENDPOINT: jaeger:4317
@@ -250,6 +253,10 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://localhost:8080/health"]
       interval: 10s

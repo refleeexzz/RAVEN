@@ -9,6 +9,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"log/slog"
 	"net/http"
 	"strings"
 	"sync"
@@ -27,13 +28,27 @@ const (
 	authCacheSweep   = time.Minute
 )
 
-// Identity is what the auth service says about a valid token.
+// Identity is what the auth service says about a valid credential — a JWT
+// validated by the auth service, or an API key resolved from the keys store.
 type Identity struct {
 	UserID string
 	Email  string
 	Roles  []string
 	Perms  []string
+	// AuthVia records how the request authenticated: authViaJWT ("" counts
+	// as JWT — zero-value identities in tests are JWTs) or authViaAPIKey.
+	// POST /api/keys is JWT-only: a key must not mint more keys.
+	AuthVia string
+	// KeyID is the api_keys row id when AuthVia == authViaAPIKey. Used for
+	// the async last_used_at touch; empty for JWTs.
+	KeyID string
 }
+
+// Credential origins for Identity.AuthVia.
+const (
+	authViaJWT    = "jwt"
+	authViaAPIKey = "api_key"
+)
 
 type identityCtxKey struct{}
 
@@ -175,11 +190,17 @@ func (c *authCache) sweep(ctx context.Context) {
 	}
 }
 
-// authenticator bundles the validator, cache and metrics for the middleware.
+// authenticator bundles the validator, keys store, cache and metrics for the
+// middleware. keys is nil when the gateway runs without a keys database: the
+// ApiKey scheme then answers 503. touchCh carries key ids to the async
+// last_used_at updater (nil in tests → touches are skipped).
 type authenticator struct {
 	validator tokenValidator
+	keys      apiKeyStore
 	cache     *authCache
 	metrics   *serviceMetrics
+	log       *slog.Logger
+	touchCh   chan string
 }
 
 // bearerToken parses the "Authorization: Bearer <token>" header.
@@ -202,10 +223,30 @@ func bearerToken(header string) (string, error) {
 	return token, nil
 }
 
-// middleware enforces authentication: parse the bearer token, answer from
-// the cache when possible, otherwise call the auth service.
+// apiKeyCredential parses the "Authorization: ApiKey <key>" header. It
+// reports ok=false when the scheme is not ApiKey, so the caller falls
+// through to the bearer path.
+func apiKeyCredential(header string) (key string, ok bool) {
+	scheme, cred, found := strings.Cut(header, " ")
+	if !found || !strings.EqualFold(scheme, "ApiKey") {
+		return "", false
+	}
+	return strings.TrimSpace(cred), true
+}
+
+// middleware enforces authentication. Two credential schemes:
+//
+//   - Bearer <jwt>: validated by the auth service (cached 30 s).
+//   - ApiKey rav_live_...: resolved from the keys store by hash. NOT cached:
+//     revocation must take effect immediately, and the lookup is an indexed
+//     hash-equality read — cheap enough to stay on the hot path.
 func (a *authenticator) middleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if key, ok := apiKeyCredential(r.Header.Get("Authorization")); ok {
+			a.serveAPIKey(next, w, r, key)
+			return
+		}
+
 		token, err := bearerToken(r.Header.Get("Authorization"))
 		if err != nil {
 			writeError(w, r, err)
@@ -226,8 +267,69 @@ func (a *authenticator) middleware(next http.Handler) http.Handler {
 		}
 		// Only successful validations are cached; invalid tokens always go
 		// back to the auth service so revocation is noticed quickly.
+		id.AuthVia = authViaJWT
 		a.cache.put(token, id)
 
 		next.ServeHTTP(w, r.WithContext(withIdentity(r.Context(), id)))
 	})
+}
+
+// serveAPIKey is the ApiKey branch of the middleware: resolve the key,
+// schedule the best-effort last_used_at touch and continue with the key's
+// owner + scopes as the identity.
+func (a *authenticator) serveAPIKey(next http.Handler, w http.ResponseWriter, r *http.Request, key string) {
+	if key == "" || strings.ContainsAny(key, " \t") {
+		writeError(w, r, errors.E(errors.KindUnauthorized, "invalid_authorization",
+			`expected "Authorization: ApiKey <key>"`, nil))
+		return
+	}
+	if a.keys == nil {
+		writeError(w, r, errKeysUnavailable())
+		return
+	}
+	k, err := a.keys.Resolve(r.Context(), key)
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+	a.touchAsync(k.ID)
+
+	id := Identity{
+		UserID:  k.OwnerID,
+		Perms:   k.Scopes,
+		AuthVia: authViaAPIKey,
+		KeyID:   k.ID,
+	}
+	next.ServeHTTP(w, r.WithContext(withIdentity(r.Context(), id)))
+}
+
+// touchAsync queues a last_used_at update without blocking the request. A
+// full queue drops the touch: last_used_at is diagnostics, never worth a
+// 429-less stall on the request path.
+func (a *authenticator) touchAsync(keyID string) {
+	if a.touchCh == nil || keyID == "" {
+		return
+	}
+	select {
+	case a.touchCh <- keyID:
+	default:
+	}
+}
+
+// touchLoop drains touchCh until ctx is cancelled. Each update gets its own
+// short deadline so a sick database cannot pile up work behind the channel.
+func (a *authenticator) touchLoop(ctx context.Context) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case id := <-a.touchCh:
+			tctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
+			err := a.keys.Touch(tctx, id)
+			cancel()
+			if err != nil && a.log != nil {
+				a.log.Warn("api key last_used_at touch failed", slog.Any("error", err))
+			}
+		}
+	}
 }

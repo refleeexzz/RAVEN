@@ -217,6 +217,10 @@ func auditActionFor(pattern string) (action, resourceType string) {
 		return "jobs.cancel", "job"
 	case "POST /api/jobs/{id}/requeue":
 		return "jobs.requeue", "job"
+	case "POST /api/keys":
+		return "api_keys.create", "api_key"
+	case "DELETE /api/keys/{id}":
+		return "api_keys.revoke", "api_key"
 	}
 
 	// Fallback: "POST /api/widgets/{id}/poke" -> "widgets.post", "widget".

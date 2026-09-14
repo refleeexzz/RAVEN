@@ -56,6 +56,11 @@ type Config struct {
 	OtelEndpoint   string
 	RateLimitRPM   int // RATE_LIMIT_RPM, default 100
 	RateLimitBurst int // RATE_LIMIT_BURST, default 20
+	// APIKeysDatabaseURL points at the Postgres holding the api_keys table
+	// (API_KEYS_DATABASE_URL, falling back to DATABASE_URL). Empty disables
+	// API keys: the /api/keys endpoints and the ApiKey auth scheme answer
+	// 503, JWT auth is unaffected. Same degraded-mode philosophy as audit.
+	APIKeysDatabaseURL string
 	// AuditDatabaseURL points at the Postgres the audit trail lives in
 	// (AUDIT_DATABASE_URL, falling back to DATABASE_URL). Empty disables
 	// auditing: the middleware becomes a pass-through and GET /api/audit
@@ -75,6 +80,7 @@ type server struct {
 	authH     *authHandlers
 	usersH    *usersHandlers
 	jobsH     *jobsHandlers
+	keysH     *keysHandlers
 	audit     auditEmitter // nil → the audit middleware is a pass-through
 	auditH    *auditHandlers
 	jwtSecret string // lets the audit middleware attribute login successes
@@ -186,6 +192,29 @@ func Run(ctx context.Context, cfg Config) error {
 	}
 	defer stopAudit()
 
+	// API keys (migration 000007): the gateway owns a small pool to the
+	// database holding api_keys, exactly like the audit trail. Disabled
+	// (503 on /api/keys and the ApiKey scheme) when no URL is configured
+	// or the database is unreachable — JWT auth never depends on it.
+	if cfg.APIKeysDatabaseURL == "" {
+		cfg.APIKeysDatabaseURL = config.Get("API_KEYS_DATABASE_URL", config.Get("DATABASE_URL", ""))
+	}
+	var (
+		keysStore apiKeyStore
+		stopKeys  = func() {}
+	)
+	if cfg.APIKeysDatabaseURL == "" {
+		log.Warn("api keys disabled: API_KEYS_DATABASE_URL/DATABASE_URL not set")
+	} else if pool, err := database.NewPool(ctx, cfg.APIKeysDatabaseURL); err != nil {
+		log.Error("api keys database unreachable, api keys disabled",
+			slog.Any("error", err))
+	} else {
+		keysStore = newAPIKeyStore(pool)
+		healthReg.Register("api_keys_postgres", database.Checker(pool))
+		stopKeys = pool.Close
+	}
+	defer stopKeys()
+
 	s := &server{
 		log:     log,
 		metr:    metr,
@@ -193,12 +222,16 @@ func Run(ctx context.Context, cfg Config) error {
 		limiter: limiter,
 		authn: &authenticator{
 			validator: newGRPCTokenValidator(authUp),
+			keys:      keysStore,
 			cache:     cache,
 			metrics:   gatewayMetrics,
+			log:       log,
+			touchCh:   make(chan string, 1024),
 		},
 		authH:     newAuthHandlers(authUp),
 		usersH:    newUsersHandlers(usersUp),
 		jobsH:     newJobsHandlers(jobsUp, rdb),
+		keysH:     newKeysHandlers(keysStore),
 		audit:     auditSink,
 		auditH:    newAuditHandlers(auditReader),
 		jwtSecret: cfg.JWTSecret,
@@ -206,6 +239,12 @@ func Run(ctx context.Context, cfg Config) error {
 		healthAgg: newHealthAggregator(cfg, authUp, usersUp, jobsUp, rdb, log),
 		wsProxy:   wsProxy,
 		otelMW:    otelMiddleware(cfg.OtelEnabled),
+	}
+
+	// Async last_used_at updater for API-key auth. Stops with the server;
+	// pending touches are dropped on shutdown (best-effort by design).
+	if keysStore != nil {
+		go s.authn.touchLoop(ctx)
 	}
 
 	log.Info("gateway listening", slog.String("addr", cfg.HTTPAddr))

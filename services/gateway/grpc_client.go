@@ -7,6 +7,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
 	"google.golang.org/grpc"
@@ -90,9 +91,14 @@ func breakerFailure(code codes.Code) bool {
 func (u *upstream) call(ctx context.Context, rpc string, idempotent bool, fn func(ctx context.Context) error) error {
 	// Forward the authenticated identity to upstreams. The jobs service
 	// reads x-user-id to set the job owner (used for owner-targeted
-	// websocket notifications); other services simply ignore it.
+	// websocket notifications) and x-user-perms for the admin:* bypass;
+	// other services simply ignore them. API-key requests forward the key's
+	// scopes here exactly like a JWT forwards its permissions.
 	if id, ok := IdentityFrom(ctx); ok && id.UserID != "" {
 		ctx = metadata.AppendToOutgoingContext(ctx, "x-user-id", id.UserID)
+		if len(id.Perms) > 0 {
+			ctx = metadata.AppendToOutgoingContext(ctx, "x-user-perms", strings.Join(id.Perms, ","))
+		}
 	}
 
 	for attempt := 0; ; attempt++ {
