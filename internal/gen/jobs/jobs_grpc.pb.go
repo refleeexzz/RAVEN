@@ -443,3 +443,123 @@ var JobService_ServiceDesc = grpc.ServiceDesc{
 	Streams:  []grpc.StreamDesc{},
 	Metadata: "jobs/jobs.proto",
 }
+
+const (
+	JobDeliveriesService_ListDeliveries_FullMethodName = "/raven.jobs.v1.JobDeliveriesService/ListDeliveries"
+)
+
+// JobDeliveriesServiceClient is the client API for JobDeliveriesService service.
+//
+// For semantics around ctx use and closing/ending streaming RPCs, please refer to https://pkg.go.dev/google.golang.org/grpc/?tab=doc#ClientConn.NewStream.
+//
+// JobDeliveriesService is the read path for webhook delivery observability
+// (migration 000005). It is deliberately a SEPARATE service from
+// JobService: the jobs service already exposes the owner-scoped logic as a
+// plain-Go Server.ListDeliveries for internal callers, and Go forbids two
+// same-named methods with different signatures — so the rpc lives on its
+// own service and is served by a thin adapter (DeliveriesServer) over that
+// exact logic. Same authz rules as GetJob: owner-scoped, admin:* bypasses,
+// foreign jobs answer NotFound.
+type JobDeliveriesServiceClient interface {
+	ListDeliveries(ctx context.Context, in *ListDeliveriesRequest, opts ...grpc.CallOption) (*ListDeliveriesResponse, error)
+}
+
+type jobDeliveriesServiceClient struct {
+	cc grpc.ClientConnInterface
+}
+
+func NewJobDeliveriesServiceClient(cc grpc.ClientConnInterface) JobDeliveriesServiceClient {
+	return &jobDeliveriesServiceClient{cc}
+}
+
+func (c *jobDeliveriesServiceClient) ListDeliveries(ctx context.Context, in *ListDeliveriesRequest, opts ...grpc.CallOption) (*ListDeliveriesResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListDeliveriesResponse)
+	err := c.cc.Invoke(ctx, JobDeliveriesService_ListDeliveries_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// JobDeliveriesServiceServer is the server API for JobDeliveriesService service.
+// All implementations must embed UnimplementedJobDeliveriesServiceServer
+// for forward compatibility.
+//
+// JobDeliveriesService is the read path for webhook delivery observability
+// (migration 000005). It is deliberately a SEPARATE service from
+// JobService: the jobs service already exposes the owner-scoped logic as a
+// plain-Go Server.ListDeliveries for internal callers, and Go forbids two
+// same-named methods with different signatures — so the rpc lives on its
+// own service and is served by a thin adapter (DeliveriesServer) over that
+// exact logic. Same authz rules as GetJob: owner-scoped, admin:* bypasses,
+// foreign jobs answer NotFound.
+type JobDeliveriesServiceServer interface {
+	ListDeliveries(context.Context, *ListDeliveriesRequest) (*ListDeliveriesResponse, error)
+	mustEmbedUnimplementedJobDeliveriesServiceServer()
+}
+
+// UnimplementedJobDeliveriesServiceServer must be embedded to have
+// forward compatible implementations.
+//
+// NOTE: this should be embedded by value instead of pointer to avoid a nil
+// pointer dereference when methods are called.
+type UnimplementedJobDeliveriesServiceServer struct{}
+
+func (UnimplementedJobDeliveriesServiceServer) ListDeliveries(context.Context, *ListDeliveriesRequest) (*ListDeliveriesResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ListDeliveries not implemented")
+}
+func (UnimplementedJobDeliveriesServiceServer) mustEmbedUnimplementedJobDeliveriesServiceServer() {}
+func (UnimplementedJobDeliveriesServiceServer) testEmbeddedByValue()                              {}
+
+// UnsafeJobDeliveriesServiceServer may be embedded to opt out of forward compatibility for this service.
+// Use of this interface is not recommended, as added methods to JobDeliveriesServiceServer will
+// result in compilation errors.
+type UnsafeJobDeliveriesServiceServer interface {
+	mustEmbedUnimplementedJobDeliveriesServiceServer()
+}
+
+func RegisterJobDeliveriesServiceServer(s grpc.ServiceRegistrar, srv JobDeliveriesServiceServer) {
+	// If the following call panics, it indicates UnimplementedJobDeliveriesServiceServer was
+	// embedded by pointer and is nil.  This will cause panics if an
+	// unimplemented method is ever invoked, so we test this at initialization
+	// time to prevent it from happening at runtime later due to I/O.
+	if t, ok := srv.(interface{ testEmbeddedByValue() }); ok {
+		t.testEmbeddedByValue()
+	}
+	s.RegisterService(&JobDeliveriesService_ServiceDesc, srv)
+}
+
+func _JobDeliveriesService_ListDeliveries_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListDeliveriesRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(JobDeliveriesServiceServer).ListDeliveries(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: JobDeliveriesService_ListDeliveries_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(JobDeliveriesServiceServer).ListDeliveries(ctx, req.(*ListDeliveriesRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+// JobDeliveriesService_ServiceDesc is the grpc.ServiceDesc for JobDeliveriesService service.
+// It's only intended for direct use with grpc.RegisterService,
+// and not to be introspected or modified (even as a copy)
+var JobDeliveriesService_ServiceDesc = grpc.ServiceDesc{
+	ServiceName: "raven.jobs.v1.JobDeliveriesService",
+	HandlerType: (*JobDeliveriesServiceServer)(nil),
+	Methods: []grpc.MethodDesc{
+		{
+			MethodName: "ListDeliveries",
+			Handler:    _JobDeliveriesService_ListDeliveries_Handler,
+		},
+	},
+	Streams:  []grpc.StreamDesc{},
+	Metadata: "jobs/jobs.proto",
+}

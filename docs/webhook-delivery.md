@@ -82,11 +82,14 @@ because payloads are creative.
 Pagination follows the platform rules: 1-based page, size defaults to 20,
 caps at 100, page capped at `MaxListPage` (JOBS-04).
 
-> **Wire-up status:** the proto messages, the `rpc ListDeliveries`
-> registration on the jobs gRPC server and the gateway REST route
-> (`GET /api/jobs/{id}/deliveries`) are a follow-up owned by the parent
-> agent. The logic above is complete and tested; it just needs the
-> generated-types wrapper.
+> **Wire-up status: DONE.** The rpc lives on its own proto service,
+> `raven.jobs.v1.JobDeliveriesService` — a separate service because Go
+> forbids two same-named methods on one type, and the plain-Go
+> `Server.ListDeliveries` above is kept verbatim for direct internal
+> callers. `DeliveriesServer` (services/jobs/server.go) is a thin adapter
+> over that exact logic, registered next to `JobService` in
+> services/jobs/service.go. REST: `GET /api/jobs/{id}/deliveries`
+> (`jobs:read`) on the gateway.
 
 ## Metrics
 

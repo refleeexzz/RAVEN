@@ -353,6 +353,61 @@ func requeueRevert(ctx context.Context, q querier, id string) (*Job, error) {
 }
 
 // ---------------------------------------------------------------------------
+// JobDeliveriesService: gRPC adapter over the plain-Go delivery read path
+// ---------------------------------------------------------------------------
+
+// DeliveriesServer serves raven.jobs.v1.JobDeliveriesService. It is a thin
+// adapter, not new logic: Server.ListDeliveries (deliveries.go) predates
+// the rpc and intentionally stays plain-Go for direct internal callers —
+// Go forbids two same-named methods with different signatures on one type,
+// so the rpc lives on its own service and this wrapper forwards to the
+// exact owner-scoped logic (authz included) unchanged.
+type DeliveriesServer struct {
+	genjobs.UnimplementedJobDeliveriesServiceServer
+	srv *Server
+}
+
+// NewDeliveriesServer wraps srv in the gRPC adapter.
+func NewDeliveriesServer(srv *Server) *DeliveriesServer {
+	return &DeliveriesServer{srv: srv}
+}
+
+func (s *DeliveriesServer) ListDeliveries(ctx context.Context, req *genjobs.ListDeliveriesRequest) (*genjobs.ListDeliveriesResponse, error) {
+	page, size := NormalizePage(req.GetPage())
+	deliveries, total, err := s.srv.ListDeliveries(ctx, req.GetJobId(), page, size)
+	if err != nil {
+		return nil, toStatus(err)
+	}
+	out := &genjobs.ListDeliveriesResponse{
+		Deliveries: make([]*genjobs.WebhookDelivery, 0, len(deliveries)),
+		Page:       &gencommon.PageResponse{Page: page, PageSize: size, Total: total},
+	}
+	for _, d := range deliveries {
+		out.Deliveries = append(out.Deliveries, deliveryToProto(d))
+	}
+	return out, nil
+}
+
+// deliveryToProto maps the store row onto the wire shape. The nullable
+// columns pass straight through as proto3-optional fields: absent means
+// "no response came back" / "no request left the worker", preserving the
+// database NULL exactly (a real 0 ms loopback round trip stays a real 0).
+func deliveryToProto(d *WebhookDelivery) *genjobs.WebhookDelivery {
+	return &genjobs.WebhookDelivery{
+		Id:              d.ID,
+		JobId:           d.JobID,
+		Attempt:         int32(d.Attempt),
+		Url:             d.URL,
+		StatusCode:      d.StatusCode,
+		LatencyMs:       d.LatencyMS,
+		ResponseSnippet: d.ResponseSnippet,
+		Blocked:         d.Blocked,
+		Error:           d.Error,
+		Ts:              d.Ts.Unix(),
+	}
+}
+
+// ---------------------------------------------------------------------------
 // helpers
 // ---------------------------------------------------------------------------
 

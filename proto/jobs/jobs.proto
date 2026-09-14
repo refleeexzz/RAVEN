@@ -27,6 +27,46 @@ service JobService {
   rpc DeleteCron(DeleteCronRequest) returns (DeleteCronResponse);
 }
 
+// JobDeliveriesService is the read path for webhook delivery observability
+// (migration 000005). It is deliberately a SEPARATE service from
+// JobService: the jobs service already exposes the owner-scoped logic as a
+// plain-Go Server.ListDeliveries for internal callers, and Go forbids two
+// same-named methods with different signatures — so the rpc lives on its
+// own service and is served by a thin adapter (DeliveriesServer) over that
+// exact logic. Same authz rules as GetJob: owner-scoped, admin:* bypasses,
+// foreign jobs answer NotFound.
+service JobDeliveriesService {
+  rpc ListDeliveries(ListDeliveriesRequest) returns (ListDeliveriesResponse);
+}
+
+// WebhookDelivery is one webhook delivery attempt (one row of
+// webhook_deliveries). status_code/latency_ms are proto3-optional to
+// preserve the database NULL exactly: absent means "no response came back"
+// / "no request left the worker" — distinct from a real 0 ms loopback
+// round trip. ts is unix seconds.
+message WebhookDelivery {
+  int64 id = 1;
+  string job_id = 2;
+  int32 attempt = 3;
+  string url = 4;
+  optional int32 status_code = 5; // absent: no response came back
+  optional int32 latency_ms = 6;  // absent: no request left the worker
+  string response_snippet = 7;    // first 1 KiB of the response body
+  bool blocked = 8;               // true when the egress guard refused the target
+  string error = 9;
+  int64 ts = 10;
+}
+
+message ListDeliveriesRequest {
+  string job_id = 1;
+  raven.common.v1.PageRequest page = 2;
+}
+
+message ListDeliveriesResponse {
+  repeated WebhookDelivery deliveries = 1;
+  raven.common.v1.PageResponse page = 2;
+}
+
 enum JobStatus {
   JOB_STATUS_UNSPECIFIED = 0;
   JOB_STATUS_QUEUED = 1;

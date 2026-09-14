@@ -20,16 +20,18 @@ import (
 
 // jobsHandlers serves /api/jobs/* and /api/workers.
 type jobsHandlers struct {
-	jobs   *upstream
-	client genjobs.JobServiceClient
-	rdb    redis.UniversalClient
+	jobs             *upstream
+	client           genjobs.JobServiceClient
+	deliveriesClient genjobs.JobDeliveriesServiceClient
+	rdb              redis.UniversalClient
 }
 
 func newJobsHandlers(jobs *upstream, rdb redis.UniversalClient) *jobsHandlers {
 	return &jobsHandlers{
-		jobs:   jobs,
-		client: genjobs.NewJobServiceClient(jobs.conn),
-		rdb:    rdb,
+		jobs:             jobs,
+		client:           genjobs.NewJobServiceClient(jobs.conn),
+		deliveriesClient: genjobs.NewJobDeliveriesServiceClient(jobs.conn),
+		rdb:              rdb,
 	}
 }
 
@@ -266,6 +268,70 @@ func (h *jobsHandlers) replay(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusCreated, jobToJSON(job))
+}
+
+// ---------------------------------------------------------------------------
+// Webhook deliveries: GET /api/jobs/{id}/deliveries (migration 000005)
+// ---------------------------------------------------------------------------
+
+// deliveryJSON is the public wire shape of one webhook delivery attempt.
+// StatusCode and LatencyMS are pointers: null means "no response came
+// back" / "no request left the worker" (the database NULL), distinct from
+// any real value.
+type deliveryJSON struct {
+	ID              int64  `json:"id"`
+	JobID           string `json:"job_id"`
+	Attempt         int32  `json:"attempt"`
+	URL             string `json:"url"`
+	StatusCode      *int32 `json:"status_code"`
+	LatencyMS       *int32 `json:"latency_ms"`
+	ResponseSnippet string `json:"response_snippet"`
+	Blocked         bool   `json:"blocked"`
+	Error           string `json:"error"`
+	TS              int64  `json:"ts"`
+}
+
+func deliveryToJSON(d *genjobs.WebhookDelivery) deliveryJSON {
+	return deliveryJSON{
+		ID:              d.GetId(),
+		JobID:           d.GetJobId(),
+		Attempt:         d.GetAttempt(),
+		URL:             d.GetUrl(),
+		StatusCode:      d.StatusCode, // proto3-optional → null when absent
+		LatencyMS:       d.LatencyMs,
+		ResponseSnippet: d.GetResponseSnippet(),
+		Blocked:         d.GetBlocked(),
+		Error:           d.GetError(),
+		TS:              d.GetTs(),
+	}
+}
+
+// deliveries handles GET /api/jobs/{id}/deliveries?page=&page_size=. Owner
+// scoping lives in the jobs service (foreign job = 404, no existence
+// oracle), exactly like GET /api/jobs/{id}.
+func (h *jobsHandlers) deliveries(w http.ResponseWriter, r *http.Request) {
+	var resp *genjobs.ListDeliveriesResponse
+	err := h.jobs.call(r.Context(), "ListDeliveries", true, func(ctx context.Context) error {
+		var err error
+		resp, err = h.deliveriesClient.ListDeliveries(ctx, &genjobs.ListDeliveriesRequest{
+			JobId: r.PathValue("id"),
+			Page:  pageRequest(r),
+		})
+		return err
+	})
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+	deliveries := make([]deliveryJSON, 0, len(resp.GetDeliveries()))
+	for _, d := range resp.GetDeliveries() {
+		deliveries = append(deliveries, deliveryToJSON(d))
+	}
+	p := resp.GetPage()
+	writeJSON(w, http.StatusOK, map[string]any{
+		"deliveries": deliveries,
+		"page":       pageJSON{Page: p.GetPage(), PageSize: p.GetPageSize(), Total: p.GetTotal()},
+	})
 }
 
 // ---------------------------------------------------------------------------

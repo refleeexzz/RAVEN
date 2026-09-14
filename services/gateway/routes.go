@@ -41,6 +41,7 @@ func (s *server) table() []route {
 		{"POST", "/api/jobs/{id}/cancel", ravenauth.PermJobsCancel, s.jobsH.cancel},
 		{"POST", "/api/jobs/{id}/requeue", ravenauth.PermJobsCreate, s.jobsH.requeue},
 		{"POST", "/api/jobs/{id}/replay", ravenauth.PermJobsCreate, s.jobsH.replay},
+		{"GET", "/api/jobs/{id}/deliveries", ravenauth.PermJobsRead, s.jobsH.deliveries},
 
 		// API keys (migration 000007). Self-service: any valid credential
 		// lists/revokes its owner's keys; create is JWT-only (enforced in

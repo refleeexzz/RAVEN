@@ -441,6 +441,40 @@ carries `replayed_from` with the source id for audit. Works on a job in
 any state; replaying another user's job answers `404 job_not_found`.
 Response `201`: the new job object.
 
+### `GET /api/jobs/{id}/deliveries` — `jobs:read`
+
+Webhook delivery history for one job (migration 000005), oldest first —
+every attempt the worker made: successes, HTTP errors, transport errors and
+egress-guard refusals. Owner-scoped exactly like `GET /api/jobs/{id}`: a
+foreign job answers `404 job_not_found`. Query params: `page`, `page_size`.
+
+Response `200`:
+
+```json
+{
+  "deliveries": [
+    {
+      "id": 41,
+      "job_id": "job_9f2k...",
+      "attempt": 1,
+      "url": "https://me.example/hook",
+      "status_code": 200,
+      "latency_ms": 83,
+      "response_snippet": "{\"ok\":true}",
+      "blocked": false,
+      "error": "",
+      "ts": 1767225600
+    }
+  ],
+  "page": { "page": 1, "page_size": 20, "total": 1 }
+}
+```
+
+`status_code` and `latency_ms` are `null` when no response came back (HTTP
+error rows keep the status; transport errors and `blocked: true` refusals
+never touched the wire). Full semantics in
+[docs/webhook-delivery.md](webhook-delivery.md).
+
 ## Cron schedules
 
 Recurring jobs, backed by `cron_schedules` — full semantics in

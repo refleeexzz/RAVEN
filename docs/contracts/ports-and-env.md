@@ -79,6 +79,7 @@ GET  /api/jobs/{id}       (auth: jobs:read)
 POST /api/jobs/{id}/cancel (auth: jobs:cancel)
 POST /api/jobs/{id}/requeue (auth: jobs:create) — DLQ requeue, DEAD jobs only
 POST /api/jobs/{id}/replay (auth: jobs:create) — clone a job (fresh id, replayed_from audit)
+GET  /api/jobs/{id}/deliveries (auth: jobs:read) — webhook delivery history (migration 000005, owner-scoped)
 POST /api/keys           (auth: any credential; JWT-only in practice — keys cannot mint keys)
 GET  /api/keys           (auth: any credential) — the caller's active API keys (migration 000007)
 DELETE /api/keys/{id}    (auth: any credential; owner or users:delete admin)

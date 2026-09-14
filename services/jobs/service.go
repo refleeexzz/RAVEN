@@ -142,6 +142,9 @@ func Run(ctx context.Context, cfg Config) error {
 		),
 	)
 	genjobs.RegisterJobServiceServer(grpcSrv, srv)
+	// Webhook delivery read path (migration 000005): separate service over
+	// the same Server — see DeliveriesServer in server.go.
+	genjobs.RegisterJobDeliveriesServiceServer(grpcSrv, NewDeliveriesServer(srv))
 
 	lis, err := net.Listen("tcp", cfg.GRPCAddr)
 	if err != nil {

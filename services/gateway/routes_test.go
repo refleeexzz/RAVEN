@@ -35,6 +35,7 @@ var expectedRoutes = []struct {
 	{"POST", "/api/jobs/{id}/cancel", ravenauth.PermJobsCancel},
 	{"POST", "/api/jobs/{id}/requeue", ravenauth.PermJobsCreate},
 	{"POST", "/api/jobs/{id}/replay", ravenauth.PermJobsCreate},
+	{"GET", "/api/jobs/{id}/deliveries", ravenauth.PermJobsRead},
 
 	{"POST", "/api/keys", permAuthenticated},        // JWT-only enforced in the handler
 	{"GET", "/api/keys", permAuthenticated},         // owner-scoped
