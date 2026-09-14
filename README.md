@@ -26,6 +26,16 @@ code makes a trade-off, I say so. Where something is missing, it is in
 [Known limitations](#known-limitations) or [Roadmap](#roadmap) — not in the
 feature list.
 
+## What this project demonstrates
+
+- Go backend architecture and concurrency
+- Distributed systems design, fault tolerance and recovery
+- Custom TCP protocol design and message broker internals
+- PostgreSQL transactions, Redis coordination
+- gRPC microservices, WebSocket realtime
+- Kubernetes, observability (Prometheus/Grafana/Jaeger)
+- Chaos engineering and security testing
+
 ## Architecture
 
 ```text
@@ -80,260 +90,112 @@ feature list.
    gateway → gRPC → broker publish → worker execute → Postgres commit
 ```
 
-Ops HTTP ports (not public): auth 8081, users 8082, jobs 8083, websocket
-8084 (also its public port), worker 8085, broker 9101. Every one serves
-`/health`, `/ready`, `/metrics`. The full port and env-var table lives in
-[docs/contracts/ports-and-env.md](docs/contracts/ports-and-env.md).
+Every service serves `/health`, `/ready` and `/metrics` on an ops port. The
+full port/env-var table and the request-lifecycle deep dive live in
+[docs/contracts/ports-and-env.md](docs/contracts/ports-and-env.md) and
+[docs/architecture.md](docs/architecture.md).
+
+## Engineering challenges
+
+The hard problems this project actually had to solve:
+
+- **Crash recovery.** Workers can be killed after acquiring a job — even
+  SIGKILL on every worker at once. Jobs carry `lease_until`, `heartbeat_at`
+  and an `execution_generation`; a sweeper (single-elected via a Postgres
+  advisory lock) finds expired leases and requeues them. Proven live: 12/12
+  in-flight jobs recovered to `SUCCESS`.
+- **Zombie execution.** When a new worker takes over a job, the generation
+  bumps — any late write from the old (zombie) worker is rejected by
+  generation fencing. Same mechanism fences consumer-group offset commits.
+- **Broker durability.** Append-only segmented logs (64 MiB segments),
+  CRC-32C per record, sparse index (one entry per 4 KiB), crash recovery that
+  truncates the torn tail and rebuilds corrupt or missing indexes. fsync
+  every 100 ms or 256 records — tunable, and the benchmarks below show
+  exactly what that knob costs.
+- **Consumer coordination.** Server-side consumer groups: range assignor,
+  10 s session timeout, at-least-once delivery. War story: in k8s we hit a
+  **rebalance storm** — generations moved without real membership changes,
+  consumers kept re-joining and throughput collapsed. Fix: only bump the
+  generation when membership actually changes
+  ([docs/broker-internals.md](docs/broker-internals.md)).
+- **Backpressure.** Bounded per-partition produce queues return
+  `BROKER_BUSY` instead of eating RAM; connection caps and idle/write
+  deadlines keep slow clients from taking the broker down.
+
+## Results
+
+- **65,357 msg/s** peak broker throughput (spec goal was 50k — beaten)
+- ~380,000 msg/s fetch throughput
+- **106 broker tests** (protocol, storage, recovery, groups, hardening)
+- `go test -race ./...` green
+- 10/10 integration tests (testcontainers, real Postgres + Redis)
+- 6/6 chaos scenarios: **zero data loss, zero duplicate executions**
+- 12/12 jobs recovered after SIGKILL on all workers
+- 10–17 s recovery across chaos scenarios
+- CRC-protected WAL with crash recovery, generation-fenced job execution
 
 ## What's in the box
 
-### Edge and API
+- **API gateway** (`:8080`) — the single public entrypoint. REST in, gRPC
+  out. Per-route permission checks, token bucket rate limiter (100 req/min,
+  burst 20), circuit breaker per upstream (5 consecutive transport failures →
+  open 30 s → half-open probe), bounded retries on idempotent calls (2×, only
+  on `Unavailable`), 10 s request timeout. WebSocket proxy at `/ws`.
+  Full REST reference: [docs/api.md](docs/api.md).
+- **auth service** (gRPC `:9081`) — register/login/refresh/logout. HS256 JWT
+  access tokens (15 min), opaque 256-bit refresh tokens (7 days, SHA-256
+  hashed at rest) with rotation and reuse detection — reusing a rotated
+  token revokes all of that user's sessions. bcrypt cost 12. RBAC with roles
+  `ADMIN`, `USER`, `WORKER`, `SERVICE`.
+- **jobs service** (gRPC `:9083`) — job lifecycle
+  `QUEUED → PROCESSING → SUCCESS | FAILED → RETRYING → SUCCESS | DEAD`.
+  Idempotent create via `Idempotency-Key` (Redis fast path + Postgres unique
+  index backstop), manual DLQ requeue, and the recovery sweeper.
+- **worker pool** — consumes topic `jobs` in consumer group `workers`.
+  Bounded concurrency (semaphore of 8), 30 s per-job timeout, retry backoff
+  100 ms → 5 s cap, dead-lettering after 4 attempts. Handlers: `send_email`,
+  `resize_image`, `webhook` (real HTTP POST). Live registry in Redis (15 s
+  TTL) powering `GET /api/workers`.
+- **the broker, built from scratch** (`:9100`) — custom framed TCP binary
+  protocol with correlation ids and pipelining; segmented storage with CRC
+  and sparse index; consumer groups; 12 partitions per topic by default (3
+  was the measured bottleneck for consumer parallelism). Full internals:
+  [docs/broker-internals.md](docs/broker-internals.md).
+- **websocket service** (`:8084`) — rooms, presence, multi-replica fanout
+  over Redis pub/sub, per-connection rate limit (20 msg/s).
+- **console** (`web/console`) — React operations dashboard with a **Test
+  Lab** page: one-click end-to-end check, mini load test, fail-on-purpose
+  DLQ demo and a break-it-yourself chaos guide. Falls back to a built-in
+  simulator when no backend is reachable.
+- **observability** — Prometheus metrics everywhere (including
+  `raven_broker_consumer_lag`, `raven_worker_fenced_writes_total`,
+  `raven_gateway_circuit_breaker_state`), preloaded Grafana dashboard,
+  end-to-end Jaeger traces (traceparent travels in broker record headers),
+  structured `slog` JSON logs, real readiness probes.
+- **ops** — Docker Compose for the laptop; Kubernetes manifests with HPAs
+  (capped at `maxReplicas: 8` — uncapped autoscaling once starved the
+  single Docker Desktop node and Postgres got evicted), probes, secrets,
+  rolling updates.
 
-- **API gateway** (`services/gateway`) — the single public entrypoint on
-  `:8080`. REST in, gRPC out. CORS enabled for the console. Per-route
-  permission checks, a token bucket rate limiter (100 req/min, burst 20, per
-  user or per IP), a circuit breaker per upstream (5 consecutive transport
-  failures → open for 30 s → one half-open probe), bounded retries for
-  idempotent calls (2 retries, 100 ms then 250 ms, only on `Unavailable`),
-  a 10 s request timeout, and a 5 s timeout per upstream call.
-- **REST API** for auth (register/login/refresh/logout), users CRUD, jobs
-  (create/list/get/cancel/DLQ requeue), `GET /api/workers` (live registry
-  from Redis), and `GET /api/health/services` (aggregated health that powers
-  the console's service grid). Full reference: [docs/api.md](docs/api.md).
-- **WebSocket proxy** at `/ws` forwarding to the websocket service, with
-  the upgrade-safe middleware treatment it needs.
-
-### Identity
-
-- **auth service** (`services/auth`, gRPC `:9081`) — registration, login,
-  refresh-token rotation with reuse detection, token validation and
-  revocation. Access tokens are HS256 JWTs, 15 min. Refresh tokens are
-  opaque 256-bit strings, 7 days, stored as SHA-256 hashes only. Reusing a
-  rotated refresh token revokes every session of that user. Passwords are
-  bcrypt, cost 12.
-- **RBAC** — roles `ADMIN`, `USER`, `WORKER`, `SERVICE`; permissions like
-  `users:read`, `jobs:create`, plus the single wildcard `admin:*`.
-
-### Jobs, workers, and stranded-job recovery
-
-- **jobs service** (`services/jobs`, gRPC `:9083`) — owns the job lifecycle:
-  `QUEUED → PROCESSING → SUCCESS | FAILED → RETRYING → SUCCESS | DEAD`, plus
-  `CANCELLED`. Idempotent create via the `Idempotency-Key` header (Redis
-  fast path + Postgres unique index backstop). Manual DLQ requeue for DEAD
-  jobs. It also runs the **recovery sweeper**: one jobs replica at a time
-  (elected with a Postgres advisory lock) scans for jobs whose lease expired
-  and requeues them.
-- **worker pool** (`services/worker`) — consumes topic `jobs` in consumer
-  group `workers`. Bounded concurrency (semaphore of 8), 30 s per-job
-  timeout, retry backoff 100 ms → 250 ms → 500 ms → 1 s → 2 s → 4 s → 5 s
-  cap, dead-lettering after `max_attempts` (default 4). Handlers:
-  `send_email` (simulated), `resize_image` (CPU-shaped), `webhook` (real
-  HTTP POST). Workers heartbeat into a Redis registry (15 s TTL) so
-  `GET /api/workers` shows who is alive.
-- **Job leases and fencing** (migration 000003) — a running job carries
-  `lease_until`, `heartbeat_at` and an `execution_generation`. The worker
-  renews the lease while it executes. If the worker dies, the lease expires,
-  the sweeper moves the job to `RETRYING` and republishes it, and the next
-  worker takes over with a bumped generation — any late write from the old
-  (zombie) worker is rejected by generation fencing. Proven live: SIGKILL on
-  **all** workers mid-flight → 12/12 jobs recovered to `SUCCESS`. The
-  details are in [docs/adr/009-job-leases.md](docs/adr/009-job-leases.md).
-
-### The broker (built from scratch)
-
-- Custom TCP binary protocol on `:9100`: framed requests with correlation
-  ids, pipelining, stable error codes.
-- Append-only segmented logs (64 MiB segments), CRC-32C per record, sparse
-  index (one entry per 4 KiB), crash recovery that truncates the torn tail
-  and rebuilds corrupt or missing indexes.
-- fsync every 100 ms or 256 records, whichever comes first (tunable —
-  benchmarks below show exactly what that knob costs).
-- Consumer groups with server-side coordination: range assignor, 10 s
-  session timeout, generation-fenced offset commits, at-least-once delivery.
-- Topics default to **12 partitions** — 3 was the measured bottleneck for
-  consumer parallelism, so the default moved up.
-- Hardened after the chaos campaign: connection cap
-  (`BROKER_MAX_CONNECTIONS`, default 1024), idle and write deadlines
-  (`BROKER_IDLE_TIMEOUT`, `BROKER_WRITE_TIMEOUT`), and backpressure via a
-  bounded per-partition produce queue (`BROKER_BUSY` instead of eating RAM).
-- War story: in k8s we hit a **rebalance storm** — group generations were
-  moving without real membership changes, so consumers kept re-joining and
-  throughput collapsed. The fix was to only bump the generation when
-  membership actually changes. Details in
-  [docs/broker-internals.md](docs/broker-internals.md), which has the full
-  internals doc. The broker is still single-node with no retention — by
-  design, for now.
-
-### Realtime
-
-- **websocket service** (`services/websocket`, `:8084`) — rooms, direct
-  messages, presence (Redis-backed), and multi-replica fanout over Redis
-  pub/sub. Per-connection rate limit (20 msg/s, burst 40). Job status events
-  land in the `jobs` room. The dev cluster allows anonymous read-only
-  connections (`WS_ALLOW_ANONYMOUS`) so the console works without a login.
-- **console** (`web/console`) — a React operations dashboard: overview,
-  jobs, workers, broker, observability, and a **Test Lab** page with
-  self-serve scenarios: a quick end-to-end check, a mini load test, a
-  fail-on-purpose DLQ demo, and a break-it-yourself chaos guide. It also
-  runs a built-in simulator (demo mode) when no backend is reachable.
-
-### Observability and ops
-
-- Prometheus metrics on every service (`/metrics`), a preloaded Grafana
-  dashboard, and **end-to-end traces in Jaeger**: one trace covers gateway →
-  auth/jobs gRPC → broker publish (the traceparent travels in the record
-  headers) → worker execute → Postgres commit.
-- Structured JSON logs (`slog`) with request ids everywhere.
-- Liveness and readiness probes on every service; readiness actually checks
-  dependencies (Postgres, Redis, broker, gRPC upstreams).
-- Docker Compose for the laptop and a Kubernetes manifest set with HPAs,
-  probes, secrets and rolling updates. The HPAs are capped at
-  `maxReplicas: 8` — learned the hard way: uncapped autoscaling once
-  starved the single Docker Desktop node and Postgres got evicted. Eight is
-  the honest ceiling for this cluster.
-
-## Quickstart
-
-The full platform runs on Docker Desktop's Kubernetes. You need Docker
-Desktop (with Kubernetes enabled) and nothing else. To hack on the code: Go
-1.27+ and, for the console, Node.
-
-```bash
-kubectl apply -f deployments/kubernetes/namespace.yaml   # namespace first
-kubectl apply -f deployments/kubernetes/                 # the rest
-# or simply: make k8s-up
-```
-
-Wait for the pods, then open the console — it runs in the cluster (nginx,
-2 replicas, LoadBalancer), so there is no port-forward to babysit:
-
-```text
-http://localhost:7100     console
-http://localhost:3000     Grafana (admin/admin)
-http://localhost:16686    Jaeger
-http://localhost:9090     Prometheus
-```
-
-Sign in with the demo account (dev cluster only, do not reuse this anywhere):
-
-```text
-e2e@raven.dev / supersecret123
-```
-
-Or create your own account through the register endpoint:
-
-```bash
-curl -X POST http://localhost:8080/api/auth/register \
-  -H 'Content-Type: application/json' \
-  -d '{"email":"me@example.com","password":"correct horse battery","display_name":"Me"}'
-
-curl -X POST http://localhost:8080/api/auth/login \
-  -H 'Content-Type: application/json' \
-  -d '{"email":"me@example.com","password":"correct horse battery"}'
-```
-
-Login returns a token pair (`access_token` 15 min, `refresh_token` 7 days).
-Create a job and watch it run:
-
-```bash
-TOKEN=<paste access_token here>
-
-curl -X POST http://localhost:8080/api/jobs \
-  -H "Authorization: Bearer $TOKEN" \
-  -H 'Content-Type: application/json' \
-  -H 'Idempotency-Key: my-first-job-v1' \
-  -d '{"type":"send_email","payload":{"to":"me@example.com","subject":"hi","body":"from raven"}}'
-
-curl http://localhost:8080/api/jobs -H "Authorization: Bearer $TOKEN"
-curl http://localhost:8080/api/health/services   # platform health grid
-```
-
-Within a second or two the job moves `QUEUED → PROCESSING → SUCCESS`. The
-console shows it live (it joins the `jobs` WebSocket room for you), and the
-Test Lab page has one-click scenarios if you want to see failures, retries
-and the DLQ on purpose. `GET /api/workers` shows the live worker pool.
-
-Tear down with `make k8s-down`. (A Docker Compose stack also exists —
-`docker compose up -d` — but the k8s flow above is the one with the console,
-the LoadBalancers and the tested failure behavior.)
-
-## Project structure
-
-```text
-.
-├── cmd/                  one main.go per binary (gateway, auth, users, jobs,
-│                         websocket, broker, worker, migrate)
-├── services/             service wiring and business logic, one dir per service
-│   ├── gateway/          REST edge: routing, authN/Z, rate limit, breaker, proxy
-│   ├── auth/             tokens, sessions, RBAC (gRPC :9081)
-│   ├── users/            user CRUD and profiles (gRPC :9082)
-│   ├── jobs/             job lifecycle, idempotency, sweeper, events (gRPC :9083)
-│   ├── websocket/        rooms, presence, Redis fanout (:8084)
-│   ├── worker/           consumer, handlers, leases, retries, registry
-│   └── broker/           broker binary wiring (:9100 TCP, :9101 ops)
-├── internal/
-│   ├── broker/           the broker itself: protocol, storage, groups, client
-│   ├── auth/             shared JWT/RBAC/password primitives
-│   ├── config/           env parsing
-│   ├── database/         pgx pool + tx helpers
-│   ├── gen/              generated protobuf/gRPC code
-│   ├── health/           /health and /ready
-│   ├── httpserver/       shared HTTP server with graceful shutdown
-│   └── middleware/       RequestID, Logging, Recovery, Timeout, Chain
-├── pkg/                  logger, errors, metrics, tracing
-├── proto/                the gRPC contracts (source of generated code)
-├── migrations/           numbered SQL migrations (000001 auth/users,
-│                         000002 jobs, 000003 job leases)
-├── deployments/
-│   ├── docker/           one multi-stage Dockerfile per service
-│   ├── kubernetes/       manifests incl. the console (nginx, LoadBalancer),
-│   │                     HPAs, probes, secrets
-│   ├── prometheus/       scrape config
-│   └── grafana/          provisioning + dashboards
-├── tests/
-│   ├── integration/      testcontainers-based end-to-end suites
-│   └── chaos/            6 codified failure scenarios (kill workers, restart
-│                         broker/redis/postgres, ...) with measured results
-├── web/console/          React operations dashboard + Test Lab
-├── docs/                 architecture, API, broker internals, failures, chaos
-│                         results, benchmarks, testing, ADRs, contracts
-├── docker-compose.yml    the Compose variant of the stack
-└── Makefile              build, test, lint, proto, docker, k8s targets
-```
-
-## Testing
+## Testing and chaos
 
 ```bash
 go test ./...                                         # unit tests
-go test -race ./...                                   # same, with race detector — green
-go test -coverprofile=coverage.out ./...              # coverage
+go test -race ./...                                   # with race detector — green
 go test -tags=integration ./tests/integration/...     # 10/10, testcontainers
 go test -run=^$ -bench=. -benchmem ./internal/broker/ # broker benchmarks
 ```
 
-Where things stand today: **106 broker tests** (protocol, storage, recovery,
-consumer groups, hardening), the full suite is green with `-race`, the
-integration suites pass 10/10 against real Postgres + Redis in
-testcontainers, and the chaos suite passes 6/6.
-
-One Windows gotcha: `-race` needs a C compiler (gcc via MinGW/MSYS2). Without
-it you get a cryptic `cgo: C compiler "gcc" not found` error. The `Makefile`
-has `test`, `test-race`, `coverage`, `test-integration` and `benchmark`
-targets. Full guide: [docs/testing.md](docs/testing.md).
-
-## Chaos testing
-
-The failure scenarios are not just documentation — they are codified in
-`tests/chaos/` (6 scenarios: kill workers mid-job, restart broker, restart
-Redis, restart Postgres, kill consumers, kill multiple workers). Measured
-results live in [docs/chaos-results.md](docs/chaos-results.md). Headline:
-across all 6 scenarios, **zero data loss, zero duplicate executions**, and
-recovery in 10–17 s per scenario. The 12/12 stranded-job recovery mentioned
-above is one of these runs.
+The failure scenarios are codified in `tests/chaos/` (kill workers mid-job,
+restart broker/Redis/Postgres, kill consumers, kill multiple workers).
+Measured results in [docs/chaos-results.md](docs/chaos-results.md): across
+all 6, **zero data loss, zero duplicate executions**, recovery in 10–17 s
+per scenario. Full testing guide: [docs/testing.md](docs/testing.md).
+(Windows note: `-race` needs gcc via MinGW/MSYS2.)
 
 ## Benchmarks
 
-Measured on my machine (Ryzen 5 5600X, Windows, 2026-09-14) — full results
+Measured on my machine (Ryzen 5 5600X, Windows, 2026-09-13) — full results
 and methodology in [docs/benchmarks.md](docs/benchmarks.md):
 
 | Scenario | Throughput |
@@ -351,33 +213,48 @@ What the fsync knob costs (same produce path):
 | periodic (default: 100 ms / 256 records) | ~8,600 msg/s |
 | disabled | ~9,000 msg/s |
 
-The original spec goal for the broker was 50k msg/s. Beaten — 65,357 at the
-peak. These are my numbers on my hardware, not a guarantee; the suite is
+These are my numbers on my hardware, not a guarantee; the suite is
 reproducible, so run it on yours.
 
-## Observability
+## Quickstart
 
-| What | Where |
-|------|-------|
-| Metrics | `/metrics` on every service's ops port, scraped by Prometheus (`:9090`) |
-| Dashboards | Grafana `:3000` (admin/admin), preloaded, LoadBalancer in k8s |
-| Traces | Jaeger `:16686`; one trace covers gateway → gRPC → broker publish → worker → Postgres commit |
-| Logs | JSON via `slog`, one line per request/RPC, request id included |
+The full platform runs on Docker Desktop's Kubernetes — that's the only
+prerequisite (to hack on the code: Go 1.27+, and Node for the console).
 
-Notable metrics beyond the usual HTTP counters/histograms:
+```bash
+kubectl apply -f deployments/kubernetes/namespace.yaml   # namespace first
+kubectl apply -f deployments/kubernetes/                 # the rest
+# or simply: make k8s-up
+```
 
-- Broker: `raven_broker_consumer_lag`, `raven_broker_partition_offset`,
-  `raven_broker_consumer_offset`, `raven_broker_active_connections`,
-  `raven_broker_append_latency`, `raven_broker_disk_usage`,
-  `raven_broker_segment_count`.
-- Jobs: `raven_jobs_queued`, `raven_jobs_processing`, `raven_jobs_retrying`,
-  `raven_jobs_dead` gauges; sweeper counters.
-- Worker: `raven_worker_retries_total`, `raven_worker_fenced_writes_total`
-  (zombie writes rejected by generation fencing),
-  `raven_worker_jobs_processed_total`, `raven_worker_in_flight`.
-- Gateway: `raven_gateway_circuit_breaker_state` (0/1/2 per upstream),
-  `raven_gateway_upstream_duration_seconds`, auth cache hits/misses,
-  rate-limited total.
+Wait for the pods, then open the console — it runs in the cluster (nginx,
+LoadBalancer), so there is no port-forward to babysit:
+
+```text
+http://localhost:7100     console
+http://localhost:3000     Grafana (admin/admin)
+http://localhost:16686    Jaeger
+http://localhost:9090     Prometheus
+```
+
+Sign in with the demo account (dev cluster only, do not reuse this anywhere):
+`e2e@raven.dev / supersecret123`. Then create a job and watch it run:
+
+```bash
+TOKEN=$(curl -s -X POST http://localhost:8080/api/auth/login \
+  -H 'Content-Type: application/json' \
+  -d '{"email":"e2e@raven.dev","password":"supersecret123"}' | jq -r .access_token)
+
+curl -X POST http://localhost:8080/api/jobs \
+  -H "Authorization: Bearer $TOKEN" \
+  -H 'Content-Type: application/json' \
+  -H 'Idempotency-Key: my-first-job-v1' \
+  -d '{"type":"send_email","payload":{"to":"me@example.com","subject":"hi","body":"from raven"}}'
+```
+
+Within a second or two the job moves `QUEUED → PROCESSING → SUCCESS`, live
+in the console. Tear down with `make k8s-down`. (A Docker Compose variant
+also exists — `docker compose up -d` — but k8s is the tested path.)
 
 ## Known limitations
 
@@ -417,8 +294,8 @@ checked items marking what shipped. Where it stands:
   consumer-lag metrics, advanced observability, distributed tracing.
 - **P1 — distributed broker: NEXT.** Replication, acknowledgement modes,
   leader election, membership, partition reassignment, network-partition
-  testing. This is what turns the broker from a teaching tool into something
-  you could trust.
+  testing. This is the next step toward making the broker resilient beyond
+  a single-node teaching system.
 - **P3 — hardening: after that.** TLS, broker auth, retention, compaction.
 - **P4 — next ideas**: Redis-backed rate limiting, KEDA-style autoscaling on
   consumer lag, cron-style job scheduling, JSON Schema per job type,
