@@ -3,6 +3,7 @@ package worker
 import (
 	"context"
 	"encoding/json"
+	stderrors "errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -11,6 +12,8 @@ import (
 	"github.com/redis/go-redis/v9"
 
 	"github.com/refleeexzz/RAVEN/internal/broker/client"
+	"github.com/refleeexzz/RAVEN/internal/broker/protocol"
+	"github.com/refleeexzz/RAVEN/internal/config"
 	"github.com/refleeexzz/RAVEN/internal/database"
 	"github.com/refleeexzz/RAVEN/internal/health"
 	"github.com/refleeexzz/RAVEN/internal/httpserver"
@@ -36,6 +39,11 @@ type Config struct {
 	// WebhookAllowPrivate disables the webhook egress range checks
 	// (WORKER_WEBHOOK_ALLOW_PRIVATE). Dev/test escape hatch — never in prod.
 	WebhookAllowPrivate bool
+
+	// PriorityTopics selects the topics to consume, WORKER_PRIORITY_TOPICS
+	// format ("1..9+legacy" by default; see ParsePriorityTopics). Empty means
+	// the default: the full jobs.p1..jobs.p9 family plus the legacy topic.
+	PriorityTopics string
 
 	// Tracing (OTel). Disabled by default locally; enabled in k8s via
 	// the raven-config ConfigMap.
@@ -82,11 +90,22 @@ func Run(ctx context.Context, cfg Config) error {
 	}
 
 	// Topics are also ensured by the jobs service; doing it here too keeps the
-	// worker bootable on its own. Existing topics are fine.
+	// worker bootable on its own. Existing topics are fine. The priority
+	// topics get the same treatment so a worker running ahead of the jobs
+	// service rollout can still join the group.
 	topicCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	if err := jobs.EnsureTopics(topicCtx, cfg.BrokerAddr, log); err != nil {
 		cancel()
 		return fmt.Errorf("worker: ensure broker topics: %w", err)
+	}
+	topics, err := ParsePriorityTopics(priorityTopicsSpec(cfg))
+	if err != nil {
+		cancel()
+		return err
+	}
+	if err := ensureTopics(topicCtx, cfg.BrokerAddr, topics, log); err != nil {
+		cancel()
+		return fmt.Errorf("worker: ensure priority topics: %w", err)
 	}
 	cancel()
 
@@ -117,7 +136,8 @@ func Run(ctx context.Context, cfg Config) error {
 	}
 	log.Info("worker starting", slog.String("worker_id", w.ID()),
 		slog.Int("concurrency", cfg.Concurrency),
-		slog.Duration("job_lease", cfg.JobLease))
+		slog.Duration("job_lease", cfg.JobLease),
+		slog.Any("topics", topics))
 
 	healthReg := health.NewRegistry(3 * time.Second)
 	healthReg.Register("postgres", database.Checker(pool))
@@ -128,11 +148,24 @@ func Run(ctx context.Context, cfg Config) error {
 	consumeCtx, stopConsume := context.WithCancel(context.Background())
 	regCtx, stopRegistry := context.WithCancel(context.Background())
 
-	consumer := client.NewConsumer(cfg.BrokerAddr, "workers", []string{jobs.TopicJobs},
-		w.Handle, client.WithConsumerLogger(log))
-
-	consumerDone := make(chan error, 1)
-	go func() { consumerDone <- consumer.Run(consumeCtx) }()
+	// One consumer per topic, all in the "workers" group, all sharing the
+	// same execution pipeline. The priority order is enforced at dispatch
+	// (see priority.go): while urgent lanes saturate the execution slots,
+	// cheaper lanes block in Handle and their offsets simply wait.
+	consumerDone := make(chan error, len(topics))
+	for _, topic := range topics {
+		consumer := client.NewConsumer(cfg.BrokerAddr, "workers", []string{topic},
+			w.Handle, client.WithConsumerLogger(log))
+		go func() { consumerDone <- consumer.Run(consumeCtx) }()
+	}
+	stopConsumers := func() {
+		stopConsume()
+		for range topics {
+			if err := <-consumerDone; err != nil {
+				log.Warn("consumer stopped with error", slog.Any("error", err))
+			}
+		}
+	}
 
 	reg := newRegistry(rdb, w.ID(), log, w.StartedAt(), func() (int64, int64) {
 		return w.Processed(), w.InFlight()
@@ -149,8 +182,7 @@ func Run(ctx context.Context, cfg Config) error {
 	select {
 	case err := <-errCh:
 		// Ops server died: shut everything down, then report.
-		stopConsume()
-		<-consumerDone
+		stopConsumers()
 		w.Shutdown(shutdownDrain)
 		_ = producer.Close()
 		stopRegistry()
@@ -160,10 +192,7 @@ func Run(ctx context.Context, cfg Config) error {
 	}
 
 	// Clean shutdown, in order.
-	stopConsume()
-	if err := <-consumerDone; err != nil {
-		log.Warn("consumer stopped with error", slog.Any("error", err))
-	}
+	stopConsumers()
 	w.Shutdown(shutdownDrain)
 	if err := producer.Close(); err != nil {
 		log.Warn("producer close failed", slog.Any("error", err))
@@ -190,6 +219,16 @@ func opsHandler(healthReg *health.Registry, metr *metrics.Registry, w *Worker, l
 	)
 }
 
+// priorityTopicsSpec resolves the topic spec: Config wins, then
+// WORKER_PRIORITY_TOPICS, then the default. Reading the env here (like
+// New does for WORKER_WEBHOOK_ALLOW_PRIVATE) keeps cmd/worker untouched.
+func priorityTopicsSpec(cfg Config) string {
+	if cfg.PriorityTopics != "" {
+		return cfg.PriorityTopics
+	}
+	return config.Get("WORKER_PRIORITY_TOPICS", "")
+}
+
 // redisChecker pings Redis for the readiness probe.
 func redisChecker(rdb redis.UniversalClient) func(ctx context.Context) error {
 	return func(ctx context.Context) error {
@@ -197,4 +236,25 @@ func redisChecker(rdb redis.UniversalClient) func(ctx context.Context) error {
 		defer cancel()
 		return rdb.Ping(pingCtx).Err()
 	}
+}
+
+// ensureTopics creates the given topics, swallowing TOPIC_EXISTS. Same
+// pattern as jobs.EnsureTopics, kept here so the worker can boot its
+// priority lanes without waiting on a jobs-service rollout.
+func ensureTopics(ctx context.Context, addr string, topics []string, log *slog.Logger) error {
+	admin := client.NewAdmin(addr)
+	defer func() { _ = admin.Close() }()
+	for _, topic := range topics {
+		_, err := admin.CreateTopic(ctx, topic, 0) // 0 = broker default partitions
+		if err == nil {
+			log.Info("topic created", slog.String("topic", topic))
+			continue
+		}
+		var pe *protocol.Error
+		if stderrors.As(err, &pe) && pe.Code == protocol.CodeTopicExists {
+			continue
+		}
+		return err
+	}
+	return nil
 }

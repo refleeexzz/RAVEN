@@ -17,7 +17,6 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/trace"
-	"golang.org/x/sync/semaphore"
 
 	"github.com/refleeexzz/RAVEN/internal/broker/client"
 	"github.com/refleeexzz/RAVEN/internal/broker/protocol"
@@ -44,7 +43,7 @@ type Worker struct {
 	rdb      redis.UniversalClient
 	producer *jobs.Producer
 	handlers map[string]Handler
-	sem      *semaphore.Weighted
+	sem      *prioSem
 	timeout  time.Duration
 	lease    time.Duration
 	log      *slog.Logger
@@ -67,11 +66,13 @@ type Worker struct {
 // retryTask is a scheduled republish of one job message. headers carry
 // the W3C trace context captured when the retry was scheduled, so the
 // republished message continues the original trace instead of starting a
-// disconnected one.
+// disconnected one. topic is where the message was consumed from, so a
+// retry keeps the job's priority lane instead of falling back to legacy.
 type retryTask struct {
 	timer   *time.Timer
 	raw     []byte
 	headers []protocol.Header
+	topic   string
 }
 
 // Params carries the worker dependencies.
@@ -91,6 +92,12 @@ type Params struct {
 	// (WORKER_WEBHOOK_ALLOW_PRIVATE). Dev/test escape hatch: httptest servers
 	// live on loopback. Never set in production — that reopens JOBS-01 (SSRF).
 	AllowPrivateWebhooks bool
+
+	// PriorityAging is the interval after which a queued dispatch is promoted
+	// one priority rank (anti-starvation budget, default 2s). Zero keeps the
+	// default; negative disables promotion (strict priority). Tests override
+	// for determinism.
+	PriorityAging time.Duration
 }
 
 // New builds a Worker with the default handler registry.
@@ -125,6 +132,10 @@ func New(p Params) *Worker {
 		host, _ := os.Hostname()
 		id = fmt.Sprintf("worker-%s-%s", host, uuid.NewString()[:6])
 	}
+	aging := p.PriorityAging
+	if aging == 0 {
+		aging = defaultPriorityAging
+	}
 	aliveCtx, kill := context.WithCancel(context.Background())
 	return &Worker{
 		id:          id,
@@ -132,7 +143,7 @@ func New(p Params) *Worker {
 		rdb:         p.RDB,
 		producer:    p.Producer,
 		handlers:    newHandlers(p.Log, p.HTTPClient, guard),
-		sem:         semaphore.NewWeighted(int64(p.Concurrency)),
+		sem:         newPrioSem(int64(p.Concurrency), aging),
 		timeout:     p.JobTimeout,
 		lease:       p.JobLease,
 		log:         p.Log,
@@ -158,11 +169,14 @@ func (w *Worker) Processed() int64 { return w.processed.Load() }
 // InFlight is the number of jobs currently executing.
 func (w *Worker) InFlight() int64 { return w.inFlight.Load() }
 
-// Handle is the broker client handler. It blocks on the semaphore (consumer
-// backpressure: a full worker stops fetching), then dispatches the job to a
-// goroutine and returns nil so the offset commits.
+// Handle is the broker client handler. It queues for an execution slot in
+// priority order (jobs.p1 first, legacy last — see priority.go), then
+// dispatches the job to a goroutine and returns nil so the offset commits.
+// While slots are saturated this blocks: consumer backpressure. A blocked
+// low-priority Handle simply does not commit its batch, so cheap work waits
+// in the broker instead of fighting urgent work for CPU.
 func (w *Worker) Handle(ctx context.Context, msg client.Message) error {
-	if err := w.sem.Acquire(ctx, 1); err != nil {
+	if err := w.sem.Acquire(ctx, TopicRank(msg.Topic)); err != nil {
 		// Shutting down while acquiring: return the error so this batch is
 		// not committed and the message is redelivered to another member.
 		return err
@@ -172,7 +186,7 @@ func (w *Worker) Handle(ctx context.Context, msg client.Message) error {
 		w.metrics.incInFlight()
 	}
 	go func() {
-		defer w.sem.Release(1)
+		defer w.sem.Release()
 		defer w.inFlight.Add(-1)
 		if w.metrics != nil {
 			defer w.metrics.decInFlight()
@@ -230,7 +244,7 @@ func (w *Worker) execute(msg client.Message) {
 			slog.String("job_id", jobID), slog.Any("error", err))
 		execSpan.RecordError(err)
 		execSpan.SetStatus(codes.Error, "fence update failed")
-		w.scheduleRawRepublish(jobID, msg.Value, 2*time.Second,
+		w.scheduleRawRepublish(jobID, msg.Value, msg.Topic, 2*time.Second,
 			protocol.InjectTraceContext(execCtx, nil))
 		return
 	}
@@ -317,7 +331,7 @@ func (w *Worker) execute(msg client.Message) {
 	default:
 		execSpan.SetStatus(codes.Error, runErr.Error())
 		execSpan.SetAttributes(attribute.String("job.status", "retry"))
-		w.finishFailed(execCtx, job, job.ExecutionGeneration, job.Attempts+1, runErr, startedAt, finishedAt)
+		w.finishFailed(execCtx, job, job.ExecutionGeneration, job.Attempts+1, runErr, startedAt, finishedAt, msg.Topic)
 	}
 }
 
@@ -407,8 +421,9 @@ func (w *Worker) finishSuccess(ctx context.Context, job *jobs.Job, generation, a
 // finishFailed records the attempt. When attempts remain, the job goes
 // RETRYING and is republished after a backoff; otherwise it goes DEAD and a
 // copy lands on jobs.dlq. The Postgres transaction runs inside a
-// "job db commit" span.
-func (w *Worker) finishFailed(ctx context.Context, job *jobs.Job, generation, attempt int, runErr error, startedAt, finishedAt time.Time) {
+// "job db commit" span. topic is the topic the attempt was consumed from:
+// the retry republish returns there, keeping the job's priority lane.
+func (w *Worker) finishFailed(ctx context.Context, job *jobs.Job, generation, attempt int, runErr error, startedAt, finishedAt time.Time, topic string) {
 	dead := attempt >= job.MaxAttempts
 	delay := retryBackoff(attempt)
 	commitStatus := string(jobs.StatusRetrying)
@@ -458,7 +473,7 @@ func (w *Worker) finishFailed(ctx context.Context, job *jobs.Job, generation, at
 	w.log.Info("job failed, scheduling retry",
 		slog.String("job_id", job.ID), slog.Int("attempt", attempt),
 		slog.Duration("backoff", delay), slog.Any("error", runErr))
-	w.scheduleRetryRepublish(ctx, updated, delay)
+	w.scheduleRetryRepublish(ctx, updated, delay, topic)
 }
 
 // finishDead sends a job straight to DEAD (permanent failures that never
@@ -541,31 +556,32 @@ func (w *Worker) publishRawDLQ(ctx context.Context, key, value []byte) {
 // Retry scheduler
 // ---------------------------------------------------------------------------
 
-// scheduleRetryRepublish republishes job j to the jobs topic after delay.
-// The consumer loop never sleeps: a timer fires the republish later. The
-// trace context of the current "job execute" span is injected now and
-// stored with the task, so the delayed message still carries it.
-func (w *Worker) scheduleRetryRepublish(ctx context.Context, j *jobs.Job, delay time.Duration) {
+// scheduleRetryRepublish republishes job j to the topic it was consumed
+// from after delay. The consumer loop never sleeps: a timer fires the
+// republish later. The trace context of the current "job execute" span is
+// injected now and stored with the task, so the delayed message still
+// carries it.
+func (w *Worker) scheduleRetryRepublish(ctx context.Context, j *jobs.Job, delay time.Duration, topic string) {
 	raw, err := j.MarshalMessage()
 	if err != nil {
 		w.log.Error("could not encode retry message",
 			slog.String("job_id", j.ID), slog.Any("error", err))
 		return
 	}
-	w.scheduleRawRepublish(j.ID, raw, delay, protocol.InjectTraceContext(ctx, nil))
+	w.scheduleRawRepublish(j.ID, raw, topic, delay, protocol.InjectTraceContext(ctx, nil))
 }
 
-// scheduleRawRepublish schedules raw for republication after delay. Timers
-// are tracked per job id so Shutdown can flush them instead of stranding
-// RETRYING jobs. A hard-stopped worker (SIGKILL simulation) drops them —
-// the sweeper recovers the job once its lease expires.
-func (w *Worker) scheduleRawRepublish(jobID string, raw []byte, delay time.Duration, headers []protocol.Header) {
-	t := &retryTask{raw: raw, headers: headers}
+// scheduleRawRepublish schedules raw for republication to topic after
+// delay. Timers are tracked per job id so Shutdown can flush them instead
+// of stranding RETRYING jobs. A hard-stopped worker (SIGKILL simulation)
+// drops them — the sweeper recovers the job once its lease expires.
+func (w *Worker) scheduleRawRepublish(jobID string, raw []byte, topic string, delay time.Duration, headers []protocol.Header) {
+	t := &retryTask{raw: raw, headers: headers, topic: topic}
 	t.timer = time.AfterFunc(delay, func() {
 		w.timersMu.Lock()
 		delete(w.timers, jobID)
 		w.timersMu.Unlock()
-		w.republish(jobID, t.raw, t.headers)
+		w.republish(jobID, t.topic, t.raw, t.headers)
 	})
 
 	w.timersMu.Lock()
@@ -578,19 +594,23 @@ func (w *Worker) scheduleRawRepublish(jobID string, raw []byte, delay time.Durat
 	if w.closed.Load() {
 		// Shutdown already started: fire now instead of scheduling.
 		t.timer.Stop()
-		go w.republish(jobID, t.raw, t.headers)
+		go w.republish(jobID, t.topic, t.raw, t.headers)
 		return
 	}
 	w.timers[jobID] = t
 }
 
-// republish puts the message back on the jobs topic. The stored headers
-// (with the original trace context) go with it, so the next delivery's
-// "job execute" span joins the same trace.
-func (w *Worker) republish(jobID string, raw []byte, headers []protocol.Header) {
+// republish puts the message back on its topic (legacy "jobs" when the
+// origin is unknown). The stored headers (with the original trace context)
+// go with it, so the next delivery's "job execute" span joins the same
+// trace.
+func (w *Worker) republish(jobID, topic string, raw []byte, headers []protocol.Header) {
+	if topic == "" {
+		topic = jobs.TopicJobs
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	if err := w.producer.PublishRawWithHeaders(ctx, jobs.TopicJobs, []byte(jobID), raw, headers); err != nil {
+	if err := w.producer.PublishRawWithHeaders(ctx, topic, []byte(jobID), raw, headers); err != nil {
 		// The job row stays RETRYING with no message in flight. Log loudly;
 		// the sweeper picks it up once the lease written at finish expires.
 		w.log.Error("retry republish failed; job stays RETRYING until the sweeper recovers it",
@@ -633,7 +653,7 @@ func (w *Worker) flushRetries() {
 	w.timersMu.Unlock()
 	for jobID, t := range pending {
 		t.timer.Stop()
-		w.republish(jobID, t.raw, t.headers)
+		w.republish(jobID, t.topic, t.raw, t.headers)
 	}
 	if len(pending) > 0 {
 		w.log.Info("flushed pending retries at shutdown", slog.Int("count", len(pending)))

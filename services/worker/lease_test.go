@@ -5,6 +5,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/refleeexzz/RAVEN/services/jobs"
 )
 
 // renewInterval drives the lease heartbeat cadence: lease/3, so two renewals
@@ -36,7 +38,7 @@ func TestHardStopDropsPendingRetries(t *testing.T) {
 	w := New(Params{WorkerID: "worker-test", Log: quietLog()})
 
 	raw := []byte(`{"id":"job_x","execution_generation":1}`)
-	w.scheduleRawRepublish("job_x", raw, time.Hour, nil)
+	w.scheduleRawRepublish("job_x", raw, jobs.TopicJobs, time.Hour, nil)
 	if got := w.Stats().PendingRetries; got != 1 {
 		t.Fatalf("pending retries before stop: got %d, want 1", got)
 	}
@@ -48,7 +50,7 @@ func TestHardStopDropsPendingRetries(t *testing.T) {
 
 	// Scheduling after the stop is a drop, not a timer: give a would-be
 	// timer plenty of time to fire (it must not).
-	w.scheduleRawRepublish("job_y", raw, time.Millisecond, nil)
+	w.scheduleRawRepublish("job_y", raw, jobs.TopicJobs, time.Millisecond, nil)
 	time.Sleep(100 * time.Millisecond)
 	if got := w.Stats().PendingRetries; got != 0 {
 		t.Errorf("post-stop schedule stored a timer: got %d, want 0", got)
