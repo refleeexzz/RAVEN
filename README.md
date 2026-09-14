@@ -331,3 +331,7 @@ The "why" behind the big choices, each with honest downsides:
 7. [ADR 007 — event-driven jobs](docs/adr/007-event-driven-architecture.md)
 8. [ADR 008 — shared users table](docs/adr/008-shared-users-table.md)
 9. [ADR 009 — job leases and fencing](docs/adr/009-job-leases.md)
+
+## License
+
+RAVEN is released under the [Apache License 2.0](LICENSE).
