@@ -27,11 +27,34 @@ type Server struct {
 	producer *Producer             // may be nil in unit tests
 	log      *slog.Logger
 	metrics  *ServiceMetrics // may be nil in unit tests
+
+	// sched is the probed scheduling support (migration 000004). When off,
+	// the service talks to the pre-000004 schema exactly like the old
+	// binary did, and scheduling endpoints answer Unavailable. Probed once
+	// at construction; unit tests may flip it directly.
+	sched bool
 }
 
-// NewServer wires the gRPC service implementation.
+// NewServer wires the gRPC service implementation. When pool is non-nil the
+// scheduling schema support is probed once (3s budget); a failed probe is
+// logged and treated as "unsupported", which keeps the pre-000004 behavior.
 func NewServer(pool *pgxpool.Pool, rdb redis.UniversalClient, producer *Producer, log *slog.Logger, m *ServiceMetrics) *Server {
-	return &Server{pool: pool, rdb: rdb, producer: producer, log: log, metrics: m}
+	s := &Server{pool: pool, rdb: rdb, producer: producer, log: log, metrics: m}
+	if pool != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		sched, err := probeScheduling(ctx, pool)
+		cancel()
+		if err != nil {
+			log.Warn("scheduling schema probe failed, scheduling features disabled",
+				slog.Any("error", err))
+		} else {
+			s.sched = sched
+			if !sched {
+				log.Info("migration 000004 not applied; delayed jobs, cron and replay are disabled")
+			}
+		}
+	}
+	return s
 }
 
 // ---------------------------------------------------------------------------
@@ -52,6 +75,13 @@ func (s *Server) CreateJob(ctx context.Context, req *genjobs.CreateJobRequest) (
 	if err != nil {
 		return nil, toStatus(err)
 	}
+	scheduledAt, err := ValidateScheduledAt(req.GetScheduledAt(), time.Now().UTC())
+	if err != nil {
+		return nil, toStatus(err)
+	}
+	if scheduledAt != nil && !s.sched {
+		return nil, toStatus(errSchedulingUnavailable())
+	}
 
 	j := &Job{
 		ID:          NewID(),
@@ -64,6 +94,12 @@ func (s *Server) CreateJob(ctx context.Context, req *genjobs.CreateJobRequest) (
 		// Matches the execution_generation column default; the broker message
 		// must carry the real token, not the struct's zero value.
 		ExecutionGeneration: initialGeneration,
+	}
+	if scheduledAt != nil {
+		// Delayed job: park it in SCHEDULED. Nothing is published; the
+		// dispatcher loop releases it when the time comes.
+		j.Status = StatusScheduled
+		j.ScheduledAt = scheduledAt
 	}
 	if idemKey != "" {
 		j.IdempotencyKey = &idemKey
@@ -83,7 +119,7 @@ func (s *Server) CreateJob(ctx context.Context, req *genjobs.CreateJobRequest) (
 			s.log.WarnContext(ctx, "idempotency claim failed, relying on database",
 				slog.Any("error", err))
 		} else if !claimed {
-			existingJob, getErr := getJob(ctx, s.pool, existing)
+			existingJob, getErr := getJob(ctx, s.pool, existing, s.sched)
 			if getErr != nil {
 				if errors.KindOf(getErr) != errors.KindNotFound {
 					return nil, toStatus(getErr)
@@ -106,12 +142,12 @@ func (s *Server) CreateJob(ctx context.Context, req *genjobs.CreateJobRequest) (
 		}
 	}
 
-	if err := insertJob(ctx, s.pool, j); err != nil {
+	if err := insertJob(ctx, s.pool, j, s.sched); err != nil {
 		if errors.KindOf(err) == errors.KindConflict && idemKey != "" {
 			// Database backstop: the key is taken even though Redis let us
 			// through (TTL expired, eviction, Redis was down). Return the
 			// existing job instead of an error.
-			existingJob, getErr := jobByIdempotencyKey(ctx, s.pool, idemKey)
+			existingJob, getErr := jobByIdempotencyKey(ctx, s.pool, idemKey, s.sched)
 			if getErr == nil {
 				if !caller.CanAccessJob(existingJob.OwnerID) {
 					// Foreign key (JOBS-02): conflict, not the other user's job.
@@ -127,6 +163,17 @@ func (s *Server) CreateJob(ctx context.Context, req *genjobs.CreateJobRequest) (
 		return nil, toStatus(err)
 	}
 	s.metricCreated(j)
+
+	// A scheduled job is done here: it sits in SCHEDULED until the
+	// dispatcher releases it at scheduled_at. No broker traffic yet.
+	if j.Status == StatusScheduled {
+		PublishJobEvent(ctx, s.rdb, s.log, j)
+		s.metricTransition(j, StatusScheduled)
+		s.log.InfoContext(ctx, "job scheduled",
+			slog.String("job_id", j.ID), slog.String("type", j.Type),
+			slog.Time("scheduled_at", *j.ScheduledAt))
+		return j.toProto(), nil
+	}
 
 	// Publish the work. Failure here must not lose the job silently: mark the
 	// row FAILED so the user sees what happened, and report Unavailable.
@@ -171,7 +218,7 @@ func (s *Server) GetJob(ctx context.Context, req *genjobs.GetJobRequest) (*genjo
 		return nil, toStatus(errors.E(errors.KindInvalid, "job_id_required",
 			"id is required", nil))
 	}
-	j, err := getJob(ctx, s.pool, req.GetId())
+	j, err := getJob(ctx, s.pool, req.GetId(), s.sched)
 	if err != nil {
 		return nil, toStatus(err)
 	}
@@ -199,7 +246,7 @@ func (s *Server) ListJobs(ctx context.Context, req *genjobs.ListJobsRequest) (*g
 	}
 
 	jobs, total, err := listJobs(ctx, s.pool, statusFilter, req.GetTypeFilter(),
-		caller.OwnerScope(), int(size), pageOffset(page, size))
+		caller.OwnerScope(), int(size), pageOffset(page, size), s.sched)
 	if err != nil {
 		return nil, toStatus(err)
 	}
@@ -230,14 +277,14 @@ func (s *Server) CancelJob(ctx context.Context, req *genjobs.CancelJobRequest) (
 	// Authorize before the atomic transition. owner_id is immutable after
 	// insert, so the read-then-update cannot be raced into another owner's
 	// job.
-	cur, err := getJob(ctx, s.pool, req.GetId())
+	cur, err := getJob(ctx, s.pool, req.GetId(), s.sched)
 	if err != nil {
 		return nil, toStatus(err)
 	}
 	if err := caller.AuthorizeJob(cur); err != nil {
 		return nil, toStatus(err)
 	}
-	j, err := cancelJob(ctx, s.pool, req.GetId())
+	j, err := cancelJob(ctx, s.pool, req.GetId(), s.sched)
 	if err != nil {
 		return nil, toStatus(err)
 	}
@@ -264,7 +311,7 @@ func (s *Server) RequeueJob(ctx context.Context, req *genjobs.RequeueJobRequest)
 		return nil, toStatus(errors.E(errors.KindInvalid, "job_id_required",
 			"id is required", nil))
 	}
-	cur, err := getJob(ctx, s.pool, req.GetId())
+	cur, err := getJob(ctx, s.pool, req.GetId(), s.sched)
 	if err != nil {
 		return nil, toStatus(err)
 	}

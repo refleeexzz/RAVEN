@@ -19,6 +19,8 @@ type ServiceMetrics struct {
 	queued           prometheus.GaugeFunc   // raven_jobs_queued
 	retrying         prometheus.GaugeFunc   // raven_jobs_retrying
 	dead             prometheus.GaugeFunc   // raven_jobs_dead
+	scheduled        prometheus.GaugeFunc   // raven_jobs_scheduled
+	dispatched       prometheus.Counter     // raven_jobs_scheduled_dispatched_total
 	sweeperRuns      prometheus.Counter     // raven_jobs_sweeper_runs_total
 	sweeperRecovered *prometheus.CounterVec // raven_jobs_sweeper_recovered_total{outcome}
 }
@@ -66,6 +68,15 @@ func NewServiceMetrics(reg *metrics.Registry, countStatus func(Status) (int64, e
 		dead: statusGauge("dead",
 			"Jobs currently in DEAD, read from Postgres at scrape time (-1 when the read fails).",
 			StatusDead),
+		scheduled: statusGauge("scheduled",
+			"Jobs currently in SCHEDULED (delayed jobs waiting for their time), read from Postgres at scrape time (-1 when the read fails).",
+			StatusScheduled),
+		dispatched: prometheus.NewCounter(prometheus.CounterOpts{
+			Namespace: "raven",
+			Subsystem: "jobs",
+			Name:      "scheduled_dispatched_total",
+			Help:      "Delayed jobs the dispatcher released to the broker (SCHEDULED -> QUEUED).",
+		}),
 		sweeperRuns: prometheus.NewCounter(prometheus.CounterOpts{
 			Namespace: "raven",
 			Subsystem: "jobs",
@@ -80,7 +91,7 @@ func NewServiceMetrics(reg *metrics.Registry, countStatus func(Status) (int64, e
 		}, []string{"outcome"}),
 	}
 	reg.Register(m.jobsTotal, m.created, m.processing, m.queued, m.retrying, m.dead,
-		m.sweeperRuns, m.sweeperRecovered)
+		m.scheduled, m.dispatched, m.sweeperRuns, m.sweeperRecovered)
 	return m
 }
 

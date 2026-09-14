@@ -24,6 +24,7 @@ func TestStartable(t *testing.T) {
 		{StatusFailed, false},
 		{StatusCancelled, false},
 		{StatusDead, false},
+		{StatusScheduled, false}, // only the dispatcher releases scheduled work
 	}
 	for _, c := range cases {
 		if got := startable(c.status); got != c.want {
@@ -39,6 +40,7 @@ func TestCancellable(t *testing.T) {
 	}{
 		{StatusQueued, true},
 		{StatusRetrying, true},
+		{StatusScheduled, true},   // cancel drops the schedule before it ever runs
 		{StatusProcessing, false}, // too late: a worker owns it
 		{StatusSuccess, false},
 		{StatusFailed, false},
@@ -76,6 +78,7 @@ func TestTerminal(t *testing.T) {
 		{StatusQueued, false},
 		{StatusProcessing, false},
 		{StatusRetrying, false},
+		{StatusScheduled, false},
 	}
 	for _, c := range cases {
 		if got := terminal(c.status); got != c.want {
@@ -97,7 +100,9 @@ func TestLegalTransitions(t *testing.T) {
 		{StatusProcessing, StatusDead},
 		{StatusRetrying, StatusProcessing},
 		{StatusRetrying, StatusCancelled},
-		{StatusDead, StatusQueued}, // RequeueJob
+		{StatusDead, StatusQueued},         // RequeueJob
+		{StatusScheduled, StatusQueued},    // dispatcher release
+		{StatusScheduled, StatusCancelled}, // cancel before it ever runs
 	}
 	for _, tr := range legal {
 		if !legalTransition(tr.from, tr.to) {
@@ -113,7 +118,10 @@ func TestLegalTransitions(t *testing.T) {
 		{StatusCancelled, StatusQueued},
 		{StatusDead, StatusProcessing}, // must pass through QUEUED
 		{StatusRetrying, StatusSuccess},
-		{StatusFailed, StatusQueued}, // FAILED is terminal here
+		{StatusFailed, StatusQueued},        // FAILED is terminal here
+		{StatusScheduled, StatusProcessing}, // dispatcher releases to QUEUED first
+		{StatusScheduled, StatusDead},
+		{StatusScheduled, StatusFailed},
 	}
 	for _, tr := range illegal {
 		if legalTransition(tr.from, tr.to) {
@@ -241,8 +249,8 @@ func TestStatusProtoRoundTrip(t *testing.T) {
 			t.Errorf("round trip failed for %s", s)
 		}
 	}
-	if len(statusToProto) != 7 {
-		t.Errorf("statusToProto covers %d statuses, want 7", len(statusToProto))
+	if len(statusToProto) != 8 {
+		t.Errorf("statusToProto covers %d statuses, want 8", len(statusToProto))
 	}
 	if _, ok := statusToProto[StatusDead]; !ok {
 		t.Error("DEAD must map to JOB_STATUS_DEAD")

@@ -24,6 +24,11 @@ const jobColumns = `
 	idempotency_key, owner_id::text, created_at, started_at, finished_at,
 	error, worker_id, heartbeat_at, lease_until, execution_generation`
 
+// jobColumnsSched is jobColumns plus the scheduling columns added by
+// migration 000004. Queries using it fail on a pre-000004 schema, so every
+// call site is gated on the probed scheduling support (Server.sched).
+const jobColumnsSched = jobColumns + `, scheduled_at, replayed_from`
+
 // scanJob reads one row of jobColumns.
 func scanJob(row pgx.Row) (*Job, error) {
 	var j Job
@@ -39,16 +44,95 @@ func scanJob(row pgx.Row) (*Job, error) {
 	return &j, nil
 }
 
-// insertJob stores a new job in QUEUED state. A duplicate idempotency key is
-// reported as KindConflict so the caller can return the existing job.
-func insertJob(ctx context.Context, q querier, j *Job) error {
-	_, err := q.Exec(ctx, `
-		INSERT INTO jobs (id, type, payload, status, priority, max_attempts,
-		                  idempotency_key, owner_id)
-		VALUES ($1, $2, $3::jsonb, $4, $5, $6, $7, $8::uuid)`,
-		j.ID, j.Type, j.Payload, j.Status, j.Priority, j.MaxAttempts,
-		j.IdempotencyKey, j.OwnerID,
+// scanJobSched reads one row of jobColumnsSched.
+func scanJobSched(row pgx.Row) (*Job, error) {
+	var j Job
+	err := row.Scan(
+		&j.ID, &j.Type, &j.Payload, &j.Status, &j.Priority, &j.Attempts,
+		&j.MaxAttempts, &j.IdempotencyKey, &j.OwnerID, &j.CreatedAt,
+		&j.StartedAt, &j.FinishedAt, &j.Error, &j.WorkerID,
+		&j.HeartbeatAt, &j.LeaseUntil, &j.ExecutionGeneration,
+		&j.ScheduledAt, &j.ReplayedFrom,
 	)
+	if err != nil {
+		return nil, err
+	}
+	return &j, nil
+}
+
+// columnsFor picks the column list and scanner for the probed schema.
+func columnsFor(sched bool) string {
+	if sched {
+		return jobColumnsSched
+	}
+	return jobColumns
+}
+
+func scannerFor(sched bool) func(pgx.Row) (*Job, error) {
+	if sched {
+		return scanJobSched
+	}
+	return scanJob
+}
+
+// probeScheduling reports whether the connected schema carries migration
+// 000004 (jobs.scheduled_at + jobs.replayed_from + cron_schedules). Probed
+// once at startup: it is what lets pre-000004 integration harnesses and
+// rolling deploys run the new binary against the old schema — every
+// scheduling feature degrades to a clear "not available" error instead of
+// failing with "column does not exist".
+func probeScheduling(ctx context.Context, q querier) (bool, error) {
+	var n int
+	err := q.QueryRow(ctx, `
+		SELECT count(*) FROM information_schema.columns
+		WHERE table_name = 'jobs' AND column_name IN ('scheduled_at', 'replayed_from')`).
+		Scan(&n)
+	if err != nil {
+		return false, err
+	}
+	var cronTable string
+	err = q.QueryRow(ctx, `
+		SELECT table_name FROM information_schema.tables
+		WHERE table_name = 'cron_schedules'`).Scan(&cronTable)
+	if err != nil {
+		if stderrors.Is(err, pgx.ErrNoRows) {
+			return false, nil
+		}
+		return false, err
+	}
+	return n == 2, nil
+}
+
+// errSchedulingUnavailable is returned by scheduling endpoints when the
+// connected schema predates migration 000004.
+func errSchedulingUnavailable() error {
+	return errors.E(errors.KindUnavailable, "scheduling_unavailable",
+		"scheduling features need migration 000004 (scheduling) applied", nil)
+}
+
+// insertJob stores a new job in QUEUED (or SCHEDULED) state. A duplicate
+// idempotency key is reported as KindConflict so the caller can return the
+// existing job. sched must match the probed schema: with it on, the
+// scheduling columns are written too.
+func insertJob(ctx context.Context, q querier, j *Job, sched bool) error {
+	var err error
+	if sched {
+		_, err = q.Exec(ctx, `
+			INSERT INTO jobs (id, type, payload, status, priority, max_attempts,
+			                  idempotency_key, owner_id, scheduled_at, replayed_from)
+			VALUES ($1, $2, $3::jsonb, $4, $5, $6, $7, $8::uuid, $9, $10)`,
+			j.ID, j.Type, j.Payload, j.Status, j.Priority, j.MaxAttempts,
+			j.IdempotencyKey, j.OwnerID, j.ScheduledAt, j.ReplayedFrom,
+		)
+	} else {
+		_, err = q.Exec(ctx, `
+			INSERT INTO jobs (id, type, payload, status, priority, max_attempts,
+			                  idempotency_key, owner_id)
+			VALUES ($1, $2, $3::jsonb, $4, $5, $6, $7, $8::uuid)`,
+			j.ID, j.Type, j.Payload, j.Status, j.Priority, j.MaxAttempts,
+			j.IdempotencyKey, j.OwnerID,
+		)
+	}
 	if err != nil {
 		var pgErr *pgconn.PgError
 		if stderrors.As(err, &pgErr) && pgErr.Code == "23505" {
@@ -62,8 +146,9 @@ func insertJob(ctx context.Context, q querier, j *Job) error {
 }
 
 // getJob loads one job by id.
-func getJob(ctx context.Context, q querier, id string) (*Job, error) {
-	j, err := scanJob(q.QueryRow(ctx, `SELECT `+jobColumns+` FROM jobs WHERE id = $1`, id))
+func getJob(ctx context.Context, q querier, id string, sched bool) (*Job, error) {
+	j, err := scannerFor(sched)(q.QueryRow(ctx,
+		`SELECT `+columnsFor(sched)+` FROM jobs WHERE id = $1`, id))
 	if err != nil {
 		if stderrors.Is(err, pgx.ErrNoRows) {
 			return nil, errors.E(errors.KindNotFound, "job_not_found",
@@ -76,9 +161,9 @@ func getJob(ctx context.Context, q querier, id string) (*Job, error) {
 }
 
 // jobByIdempotencyKey finds the job created for a key, or KindNotFound.
-func jobByIdempotencyKey(ctx context.Context, q querier, key string) (*Job, error) {
-	j, err := scanJob(q.QueryRow(ctx,
-		`SELECT `+jobColumns+` FROM jobs WHERE idempotency_key = $1`, key))
+func jobByIdempotencyKey(ctx context.Context, q querier, key string, sched bool) (*Job, error) {
+	j, err := scannerFor(sched)(q.QueryRow(ctx,
+		`SELECT `+columnsFor(sched)+` FROM jobs WHERE idempotency_key = $1`, key))
 	if err != nil {
 		if stderrors.Is(err, pgx.ErrNoRows) {
 			return nil, errors.E(errors.KindNotFound, "job_not_found",
@@ -96,7 +181,7 @@ func jobByIdempotencyKey(ctx context.Context, q querier, key string) (*Job, erro
 // so foreign and ownerless rows never leave the database. Ordering: highest
 // priority first, then oldest first — the order an operator wants to eyeball
 // a queue in.
-func listJobs(ctx context.Context, q querier, statusFilter, typeFilter, ownerScope string, limit, offset int) ([]*Job, int64, error) {
+func listJobs(ctx context.Context, q querier, statusFilter, typeFilter, ownerScope string, limit, offset int, sched bool) ([]*Job, int64, error) {
 	var total int64
 	err := q.QueryRow(ctx, `
 		SELECT count(*) FROM jobs
@@ -109,8 +194,9 @@ func listJobs(ctx context.Context, q querier, statusFilter, typeFilter, ownerSco
 			"could not count jobs", err)
 	}
 
+	scan := scannerFor(sched)
 	rows, err := q.Query(ctx, `
-		SELECT `+jobColumns+` FROM jobs
+		SELECT `+columnsFor(sched)+` FROM jobs
 		WHERE ($1::text = '' OR status = $1) AND ($2::text = '' OR type = $2)
 		  AND ($3::text = '' OR owner_id = $3::uuid)
 		ORDER BY priority DESC, created_at, id
@@ -125,7 +211,7 @@ func listJobs(ctx context.Context, q querier, statusFilter, typeFilter, ownerSco
 
 	var out []*Job
 	for rows.Next() {
-		j, err := scanJob(rows)
+		j, err := scan(rows)
 		if err != nil {
 			return nil, 0, errors.E(errors.KindUnknown, "job_list_failed",
 				"could not read a job row", err)
@@ -139,15 +225,20 @@ func listJobs(ctx context.Context, q querier, statusFilter, typeFilter, ownerSco
 	return out, total, nil
 }
 
-// cancelJob moves QUEUED/RETRYING -> CANCELLED atomically. The WHERE clause
-// is the guard: a job that moved on (PROCESSING or beyond) is untouched.
-// Returns the updated job; KindNotFound when the id does not exist;
-// KindConflict when the job is in a non-cancellable state.
-func cancelJob(ctx context.Context, q querier, id string) (*Job, error) {
-	j, err := scanJob(q.QueryRow(ctx, `
+// cancelJob moves QUEUED/RETRYING (and SCHEDULED, when the schema supports
+// scheduling) -> CANCELLED atomically. The WHERE clause is the guard: a job
+// that moved on (PROCESSING or beyond) is untouched. Returns the updated
+// job; KindNotFound when the id does not exist; KindConflict when the job
+// is in a non-cancellable state.
+func cancelJob(ctx context.Context, q querier, id string, sched bool) (*Job, error) {
+	statuses := "'QUEUED', 'RETRYING'"
+	if sched {
+		statuses = "'QUEUED', 'RETRYING', 'SCHEDULED'"
+	}
+	j, err := scannerFor(sched)(q.QueryRow(ctx, `
 		UPDATE jobs SET status = $2, finished_at = now()
-		WHERE id = $1 AND status IN ('QUEUED', 'RETRYING')
-		RETURNING `+jobColumns, id, StatusCancelled))
+		WHERE id = $1 AND status IN (`+statuses+`)
+		RETURNING `+columnsFor(sched), id, StatusCancelled))
 	if err == nil {
 		return j, nil
 	}
@@ -156,7 +247,7 @@ func cancelJob(ctx context.Context, q querier, id string) (*Job, error) {
 			"could not cancel the job", err)
 	}
 	// The optimistic update matched nothing. Say why.
-	cur, getErr := getJob(ctx, q, id)
+	cur, getErr := getJob(ctx, q, id, sched)
 	if getErr != nil {
 		return nil, getErr // KindNotFound or a real database error
 	}
@@ -184,7 +275,7 @@ func requeueJob(ctx context.Context, q querier, id string) (*Job, error) {
 		return nil, errors.E(errors.KindUnknown, "job_requeue_failed",
 			"could not requeue the job", err)
 	}
-	cur, getErr := getJob(ctx, q, id)
+	cur, getErr := getJob(ctx, q, id, false)
 	if getErr != nil {
 		return nil, getErr
 	}
@@ -367,6 +458,56 @@ func countByStatus(ctx context.Context, q querier, status Status) (int64, error)
 	var n int64
 	err := q.QueryRow(ctx, `SELECT count(*) FROM jobs WHERE status = $1`, status).Scan(&n)
 	return n, err
+}
+
+// ---------------------------------------------------------------------------
+// Delayed-job dispatcher (migration 000004). Only reachable when the probed
+// schema supports scheduling; every query here references jobColumnsSched.
+// ---------------------------------------------------------------------------
+
+// dispatcherBatchSize bounds how many due jobs one pass releases. A bigger
+// backlog drains over the next intervals instead of holding one long
+// transaction.
+const dispatcherBatchSize = 100
+
+// claimDueScheduled atomically moves up to dispatcherBatchSize due SCHEDULED
+// jobs to QUEUED and returns them. FOR UPDATE SKIP LOCKED lets several
+// jobs-service replicas run the dispatcher loop without ever grabbing the
+// same row twice; the rows stay locked until the caller commits (the
+// dispatcher publishes inside the same transaction, so a released job is
+// always already on the broker when it becomes visible as QUEUED).
+func claimDueScheduled(ctx context.Context, tx pgx.Tx) ([]*Job, error) {
+	rows, err := tx.Query(ctx, `
+		WITH due AS (
+			SELECT id FROM jobs
+			WHERE status = 'SCHEDULED' AND scheduled_at <= now()
+			ORDER BY scheduled_at, id
+			LIMIT $1
+			FOR UPDATE SKIP LOCKED
+		)
+		UPDATE jobs j SET status = $2
+		FROM due WHERE j.id = due.id
+		RETURNING `+jobColumnsSched, dispatcherBatchSize, StatusQueued)
+	if err != nil {
+		return nil, errors.E(errors.KindUnknown, "dispatch_scan_failed",
+			"could not claim due scheduled jobs", err)
+	}
+	defer rows.Close()
+
+	var out []*Job
+	for rows.Next() {
+		j, err := scanJobSched(rows)
+		if err != nil {
+			return nil, errors.E(errors.KindUnknown, "dispatch_scan_failed",
+				"could not read a dispatched job", err)
+		}
+		out = append(out, j)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, errors.E(errors.KindUnknown, "dispatch_scan_failed",
+			"could not claim due scheduled jobs", err)
+	}
+	return out, nil
 }
 
 // withTx runs fn in a transaction. q is normally the pool; this tiny local

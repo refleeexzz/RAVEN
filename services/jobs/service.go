@@ -110,6 +110,17 @@ func Run(ctx context.Context, cfg Config) error {
 
 	srv := NewServer(pool, rdb, producer, log, sm)
 
+	// Delayed-job dispatcher: releases SCHEDULED jobs when they come due.
+	// Only runs when migration 000004 is present (srv.sched); on an older
+	// schema SCHEDULED jobs cannot even be created, so there is nothing
+	// to release.
+	if cfg.SchedulerInterval > 0 && srv.sched {
+		dispatcher := NewDispatcher(pool, producer, rdb, log, sm, cfg.SchedulerInterval)
+		go dispatcher.Run(ctx)
+	} else if cfg.SchedulerInterval > 0 {
+		log.Warn("delayed-job dispatcher disabled; migration 000004 (scheduling) is not applied")
+	}
+
 	shutdownTracing, err := tracing.Setup(ctx, "jobs", cfg.OtelEndpoint, cfg.OtelEnabled)
 	if err != nil {
 		return fmt.Errorf("jobs: tracing setup: %w", err)

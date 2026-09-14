@@ -30,6 +30,10 @@ const (
 	StatusRetrying   Status = "RETRYING"
 	StatusCancelled  Status = "CANCELLED"
 	StatusDead       Status = "DEAD"
+	// StatusScheduled is a delayed job waiting for its scheduled_at time
+	// (migration 000004). It holds no lease and is invisible to the
+	// sweeper and to workers until the dispatcher flips it to QUEUED.
+	StatusScheduled Status = "SCHEDULED"
 )
 
 // Broker topics (docs/contracts/ports-and-env.md §Job model). TopicRetry is
@@ -107,6 +111,12 @@ const (
 	// the execution_generation column default in migration 000003; the
 	// sweeper bumps it every time it takes a stranded job over.
 	initialGeneration = 1
+
+	// scheduledAtPastTolerance is how far in the past scheduled_at may sit
+	// before CreateJob rejects it. Anything inside the tolerance is treated
+	// as "run now": clocks skew, and a user re-sending a just-due time
+	// wants execution, not an error.
+	scheduledAtPastTolerance = time.Minute
 )
 
 // Job mirrors a row of the jobs table. Nullable columns use pointers.
@@ -134,6 +144,14 @@ type Job struct {
 	HeartbeatAt         *time.Time
 	LeaseUntil          *time.Time
 	ExecutionGeneration int
+
+	// Scheduling fields (migration 000004). ScheduledAt is set only while
+	// the job waits in SCHEDULED (and stays on the row afterwards as a
+	// record of when it was meant to run). ReplayedFrom is the source job
+	// id when the job was created by ReplayJob — the audit link back to
+	// the original.
+	ScheduledAt  *time.Time
+	ReplayedFrom *string
 }
 
 // NewID builds a job id: "job_" + uuid. The prefix makes ids greppable in
@@ -151,7 +169,11 @@ func NewID() string { return "job_" + uuid.NewString() }
 func startable(s Status) bool { return s == StatusQueued || s == StatusRetrying }
 
 // cancellable reports whether CancelJob may move the job to CANCELLED.
-func cancellable(s Status) bool { return s == StatusQueued || s == StatusRetrying }
+// SCHEDULED jobs are cancellable too: the schedule is simply dropped before
+// the dispatcher ever publishes the work.
+func cancellable(s Status) bool {
+	return s == StatusQueued || s == StatusRetrying || s == StatusScheduled
+}
 
 // requeueable reports whether RequeueJob may resurrect the job: only DEAD
 // jobs, per the contract (POST /api/jobs/{id}/requeue — DLQ requeue).
@@ -179,6 +201,10 @@ func legalTransition(from, to Status) bool {
 		return to == StatusProcessing || to == StatusCancelled
 	case StatusDead:
 		return to == StatusQueued // RequeueJob
+	case StatusScheduled:
+		// QUEUED: the dispatcher released the job when it came due.
+		// CANCELLED: user cancel before it ever ran.
+		return to == StatusQueued || to == StatusCancelled
 	}
 	return false
 }
@@ -224,6 +250,35 @@ func ValidateCreate(jobType, payloadJSON string, priority, maxAttempts int32) (p
 	return int(priority), int(maxAttempts), nil
 }
 
+// ValidateScheduledAt normalizes the optional CreateJob scheduled_at field
+// (unix seconds). Pure, like ValidateCreate; now is injected for testable
+// tables. Rules (docs/scheduling.md):
+//
+//   - 0 means "run now" and returns nil.
+//   - Negative is rejected outright.
+//   - More than scheduledAtPastTolerance in the past is rejected: a distant
+//     past time is almost always a client bug (wrong unit, wrong zone).
+//   - Inside the tolerance the job runs now (nil — no schedule recorded).
+//   - Anything else returns the time the job should fire, in UTC.
+func ValidateScheduledAt(unix int64, now time.Time) (*time.Time, error) {
+	if unix == 0 {
+		return nil, nil
+	}
+	if unix < 0 {
+		return nil, errors.E(errors.KindInvalid, "scheduled_at_invalid",
+			"scheduled_at must be a unix timestamp in seconds", nil)
+	}
+	t := time.Unix(unix, 0).UTC()
+	if t.Before(now.Add(-scheduledAtPastTolerance)) {
+		return nil, errors.E(errors.KindInvalid, "scheduled_at_in_past",
+			"scheduled_at is more than a minute in the past", nil)
+	}
+	if !t.After(now) {
+		return nil, nil // inside the past tolerance: treat as "run now"
+	}
+	return &t, nil
+}
+
 // ---------------------------------------------------------------------------
 // Proto mapping
 // ---------------------------------------------------------------------------
@@ -236,6 +291,7 @@ var statusToProto = map[Status]genjobs.JobStatus{
 	StatusRetrying:   genjobs.JobStatus_JOB_STATUS_RETRYING,
 	StatusCancelled:  genjobs.JobStatus_JOB_STATUS_CANCELLED,
 	StatusDead:       genjobs.JobStatus_JOB_STATUS_DEAD,
+	StatusScheduled:  genjobs.JobStatus_JOB_STATUS_SCHEDULED,
 }
 
 var protoToStatus = map[genjobs.JobStatus]Status{
@@ -246,6 +302,7 @@ var protoToStatus = map[genjobs.JobStatus]Status{
 	genjobs.JobStatus_JOB_STATUS_RETRYING:   StatusRetrying,
 	genjobs.JobStatus_JOB_STATUS_CANCELLED:  StatusCancelled,
 	genjobs.JobStatus_JOB_STATUS_DEAD:       StatusDead,
+	genjobs.JobStatus_JOB_STATUS_SCHEDULED:  StatusScheduled,
 }
 
 func unixOrZero(t *time.Time) int64 {
@@ -257,7 +314,7 @@ func unixOrZero(t *time.Time) int64 {
 
 // toProto converts the stored row to the wire type.
 func (j *Job) toProto() *genjobs.Job {
-	return &genjobs.Job{
+	p := &genjobs.Job{
 		Id:          j.ID,
 		Type:        j.Type,
 		PayloadJson: j.Payload,
@@ -270,7 +327,12 @@ func (j *Job) toProto() *genjobs.Job {
 		FinishedAt:  unixOrZero(j.FinishedAt),
 		Error:       j.Error,
 		WorkerId:    j.WorkerID,
+		ScheduledAt: unixOrZero(j.ScheduledAt),
 	}
+	if j.ReplayedFrom != nil {
+		p.ReplayedFrom = *j.ReplayedFrom
+	}
+	return p
 }
 
 // ---------------------------------------------------------------------------

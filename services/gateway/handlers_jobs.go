@@ -35,18 +35,20 @@ func newJobsHandlers(jobs *upstream, rdb redis.UniversalClient) *jobsHandlers {
 
 // jobJSON is the public wire shape of a job (field list fixed by contract).
 type jobJSON struct {
-	ID          string          `json:"id"`
-	Type        string          `json:"type"`
-	Payload     json.RawMessage `json:"payload"`
-	Status      string          `json:"status"`
-	Priority    int32           `json:"priority"`
-	Attempts    int32           `json:"attempts"`
-	MaxAttempts int32           `json:"max_attempts"`
-	CreatedAt   int64           `json:"created_at"`
-	StartedAt   int64           `json:"started_at"`
-	FinishedAt  int64           `json:"finished_at"`
-	Error       string          `json:"error"`
-	WorkerID    string          `json:"worker_id"`
+	ID           string          `json:"id"`
+	Type         string          `json:"type"`
+	Payload      json.RawMessage `json:"payload"`
+	Status       string          `json:"status"`
+	Priority     int32           `json:"priority"`
+	Attempts     int32           `json:"attempts"`
+	MaxAttempts  int32           `json:"max_attempts"`
+	CreatedAt    int64           `json:"created_at"`
+	StartedAt    int64           `json:"started_at"`
+	FinishedAt   int64           `json:"finished_at"`
+	Error        string          `json:"error"`
+	WorkerID     string          `json:"worker_id"`
+	ScheduledAt  int64           `json:"scheduled_at"`
+	ReplayedFrom string          `json:"replayed_from,omitempty"`
 }
 
 func jobToJSON(j *genjobs.Job) jobJSON {
@@ -57,18 +59,20 @@ func jobToJSON(j *genjobs.Job) jobJSON {
 		payload, _ = json.Marshal(j.GetPayloadJson())
 	}
 	return jobJSON{
-		ID:          j.GetId(),
-		Type:        j.GetType(),
-		Payload:     payload,
-		Status:      jobStatusName(j.GetStatus()),
-		Priority:    j.GetPriority(),
-		Attempts:    j.GetAttempts(),
-		MaxAttempts: j.GetMaxAttempts(),
-		CreatedAt:   j.GetCreatedAt(),
-		StartedAt:   j.GetStartedAt(),
-		FinishedAt:  j.GetFinishedAt(),
-		Error:       j.GetError(),
-		WorkerID:    j.GetWorkerId(),
+		ID:           j.GetId(),
+		Type:         j.GetType(),
+		Payload:      payload,
+		Status:       jobStatusName(j.GetStatus()),
+		Priority:     j.GetPriority(),
+		Attempts:     j.GetAttempts(),
+		MaxAttempts:  j.GetMaxAttempts(),
+		CreatedAt:    j.GetCreatedAt(),
+		StartedAt:    j.GetStartedAt(),
+		FinishedAt:   j.GetFinishedAt(),
+		Error:        j.GetError(),
+		WorkerID:     j.GetWorkerId(),
+		ScheduledAt:  j.GetScheduledAt(),
+		ReplayedFrom: j.GetReplayedFrom(),
 	}
 }
 
@@ -100,6 +104,7 @@ type createJobRequest struct {
 	Payload     json.RawMessage `json:"payload"`
 	Priority    int32           `json:"priority"`
 	MaxAttempts int32           `json:"max_attempts"`
+	ScheduledAt int64           `json:"scheduled_at"` // unix seconds; 0/absent = run now
 }
 
 // create handles POST /api/jobs. The Idempotency-Key header is forwarded
@@ -126,6 +131,7 @@ func (h *jobsHandlers) create(w http.ResponseWriter, r *http.Request) {
 			PayloadJson:    string(req.Payload),
 			Priority:       req.Priority,
 			MaxAttempts:    req.MaxAttempts,
+			ScheduledAt:    req.ScheduledAt,
 			IdempotencyKey: bindIdempotencyKey(r.Header.Get("Idempotency-Key"), &req),
 		})
 		return err
@@ -139,12 +145,12 @@ func (h *jobsHandlers) create(w http.ResponseWriter, r *http.Request) {
 
 // bindIdempotencyKey derives the upstream idempotency key from the
 // client-supplied key and a SHA-256 fingerprint of everything that defines
-// the job (type, payload, priority, max_attempts). Dedup semantics after
-// binding: same key + same request → same upstream key → the jobs service
-// returns the original job; same key + different request → a different
-// upstream key → a NEW job instead of the wrong one. Without binding, the
-// jobs service dedupes on the bare key and a replay with a swapped payload
-// silently returns the original job (EDGE-03).
+// the job (type, payload, priority, max_attempts, scheduled_at). Dedup
+// semantics after binding: same key + same request → same upstream key →
+// the jobs service returns the original job; same key + different request →
+// a different upstream key → a NEW job instead of the wrong one. Without
+// binding, the jobs service dedupes on the bare key and a replay with a
+// swapped payload silently returns the original job (EDGE-03).
 //
 // The upstream key keeps the client key as a readable prefix and stays
 // within the jobs service's 255-char contract; keys too long for
@@ -155,7 +161,8 @@ func bindIdempotencyKey(clientKey string, req *createJobRequest) string {
 		return ""
 	}
 	fp := sha256.Sum256([]byte(req.Type + "\x00" + string(req.Payload) + "\x00" +
-		strconv.Itoa(int(req.Priority)) + "\x00" + strconv.Itoa(int(req.MaxAttempts))))
+		strconv.Itoa(int(req.Priority)) + "\x00" + strconv.Itoa(int(req.MaxAttempts)) +
+		"\x00" + strconv.FormatInt(req.ScheduledAt, 10)))
 	suffix := hex.EncodeToString(fp[:])[:16]
 	if bound := key + ":" + suffix; len(bound) <= 255 {
 		return bound
