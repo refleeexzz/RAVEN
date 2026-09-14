@@ -31,6 +31,8 @@ func main() {
 		JobLease:     time.Duration(config.GetInt("WORKER_JOB_LEASE_MS", 30000)) * time.Millisecond,
 		OtelEndpoint: config.Get("OTEL_ENDPOINT", "localhost:4317"),
 		OtelEnabled:  config.GetBool("OTEL_ENABLED", false),
+		// SSRF escape hatch (JOBS-01): dev/test only, never in production.
+		WebhookAllowPrivate: config.GetBool("WORKER_WEBHOOK_ALLOW_PRIVATE", false),
 	}
 
 	if err := worker.Run(ctx, cfg); err != nil {

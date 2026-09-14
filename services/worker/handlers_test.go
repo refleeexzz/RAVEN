@@ -18,7 +18,7 @@ import (
 func quietLog() *slog.Logger { return slog.New(slog.NewTextHandler(io.Discard, nil)) }
 
 func TestHandlerRegistry(t *testing.T) {
-	reg := newHandlers(quietLog(), &http.Client{Timeout: time.Second})
+	reg := newHandlers(quietLog(), &http.Client{Timeout: time.Second}, NewEgressGuard(true))
 
 	for _, typ := range []string{"send_email", "resize_image", "webhook"} {
 		if _, err := lookupHandler(reg, typ); err != nil {
@@ -115,7 +115,7 @@ func TestWebhookHandler(t *testing.T) {
 	defer server.Close()
 
 	client := &http.Client{Timeout: time.Second}
-	h := webhookHandler(client)
+	h := WebhookHandler(NewEgressGuard(true).WrapClient(client), NewEgressGuard(true))
 
 	job := &jobs.Job{ID: "job_1", Payload: `{"url":"` + server.URL + `","event":"test"}`}
 	if err := h(context.Background(), job); err != nil {
@@ -160,7 +160,7 @@ func TestWebhookRespectsClientTimeout(t *testing.T) {
 	}))
 	defer slow.Close()
 
-	h := webhookHandler(&http.Client{Timeout: 100 * time.Millisecond})
+	h := WebhookHandler(NewEgressGuard(true).HTTPClient(100*time.Millisecond), NewEgressGuard(true))
 	start := time.Now()
 	err := h(context.Background(), &jobs.Job{ID: "job_1", Payload: `{"url":"` + slow.URL + `"}`})
 	if err == nil {

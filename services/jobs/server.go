@@ -5,10 +5,8 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/redis/go-redis/v9"
-	"google.golang.org/grpc/metadata"
 
 	gencommon "github.com/refleeexzz/RAVEN/internal/gen/common"
 	genjobs "github.com/refleeexzz/RAVEN/internal/gen/jobs"
@@ -41,7 +39,11 @@ func NewServer(pool *pgxpool.Pool, rdb redis.UniversalClient, producer *Producer
 // ---------------------------------------------------------------------------
 
 func (s *Server) CreateJob(ctx context.Context, req *genjobs.CreateJobRequest) (*genjobs.Job, error) {
-	priority, maxAttempts, err := validateCreate(req.GetType(), req.GetPayloadJson(),
+	caller, err := CallerFromContext(ctx)
+	if err != nil {
+		return nil, toStatus(err)
+	}
+	priority, maxAttempts, err := ValidateCreate(req.GetType(), req.GetPayloadJson(),
 		req.GetPriority(), req.GetMaxAttempts())
 	if err != nil {
 		return nil, toStatus(err)
@@ -66,8 +68,10 @@ func (s *Server) CreateJob(ctx context.Context, req *genjobs.CreateJobRequest) (
 	if idemKey != "" {
 		j.IdempotencyKey = &idemKey
 	}
-	if owner := ownerFromMetadata(ctx); owner != "" {
-		j.OwnerID = &owner
+	if !caller.System {
+		// Owner-scoped by default (JOBS-02): the authenticated caller owns the
+		// job. System callers (no identity) create ownerless jobs.
+		j.OwnerID = &caller.UserID
 	}
 
 	// Idempotency fast path: claim the key in Redis first. If it is taken,
@@ -89,6 +93,11 @@ func (s *Server) CreateJob(ctx context.Context, req *genjobs.CreateJobRequest) (
 				s.log.WarnContext(ctx, "idempotency key pointed at a missing job, reclaiming",
 					slog.String("key", idemKey))
 				releaseIdempotencyKey(ctx, s.rdb, s.log, idemKey)
+			} else if !caller.CanAccessJob(existingJob.OwnerID) {
+				// The key belongs to another owner's job (JOBS-02): say the
+				// key is taken, never hand back a stranger's job.
+				return nil, toStatus(errors.E(errors.KindConflict, "idempotency_key_taken",
+					"a job with this idempotency key already exists", nil))
 			} else {
 				s.log.InfoContext(ctx, "idempotent create, returning existing job",
 					slog.String("job_id", existingJob.ID))
@@ -104,6 +113,11 @@ func (s *Server) CreateJob(ctx context.Context, req *genjobs.CreateJobRequest) (
 			// existing job instead of an error.
 			existingJob, getErr := jobByIdempotencyKey(ctx, s.pool, idemKey)
 			if getErr == nil {
+				if !caller.CanAccessJob(existingJob.OwnerID) {
+					// Foreign key (JOBS-02): conflict, not the other user's job.
+					return nil, toStatus(errors.E(errors.KindConflict, "idempotency_key_taken",
+						"a job with this idempotency key already exists", nil))
+				}
 				return existingJob.toProto(), nil
 			}
 		}
@@ -149,6 +163,10 @@ func (s *Server) CreateJob(ctx context.Context, req *genjobs.CreateJobRequest) (
 // ---------------------------------------------------------------------------
 
 func (s *Server) GetJob(ctx context.Context, req *genjobs.GetJobRequest) (*genjobs.Job, error) {
+	caller, err := CallerFromContext(ctx)
+	if err != nil {
+		return nil, toStatus(err)
+	}
 	if req.GetId() == "" {
 		return nil, toStatus(errors.E(errors.KindInvalid, "job_id_required",
 			"id is required", nil))
@@ -157,11 +175,18 @@ func (s *Server) GetJob(ctx context.Context, req *genjobs.GetJobRequest) (*genjo
 	if err != nil {
 		return nil, toStatus(err)
 	}
+	if err := caller.AuthorizeJob(j); err != nil {
+		return nil, toStatus(err)
+	}
 	return j.toProto(), nil
 }
 
 func (s *Server) ListJobs(ctx context.Context, req *genjobs.ListJobsRequest) (*genjobs.ListJobsResponse, error) {
-	page, size := normalizePage(req.GetPage())
+	caller, err := CallerFromContext(ctx)
+	if err != nil {
+		return nil, toStatus(err)
+	}
+	page, size := NormalizePage(req.GetPage())
 
 	statusFilter := ""
 	if req.GetStatusFilter() != genjobs.JobStatus_JOB_STATUS_UNSPECIFIED {
@@ -174,7 +199,7 @@ func (s *Server) ListJobs(ctx context.Context, req *genjobs.ListJobsRequest) (*g
 	}
 
 	jobs, total, err := listJobs(ctx, s.pool, statusFilter, req.GetTypeFilter(),
-		int(size), int((page-1)*size))
+		caller.OwnerScope(), int(size), pageOffset(page, size))
 	if err != nil {
 		return nil, toStatus(err)
 	}
@@ -194,9 +219,23 @@ func (s *Server) ListJobs(ctx context.Context, req *genjobs.ListJobsRequest) (*g
 // ---------------------------------------------------------------------------
 
 func (s *Server) CancelJob(ctx context.Context, req *genjobs.CancelJobRequest) (*genjobs.Job, error) {
+	caller, err := CallerFromContext(ctx)
+	if err != nil {
+		return nil, toStatus(err)
+	}
 	if req.GetId() == "" {
 		return nil, toStatus(errors.E(errors.KindInvalid, "job_id_required",
 			"id is required", nil))
+	}
+	// Authorize before the atomic transition. owner_id is immutable after
+	// insert, so the read-then-update cannot be raced into another owner's
+	// job.
+	cur, err := getJob(ctx, s.pool, req.GetId())
+	if err != nil {
+		return nil, toStatus(err)
+	}
+	if err := caller.AuthorizeJob(cur); err != nil {
+		return nil, toStatus(err)
 	}
 	j, err := cancelJob(ctx, s.pool, req.GetId())
 	if err != nil {
@@ -217,9 +256,20 @@ func (s *Server) CancelJob(ctx context.Context, req *genjobs.CancelJobRequest) (
 // ---------------------------------------------------------------------------
 
 func (s *Server) RequeueJob(ctx context.Context, req *genjobs.RequeueJobRequest) (*genjobs.Job, error) {
+	caller, err := CallerFromContext(ctx)
+	if err != nil {
+		return nil, toStatus(err)
+	}
 	if req.GetId() == "" {
 		return nil, toStatus(errors.E(errors.KindInvalid, "job_id_required",
 			"id is required", nil))
+	}
+	cur, err := getJob(ctx, s.pool, req.GetId())
+	if err != nil {
+		return nil, toStatus(err)
+	}
+	if err := caller.AuthorizeJob(cur); err != nil {
+		return nil, toStatus(err)
 	}
 	j, err := requeueJob(ctx, s.pool, req.GetId())
 	if err != nil {
@@ -259,15 +309,20 @@ func requeueRevert(ctx context.Context, q querier, id string) (*Job, error) {
 // helpers
 // ---------------------------------------------------------------------------
 
-// normalizePage applies the platform paging rules: 1-based page, page size
-// defaults to 20 and caps at 100 (see internal/gen/common).
-func normalizePage(p *gencommon.PageRequest) (page, size int32) {
+// NormalizePage applies the platform paging rules: 1-based page, page size
+// defaults to 20 and caps at 100 (see internal/gen/common). The page number
+// is additionally capped at MaxListPage: deep OFFSET scans are a database
+// DoS vector, and (page-1)*size must never overflow int32 (JOBS-04).
+func NormalizePage(p *gencommon.PageRequest) (page, size int32) {
 	page, size = 1, defaultPageSize
 	if p == nil {
 		return page, size
 	}
 	if p.GetPage() > 0 {
 		page = p.GetPage()
+	}
+	if page > MaxListPage {
+		page = MaxListPage
 	}
 	if p.GetPageSize() > 0 {
 		size = p.GetPageSize()
@@ -278,23 +333,13 @@ func normalizePage(p *gencommon.PageRequest) (page, size int32) {
 	return page, size
 }
 
-// ownerFromMetadata picks up the caller identity the gateway forwards as
-// x-user-id. Unknown/invalid values are ignored (owner stays NULL): the jobs
-// API trusts the gateway to have authenticated the caller already.
-func ownerFromMetadata(ctx context.Context) string {
-	md, ok := metadata.FromIncomingContext(ctx)
-	if !ok {
-		return ""
-	}
-	vals := md.Get("x-user-id")
-	if len(vals) == 0 {
-		return ""
-	}
-	id, err := uuid.Parse(vals[0])
-	if err != nil {
-		return ""
-	}
-	return id.String()
+// MaxListPage is the deepest page ListJobs will serve (JOBS-04).
+const MaxListPage = 1_000_000
+
+// pageOffset computes the SQL OFFSET in 64-bit. With page <= MaxListPage and
+// size <= maxPageSize the result always fits the int the store receives.
+func pageOffset(page, size int32) int {
+	return int((int64(page) - 1) * int64(size))
 }
 
 func (s *Server) metricCreated(j *Job) {

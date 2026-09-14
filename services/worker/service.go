@@ -33,6 +33,10 @@ type Config struct {
 	JobTimeout  time.Duration // WORKER_JOB_TIMEOUT, default 30s
 	JobLease    time.Duration // WORKER_JOB_LEASE_MS, default 30s
 
+	// WebhookAllowPrivate disables the webhook egress range checks
+	// (WORKER_WEBHOOK_ALLOW_PRIVATE). Dev/test escape hatch — never in prod.
+	WebhookAllowPrivate bool
+
 	// Tracing (OTel). Disabled by default locally; enabled in k8s via
 	// the raven-config ConfigMap.
 	OtelEndpoint string
@@ -92,14 +96,15 @@ func Run(ctx context.Context, cfg Config) error {
 	sm := NewServiceMetrics(metr)
 
 	w := New(Params{
-		Pool:        pool,
-		RDB:         rdb,
-		Producer:    producer,
-		Log:         log,
-		Metrics:     sm,
-		Concurrency: cfg.Concurrency,
-		JobTimeout:  cfg.JobTimeout,
-		JobLease:    cfg.JobLease,
+		Pool:                 pool,
+		RDB:                  rdb,
+		Producer:             producer,
+		Log:                  log,
+		Metrics:              sm,
+		Concurrency:          cfg.Concurrency,
+		JobTimeout:           cfg.JobTimeout,
+		JobLease:             cfg.JobLease,
+		AllowPrivateWebhooks: cfg.WebhookAllowPrivate,
 	})
 	if cfg.JobTimeout >= cfg.JobLease {
 		// Renewals keep the lease alive, but a handler running right up to a

@@ -21,6 +21,7 @@ import (
 
 	"github.com/refleeexzz/RAVEN/internal/broker/client"
 	"github.com/refleeexzz/RAVEN/internal/broker/protocol"
+	"github.com/refleeexzz/RAVEN/internal/config"
 	"github.com/refleeexzz/RAVEN/services/jobs"
 )
 
@@ -84,7 +85,12 @@ type Params struct {
 	JobTimeout  time.Duration // per-job deadline (WORKER_JOB_TIMEOUT, default 30s)
 	JobLease    time.Duration // claimed-job lease (WORKER_JOB_LEASE_MS, default 30s)
 	WorkerID    string        // optional override (tests); empty = generated
-	HTTPClient  *http.Client  // optional override (tests); nil = 5s timeout client
+	HTTPClient  *http.Client  // optional override (tests); nil = guarded 5s-timeout client
+
+	// AllowPrivateWebhooks disables the webhook egress range checks
+	// (WORKER_WEBHOOK_ALLOW_PRIVATE). Dev/test escape hatch: httptest servers
+	// live on loopback. Never set in production — that reopens JOBS-01 (SSRF).
+	AllowPrivateWebhooks bool
 }
 
 // New builds a Worker with the default handler registry.
@@ -101,8 +107,18 @@ func New(p Params) *Worker {
 	if p.Log == nil {
 		p.Log = slog.Default()
 	}
+	// Webhook egress guard (JOBS-01). Secure by default: private/loopback/
+	// link-local/reserved targets are refused. The env escape hatch keeps
+	// httptest-based integration tests working without touching Params.
+	guard := NewEgressGuard(p.AllowPrivateWebhooks ||
+		config.GetBool("WORKER_WEBHOOK_ALLOW_PRIVATE", false))
+	if guard.AllowPrivate() {
+		p.Log.Warn("webhook egress guard allows private targets (dev/test mode)")
+	}
 	if p.HTTPClient == nil {
-		p.HTTPClient = &http.Client{Timeout: 5 * time.Second}
+		p.HTTPClient = guard.HTTPClient(5 * time.Second)
+	} else {
+		p.HTTPClient = guard.WrapClient(p.HTTPClient)
 	}
 	id := p.WorkerID
 	if id == "" {
@@ -115,7 +131,7 @@ func New(p Params) *Worker {
 		pool:        p.Pool,
 		rdb:         p.RDB,
 		producer:    p.Producer,
-		handlers:    newHandlers(p.Log, p.HTTPClient),
+		handlers:    newHandlers(p.Log, p.HTTPClient, guard),
 		sem:         semaphore.NewWeighted(int64(p.Concurrency)),
 		timeout:     p.JobTimeout,
 		lease:       p.JobLease,

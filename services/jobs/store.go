@@ -91,14 +91,18 @@ func jobByIdempotencyKey(ctx context.Context, q querier, key string) (*Job, erro
 }
 
 // listJobs returns one page plus the total matching row count. statusFilter /
-// typeFilter empty means "no filter". Ordering: highest priority first, then
-// oldest first — the order an operator wants to eyeball a queue in.
-func listJobs(ctx context.Context, q querier, statusFilter, typeFilter string, limit, offset int) ([]*Job, int64, error) {
+// typeFilter / ownerScope empty means "no filter". ownerScope enforces the
+// owner isolation rule (JOBS-02): regular callers always pass their user id,
+// so foreign and ownerless rows never leave the database. Ordering: highest
+// priority first, then oldest first — the order an operator wants to eyeball
+// a queue in.
+func listJobs(ctx context.Context, q querier, statusFilter, typeFilter, ownerScope string, limit, offset int) ([]*Job, int64, error) {
 	var total int64
 	err := q.QueryRow(ctx, `
 		SELECT count(*) FROM jobs
-		WHERE ($1::text = '' OR status = $1) AND ($2::text = '' OR type = $2)`,
-		statusFilter, typeFilter,
+		WHERE ($1::text = '' OR status = $1) AND ($2::text = '' OR type = $2)
+		  AND ($3::text = '' OR owner_id = $3::uuid)`,
+		statusFilter, typeFilter, ownerScope,
 	).Scan(&total)
 	if err != nil {
 		return nil, 0, errors.E(errors.KindUnknown, "job_count_failed",
@@ -108,9 +112,10 @@ func listJobs(ctx context.Context, q querier, statusFilter, typeFilter string, l
 	rows, err := q.Query(ctx, `
 		SELECT `+jobColumns+` FROM jobs
 		WHERE ($1::text = '' OR status = $1) AND ($2::text = '' OR type = $2)
+		  AND ($3::text = '' OR owner_id = $3::uuid)
 		ORDER BY priority DESC, created_at, id
-		LIMIT $3 OFFSET $4`,
-		statusFilter, typeFilter, limit, offset,
+		LIMIT $4 OFFSET $5`,
+		statusFilter, typeFilter, ownerScope, limit, offset,
 	)
 	if err != nil {
 		return nil, 0, errors.E(errors.KindUnknown, "job_list_failed",

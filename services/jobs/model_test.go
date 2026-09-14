@@ -148,7 +148,7 @@ func TestValidateCreate(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			prio, maxA, err := validateCreate(c.jobType, c.payload, c.priority, c.maxAttempts)
+			prio, maxA, err := ValidateCreate(c.jobType, c.payload, c.priority, c.maxAttempts)
 			if c.wantErr != "" {
 				if err == nil {
 					t.Fatalf("want error %s, got nil", c.wantErr)
@@ -221,7 +221,7 @@ func TestNormalizePage(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			page, size := normalizePage(c.in.GetPage())
+			page, size := NormalizePage(c.in.GetPage())
 			if page != c.wantPage || size != c.wantSz {
 				t.Errorf("got (page %d, size %d), want (%d, %d)", page, size, c.wantPage, c.wantSz)
 			}

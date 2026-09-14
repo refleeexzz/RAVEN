@@ -12,9 +12,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"math/rand/v2"
 	"net/http"
+	"net/url"
 	"time"
 
 	"github.com/refleeexzz/RAVEN/services/jobs"
@@ -49,11 +51,11 @@ func isPermanent(err error) bool {
 // newHandlers builds the type -> handler map. Lookup of an unknown type
 // returns a PermanentError: no amount of retrying teaches the worker a type
 // it does not know.
-func newHandlers(emailLog *slog.Logger, httpClient *http.Client) map[string]Handler {
+func newHandlers(emailLog *slog.Logger, httpClient *http.Client, guard *EgressGuard) map[string]Handler {
 	return map[string]Handler{
 		"send_email":   sendEmailHandler(emailLog),
 		"resize_image": resizeImageHandler(),
-		"webhook":      webhookHandler(httpClient),
+		"webhook":      WebhookHandler(httpClient, guard),
 	}
 }
 
@@ -135,13 +137,20 @@ func resizeImageHandler() Handler {
 // ---------------------------------------------------------------------------
 // webhook: real HTTP POST to payload.url with the job payload as JSON body.
 // Non-2xx and transport errors are retryable; a missing/bad URL is not.
+//
+// SSRF (JOBS-01): the egress guard validates the target before the request
+// leaves the worker — scheme, userinfo, resolved IPs — and the client
+// re-checks every redirect hop. A refused target is a PermanentError:
+// retrying cannot turn 169.254.169.254 into a public address.
 // ---------------------------------------------------------------------------
 
 type webhookPayload struct {
 	URL string `json:"url"`
 }
 
-func webhookHandler(client *http.Client) Handler {
+// WebhookHandler POSTs the job payload to payload.url through the egress
+// guard. Exported so the security suite can drive it directly.
+func WebhookHandler(client *http.Client, guard *EgressGuard) Handler {
 	return func(ctx context.Context, job *jobs.Job) error {
 		var p webhookPayload
 		if err := json.Unmarshal([]byte(job.Payload), &p); err != nil {
@@ -149,6 +158,15 @@ func webhookHandler(client *http.Client) Handler {
 		}
 		if p.URL == "" {
 			return permanentf("webhook payload requires a 'url'")
+		}
+
+		// Egress gate 1: pre-flight validation (scheme, userinfo, DNS).
+		// DNS failures are retryable; policy refusals are permanent.
+		if err := guard.CheckURL(ctx, p.URL); err != nil {
+			if IsBlockedTarget(err) {
+				return permanentf("%v", err)
+			}
+			return err
 		}
 
 		req, err := http.NewRequestWithContext(ctx, http.MethodPost, p.URL,
@@ -160,9 +178,20 @@ func webhookHandler(client *http.Client) Handler {
 
 		resp, err := client.Do(req)
 		if err != nil {
+			// Egress gates 2+3 surface as *url.Error wrapping the refusal.
+			var urlErr *url.Error
+			if errors.As(err, &urlErr) {
+				if IsBlockedTarget(urlErr.Err) || errors.Is(urlErr.Err, ErrRedirectLimit) {
+					return permanentf("webhook target rejected: %v", urlErr.Err)
+				}
+			}
 			return fmt.Errorf("webhook POST %s: %w", p.URL, err) // retryable
 		}
 		defer func() { _ = resp.Body.Close() }()
+		// The body is never parsed; drain a capped amount so the connection
+		// can be reused, never the whole thing (a hostile target could stream
+		// forever and pin the handler until the client timeout).
+		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, MaxWebhookResponseBody))
 		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 			return fmt.Errorf("webhook POST %s: got status %d", p.URL, resp.StatusCode)
 		}

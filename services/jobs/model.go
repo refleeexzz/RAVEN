@@ -57,6 +57,11 @@ const (
 	maxMaxAttempts     = 25
 	defaultPriority    = 5
 
+	// MaxPayloadBytes caps CreateJob payload_json (JOBS-03). The payload is
+	// stored as jsonb, copied into broker messages and re-read on every
+	// attempt — unbounded payloads would be a storage/bandwidth/memory DoS.
+	MaxPayloadBytes = 64 << 10 // 64 KiB
+
 	// initialGeneration is the fencing token a job starts with. It matches
 	// the execution_generation column default in migration 000003; the
 	// sweeper bumps it every time it takes a stranded job over.
@@ -141,9 +146,9 @@ func legalTransition(from, to Status) bool {
 // Validation
 // ---------------------------------------------------------------------------
 
-// validateCreate checks a CreateJob request and returns the normalized values
+// ValidateCreate checks a CreateJob request and returns the normalized values
 // (defaults applied). Pure: no I/O, so unit tests drive it directly.
-func validateCreate(jobType, payloadJSON string, priority, maxAttempts int32) (prio, maxA int, err error) {
+func ValidateCreate(jobType, payloadJSON string, priority, maxAttempts int32) (prio, maxA int, err error) {
 	if !KnownTypes[jobType] {
 		return 0, 0, errors.E(errors.KindInvalid, "job_type_unknown",
 			"type must be one of: send_email, resize_image, webhook", nil)
@@ -151,6 +156,11 @@ func validateCreate(jobType, payloadJSON string, priority, maxAttempts int32) (p
 	if payloadJSON == "" {
 		return 0, 0, errors.E(errors.KindInvalid, "payload_required",
 			"payload_json is required", nil)
+	}
+	// Size check before the JSON scan: cheap reject for oversized payloads.
+	if len(payloadJSON) > MaxPayloadBytes {
+		return 0, 0, errors.E(errors.KindInvalid, "payload_too_large",
+			"payload_json must be at most 64 KiB", nil)
 	}
 	if !json.Valid([]byte(payloadJSON)) {
 		return 0, 0, errors.E(errors.KindInvalid, "payload_invalid_json",
