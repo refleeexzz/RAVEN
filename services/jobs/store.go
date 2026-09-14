@@ -479,14 +479,14 @@ const dispatcherBatchSize = 100
 func claimDueScheduled(ctx context.Context, tx pgx.Tx) ([]*Job, error) {
 	rows, err := tx.Query(ctx, `
 		WITH due AS (
-			SELECT id FROM jobs
+			SELECT id AS job_id FROM jobs
 			WHERE status = 'SCHEDULED' AND scheduled_at <= now()
 			ORDER BY scheduled_at, id
 			LIMIT $1
 			FOR UPDATE SKIP LOCKED
 		)
 		UPDATE jobs j SET status = $2
-		FROM due WHERE j.id = due.id
+		FROM due WHERE j.id = due.job_id
 		RETURNING `+jobColumnsSched, dispatcherBatchSize, StatusQueued)
 	if err != nil {
 		return nil, errors.E(errors.KindUnknown, "dispatch_scan_failed",
