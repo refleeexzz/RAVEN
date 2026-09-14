@@ -282,7 +282,7 @@ func (s *Server) untrack(conn net.Conn) {
 func (s *Server) serveConn(ctx context.Context, conn net.Conn) {
 	defer s.wg.Done()
 	defer s.untrack(conn)
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 
 	// connCtx is cancelled only when the connection itself goes away,
 	// not when the server starts shutting down: a draining server still

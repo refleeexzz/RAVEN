@@ -57,7 +57,7 @@ func Run(ctx context.Context, cfg Config) error {
 	defer pool.Close()
 
 	rdb := redis.NewClient(&redis.Options{Addr: cfg.RedisAddr})
-	defer rdb.Close()
+	defer func() { _ = rdb.Close() }()
 	if err := rdb.Ping(ctx).Err(); err != nil {
 		// Redis backs idempotency and job events. We start without it:
 		// idempotency falls back to the Postgres unique index, events are
@@ -76,7 +76,7 @@ func Run(ctx context.Context, cfg Config) error {
 	cancel()
 
 	producer := NewProducer(cfg.BrokerAddr, log)
-	defer producer.Close()
+	defer func() { _ = producer.Close() }()
 
 	metr := metrics.New("jobs")
 	sm := NewServiceMetrics(metr, countByStatusFunc(log, pool))

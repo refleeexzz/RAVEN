@@ -1,0 +1,11 @@
+version: "2"
+
+linters:
+  exclusions:
+    rules:
+      # Em arquivos de teste, ignorar o retorno de Close/SetReadDeadline e
+      # similares é intencional: o teste falha pela asserção, não pelo Close.
+      # Código de produção continua 100% verificado pelo errcheck.
+      - path: _test\.go
+        linters:
+          - errcheck

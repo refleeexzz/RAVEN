@@ -181,11 +181,6 @@ func (s *segment) lookup(relOffset uint32) int64 {
 	return int64(s.entries[i-1].position)
 }
 
-// readRaw reads up to len(buf) bytes of the log at pos.
-func (s *segment) readAt(buf []byte, pos int64) (int, error) {
-	return s.log.ReadAt(buf, pos)
-}
-
 // truncate cuts the log to size bytes and drops index entries pointing
 // beyond it. Used by crash recovery to remove a corrupt tail.
 func (s *segment) truncate(size int64) error {

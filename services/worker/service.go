@@ -69,7 +69,7 @@ func Run(ctx context.Context, cfg Config) error {
 	defer pool.Close()
 
 	rdb := redis.NewClient(&redis.Options{Addr: cfg.RedisAddr})
-	defer rdb.Close()
+	defer func() { _ = rdb.Close() }()
 	if err := rdb.Ping(ctx).Err(); err != nil {
 		// Events and the registry degrade; execution continues and /ready
 		// reports Redis down until it recovers.

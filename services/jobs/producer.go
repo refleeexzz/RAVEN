@@ -89,7 +89,7 @@ func (p *Producer) PublishRawWithHeaders(ctx context.Context, topic string, key,
 // fine (TOPIC_EXISTS is swallowed); anything else is fatal at boot.
 func EnsureTopics(ctx context.Context, addr string, log *slog.Logger) error {
 	admin := client.NewAdmin(addr)
-	defer admin.Close()
+	defer func() { _ = admin.Close() }()
 
 	for _, topic := range []string{TopicJobs, TopicDLQ, TopicRetry} {
 		_, err := admin.CreateTopic(ctx, topic, 0) // 0 = broker default partitions
@@ -111,7 +111,7 @@ func EnsureTopics(ctx context.Context, addr string, log *slog.Logger) error {
 func BrokerChecker(addr string) func(ctx context.Context) error {
 	return func(ctx context.Context) error {
 		admin := client.NewAdmin(addr)
-		defer admin.Close()
+		defer func() { _ = admin.Close() }()
 		ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
 		defer cancel()
 		_, err := admin.ListTopics(ctx)

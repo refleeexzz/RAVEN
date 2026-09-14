@@ -110,7 +110,7 @@ func login(c *http.Client, base, email, pass string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		return "", fmt.Errorf("login status %d", resp.StatusCode)
 	}
@@ -133,14 +133,14 @@ func createJob(c *http.Client, base, token, jobType, nonce string, client, seq i
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode >= 400 {
 		// Sample the error body: the first failures tell you WHY (429? 503?
 		// breaker open?) instead of leaving you guessing from counters.
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 200))
 		return fmt.Errorf("status %d: %s", resp.StatusCode, bytes.TrimSpace(body))
 	}
-	io.Copy(io.Discard, resp.Body)
+	_, _ = io.Copy(io.Discard, resp.Body)
 	return nil
 }
 
@@ -151,8 +151,8 @@ func listJobs(c *http.Client, base, token string) error {
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
-	io.Copy(io.Discard, resp.Body)
+	defer func() { _ = resp.Body.Close() }()
+	_, _ = io.Copy(io.Discard, resp.Body)
 	if resp.StatusCode >= 400 {
 		return fmt.Errorf("status %d", resp.StatusCode)
 	}

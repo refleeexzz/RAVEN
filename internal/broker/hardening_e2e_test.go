@@ -252,7 +252,6 @@ func TestE2EZombieMemberFencedOut(t *testing.T) {
 			Topic: "jobs", Partition: 2, Offset: 0, MaxRecords: 1, MaxBytes: 1 << 20,
 			Group: "workers", MemberID: "m2", Generation: genAfterExpel,
 		}))
-		lastFetchErr = nil
 		if f == nil {
 			lastFetchErr = fmt.Errorf("no response (conn trouble)")
 		} else {

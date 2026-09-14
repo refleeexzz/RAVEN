@@ -92,7 +92,7 @@ func newHealthAggregator(cfg Config, authUp, usersUp, jobsUp *upstream, rdb *red
 			if err != nil {
 				return "down", "unreachable"
 			}
-			defer resp.Body.Close()
+			defer func() { _ = resp.Body.Close() }()
 			body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 			if resp.StatusCode >= 500 {
 				return "down", fmt.Sprintf("status %d", resp.StatusCode)

@@ -101,7 +101,7 @@ func StartBroker(dir string, mode FsyncMode) (addr string, stop func(), err erro
 // CreateTopic is a small helper shared by scenarios.
 func CreateTopic(ctx context.Context, addr, topic string, partitions int32) error {
 	admin := client.NewAdmin(addr)
-	defer admin.Close()
+	defer func() { _ = admin.Close() }()
 	_, err := admin.CreateTopic(ctx, topic, partitions)
 	return err
 }

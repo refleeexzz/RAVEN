@@ -88,7 +88,7 @@ func Run(ctx context.Context, cfg Config) error {
 	gatewayMetrics := newServiceMetrics(metr)
 
 	rdb := redis.NewClient(&redis.Options{Addr: cfg.RedisAddr})
-	defer rdb.Close()
+	defer func() { _ = rdb.Close() }()
 	if err := rdb.Ping(ctx).Err(); err != nil {
 		// Redis backs the worker registry endpoint. The gateway still starts;
 		// readiness reports Redis down until it recovers.
@@ -101,17 +101,17 @@ func Run(ctx context.Context, cfg Config) error {
 	if err != nil {
 		return err
 	}
-	defer authUp.conn.Close()
+	defer func() { _ = authUp.conn.Close() }()
 	usersUp, err := dialUpstream("users", cfg.UsersGRPCAddr, log, gatewayMetrics)
 	if err != nil {
 		return err
 	}
-	defer usersUp.conn.Close()
+	defer func() { _ = usersUp.conn.Close() }()
 	jobsUp, err := dialUpstream("jobs", cfg.JobsGRPCAddr, log, gatewayMetrics)
 	if err != nil {
 		return err
 	}
-	defer jobsUp.conn.Close()
+	defer func() { _ = jobsUp.conn.Close() }()
 
 	// The janitors sweep the auth cache and the rate-limit buckets; both stop
 	// when ctx is cancelled at shutdown.

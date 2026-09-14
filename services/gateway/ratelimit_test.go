@@ -264,11 +264,11 @@ func TestRetryAfterHeaderValueIsCeilSeconds(t *testing.T) {
 	limiter := newRateLimiter(600, 1)
 	limiter.now = clock.Now
 
-	ok, wait := limiter.allow("k")
+	ok, _ := limiter.allow("k")
 	if !ok {
 		t.Fatal("first request should pass")
 	}
-	ok, wait = limiter.allow("k")
+	ok, wait := limiter.allow("k")
 	if ok {
 		t.Fatal("second request should be denied")
 	}

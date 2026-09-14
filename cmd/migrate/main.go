@@ -151,7 +151,7 @@ func migrateUp(ctx context.Context, dsn, dir string, log *slog.Logger) error {
 	if err != nil {
 		return err
 	}
-	defer conn.Close(ctx)
+	defer func() { _ = conn.Close(ctx) }()
 
 	if err := ensureVersionTable(ctx, conn); err != nil {
 		return err
@@ -209,7 +209,7 @@ func migrateDown(ctx context.Context, dsn, dir string, log *slog.Logger) error {
 	if err != nil {
 		return err
 	}
-	defer conn.Close(ctx)
+	defer func() { _ = conn.Close(ctx) }()
 
 	if err := ensureVersionTable(ctx, conn); err != nil {
 		return err
