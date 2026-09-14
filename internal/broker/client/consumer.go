@@ -38,7 +38,7 @@ type Consumer struct {
 	topics  []string
 	handler Handler
 
-	tlsCfg              *tls.Config
+	tlsCfg             *tls.Config
 	authID, authSecret string
 
 	memberID       string

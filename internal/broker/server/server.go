@@ -140,10 +140,10 @@ type Server struct {
 	tlsCfg           *tls.Config
 	handshakeTimeout time.Duration
 
-	authenticator    Authenticator
-	maxAuthFailures  int
-	authTimeout      time.Duration
-	hooks            SecurityHooks
+	authenticator   Authenticator
+	maxAuthFailures int
+	authTimeout     time.Duration
+	hooks           SecurityHooks
 
 	ln      net.Listener
 	mu      sync.Mutex
@@ -158,17 +158,17 @@ func New(addr string, backend Backend, drainTimeout time.Duration, log *slog.Log
 		log = slog.Default()
 	}
 	s := &Server{
-		addr:            addr,
-		backend:         backend,
-		log:             log,
-		drain:           drainTimeout,
-		maxConns:        defaultMaxConnections,
-		idleTimeout:     defaultIdleTimeout,
-		writeTimeout:    defaultWriteTimeout,
+		addr:             addr,
+		backend:          backend,
+		log:              log,
+		drain:            drainTimeout,
+		maxConns:         defaultMaxConnections,
+		idleTimeout:      defaultIdleTimeout,
+		writeTimeout:     defaultWriteTimeout,
 		handshakeTimeout: defaultHandshakeTimeout,
-		maxAuthFailures: defaultMaxAuthFailures,
-		authTimeout:     defaultAuthTimeout,
-		conns:           make(map[net.Conn]struct{}),
+		maxAuthFailures:  defaultMaxAuthFailures,
+		authTimeout:      defaultAuthTimeout,
+		conns:            make(map[net.Conn]struct{}),
 	}
 	for _, o := range opts {
 		o(s)

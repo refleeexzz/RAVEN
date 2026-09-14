@@ -15,7 +15,7 @@ import (
 type Producer struct {
 	t *transport
 
-	tlsCfg              *tls.Config
+	tlsCfg             *tls.Config
 	authID, authSecret string
 
 	batch      bool
