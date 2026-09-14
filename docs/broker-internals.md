@@ -31,7 +31,8 @@ client can't make us allocate giant buffers.
 
 Opcodes: `CREATE_TOPIC`, `LIST_TOPICS`, `PRODUCE`, `FETCH`, `COMMIT_OFFSET`,
 `FETCH_OFFSET`, `JOIN_GROUP`, `LEAVE_GROUP`, `HEARTBEAT`, plus `ERROR` for
-failed responses.
+failed responses. v1.1 added `AUTH` (0x0A) for API-key login — additive,
+no handshake negotiation; see [Broker security](broker-security.md).
 
 Rules:
 
@@ -44,7 +45,8 @@ Rules:
 
 Errors have stable machine codes: `TOPIC_EXISTS`, `TOPIC_NOT_FOUND`,
 `BROKER_BUSY`, `REBALANCE`, `UNKNOWN_MEMBER`, `OFFSET_OUT_OF_RANGE`,
-`BAD_REQUEST`, `UNKNOWN_OPCODE`, `INTERNAL`. The client library checks codes,
+`BAD_REQUEST`, `UNKNOWN_OPCODE`, `INTERNAL`, plus `UNAUTHENTICATED` and
+`UNAUTHORIZED` (v1.1 auth/ACL). The client library checks codes,
 not strings.
 
 ## Record format on disk
@@ -292,8 +294,11 @@ at scrape time), `raven_broker_active_groups`.
 6. **Old-segment corruption is detected on read, not repaired.** Only the
    active segment gets the truncate-the-tail recovery.
 7. **One record ≤ 4 MiB** (frame cap). Headers are capped at 64 KiB each.
-8. **No auth/encryption on 9100.** It's a private cluster port; the gateway
-   never exposes it.
+8. **Auth/TLS on 9100 is opt-in and off by default.** TLS/mTLS, API-key
+   auth and topic ACLs exist (see [Broker security](broker-security.md)),
+   but you have to turn them on; the dev default is plaintext + open, and
+   the port should stay cluster-private regardless. API-key rotation
+   needs a restart.
 9. At-least-once means your consumer handler will see duplicates sometimes.
    Design for it.
 

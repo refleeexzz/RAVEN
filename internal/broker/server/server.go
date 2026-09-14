@@ -512,6 +512,9 @@ func (s *Server) dispatch(ctx context.Context, f *protocol.Frame, p *Principal) 
 		}
 		return fail(protocol.NewError(protocol.CodeBadRequest, "connection already authenticated"))
 	case protocol.OpCreateTopic:
+		if err := s.authorize(p, accessAdmin, ""); err != nil {
+			return fail(err)
+		}
 		var req protocol.CreateTopicRequest
 		if err := json.Unmarshal(f.Payload, &req); err != nil {
 			return badReq(err)
@@ -522,6 +525,9 @@ func (s *Server) dispatch(ctx context.Context, f *protocol.Frame, p *Principal) 
 		}
 		resp.Payload = mustJSON(r)
 	case protocol.OpListTopics:
+		if err := s.authorize(p, accessAdmin, ""); err != nil {
+			return fail(err)
+		}
 		r, err := s.backend.ListTopics(ctx, &protocol.ListTopicsRequest{})
 		if err != nil {
 			return fail(err)
@@ -531,6 +537,9 @@ func (s *Server) dispatch(ctx context.Context, f *protocol.Frame, p *Principal) 
 		req, err := protocol.DecodeProduceRequest(f.Payload)
 		if err != nil {
 			return badReq(err)
+		}
+		if err := s.authorize(p, accessWrite, req.Topic); err != nil {
+			return fail(err)
 		}
 		r, err := s.backend.Produce(ctx, req)
 		if err != nil {
@@ -542,6 +551,9 @@ func (s *Server) dispatch(ctx context.Context, f *protocol.Frame, p *Principal) 
 		if err != nil {
 			return badReq(err)
 		}
+		if err := s.authorize(p, accessRead, req.Topic); err != nil {
+			return fail(err)
+		}
 		r, err := s.backend.Fetch(ctx, req)
 		if err != nil {
 			return fail(err)
@@ -551,6 +563,9 @@ func (s *Server) dispatch(ctx context.Context, f *protocol.Frame, p *Principal) 
 		var req protocol.CommitOffsetRequest
 		if err := json.Unmarshal(f.Payload, &req); err != nil {
 			return badReq(err)
+		}
+		if err := s.authorize(p, accessRead, req.Topic); err != nil {
+			return fail(err)
 		}
 		r, err := s.backend.CommitOffset(ctx, &req)
 		if err != nil {
@@ -562,6 +577,9 @@ func (s *Server) dispatch(ctx context.Context, f *protocol.Frame, p *Principal) 
 		if err := json.Unmarshal(f.Payload, &req); err != nil {
 			return badReq(err)
 		}
+		if err := s.authorize(p, accessRead, req.Topic); err != nil {
+			return fail(err)
+		}
 		r, err := s.backend.FetchOffset(ctx, &req)
 		if err != nil {
 			return fail(err)
@@ -571,6 +589,13 @@ func (s *Server) dispatch(ctx context.Context, f *protocol.Frame, p *Principal) 
 		var req protocol.JoinGroupRequest
 		if err := json.Unmarshal(f.Payload, &req); err != nil {
 			return badReq(err)
+		}
+		// Joining subscribes the member to every listed topic: each one
+		// needs a read grant.
+		for _, topic := range req.Topics {
+			if err := s.authorize(p, accessRead, topic); err != nil {
+				return fail(err)
+			}
 		}
 		r, err := s.backend.JoinGroup(ctx, &req)
 		if err != nil {

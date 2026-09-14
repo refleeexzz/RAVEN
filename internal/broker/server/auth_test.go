@@ -99,8 +99,11 @@ func TestAuthSuccessUnlocksConnection(t *testing.T) {
 		t.Fatalf("AUTH response grants wrong: %+v", ar)
 	}
 
-	// After AUTH, normal ops work (ACL matrix is covered separately).
-	if err := protocol.WriteFrame(conn, &protocol.Frame{Opcode: protocol.OpListTopics, CorrelationID: 99}); err != nil {
+	// After AUTH, ops within the key's grants work (the full ACL
+	// matrix lives in acl_test.go).
+	fetch := &protocol.Frame{Opcode: protocol.OpFetch, CorrelationID: 99,
+		Payload: protocol.EncodeFetchRequest(&protocol.FetchRequest{Topic: "jobs", Partition: 0})}
+	if err := protocol.WriteFrame(conn, fetch); err != nil {
 		t.Fatalf("write: %v", err)
 	}
 	_ = conn.SetReadDeadline(time.Now().Add(3 * time.Second))
@@ -108,8 +111,8 @@ func TestAuthSuccessUnlocksConnection(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read: %v", err)
 	}
-	if resp.Opcode != protocol.OpListTopics {
-		t.Fatalf("got %s, want LIST_TOPICS", resp.Opcode)
+	if resp.Opcode != protocol.OpFetch {
+		t.Fatalf("got %s, want FETCH", resp.Opcode)
 	}
 }
 

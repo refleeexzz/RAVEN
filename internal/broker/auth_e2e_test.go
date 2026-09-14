@@ -171,3 +171,61 @@ func TestBrokerAuthFailureMetric(t *testing.T) {
 		t.Fatalf("raven_broker_auth_failures_total = %v, want >= 3", got)
 	}
 }
+
+func TestBrokerACLDeniedMetric(t *testing.T) {
+	t.Parallel()
+	reg := prometheus.NewRegistry()
+	cfg := broker.Config{
+		TCPAddr:        "127.0.0.1:0",
+		DataDir:        t.TempDir(),
+		FsyncEvery:     20 * time.Millisecond,
+		SessionTimeout: 5 * time.Second,
+		APIKeys:        testAPIKeys(), // worker: read/write "jobs" only
+	}
+	b, err := broker.New(cfg, quietLogger(), regAdapter{reg})
+	if err != nil {
+		t.Fatalf("broker.New: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- b.Run(ctx) }()
+	defer func() {
+		cancel()
+		<-done
+	}()
+	waitFor(t, "broker listening", 5*time.Second, func() bool { return b.Addr() != "" })
+
+	// Admin seeds the topic, then the worker key does one denied op
+	// (produce to a topic outside its grants) and one allowed op.
+	admin := client.NewAdmin(b.Addr(), client.WithAdminAuth("admin", "s3cr3t-admin"))
+	defer admin.Close()
+	if _, err := admin.CreateTopic(context.Background(), "jobs", 1); err != nil {
+		t.Fatalf("seed topic: %v", err)
+	}
+	if _, err := admin.CreateTopic(context.Background(), "other", 1); err != nil {
+		t.Fatalf("seed topic 2: %v", err)
+	}
+
+	p := client.NewProducer(b.Addr(), client.WithProducerAuth("worker", "s3cr3t-worker"))
+	defer p.Close()
+	if _, err := p.Produce(context.Background(), "other", nil, []byte("v")); !client.IsUnauthorized(err) {
+		t.Fatalf("produce outside grants: err %v, want typed UNAUTHORIZED", err)
+	}
+	if _, err := p.Produce(context.Background(), "jobs", nil, []byte("v")); err != nil {
+		t.Fatalf("produce inside grants: %v", err)
+	}
+
+	got := 0.0
+	mfs, err := reg.Gather()
+	if err != nil {
+		t.Fatalf("gather: %v", err)
+	}
+	for _, mf := range mfs {
+		if mf.GetName() == "raven_broker_acl_denied_total" && len(mf.Metric) > 0 {
+			got = mf.Metric[0].GetCounter().GetValue()
+		}
+	}
+	if got != 1 {
+		t.Fatalf("raven_broker_acl_denied_total = %v, want 1", got)
+	}
+}

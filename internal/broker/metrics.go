@@ -18,6 +18,7 @@ type Metrics struct {
 	// Security counters. Label-free on purpose: key ids would be a
 	// cardinality leak, and the broker logs carry the detail.
 	authFailures prometheus.Counter
+	aclDenied    prometheus.Counter
 }
 
 // CollectorRegistrar is satisfied by pkg/metrics.Registry; defined as
@@ -63,6 +64,12 @@ func newMetrics() *Metrics {
 			Name:      "auth_failures_total",
 			Help:      "Total rejected authentication attempts and pre-auth frames (bad secret, unknown key, frame before AUTH).",
 		}),
+		aclDenied: prometheus.NewCounter(prometheus.CounterOpts{
+			Namespace: "raven",
+			Subsystem: "broker",
+			Name:      "acl_denied_total",
+			Help:      "Total requests denied by the topic ACL (authenticated but not allowed).",
+		}),
 	}
 }
 
@@ -76,6 +83,7 @@ func (b *Broker) registerMetrics(reg CollectorRegistrar) {
 		b.metrics.consumed,
 		b.metrics.appendLatency,
 		b.metrics.authFailures,
+		b.metrics.aclDenied,
 		&offsetCollector{
 			b: b,
 			pendingDesc: prometheus.NewDesc(

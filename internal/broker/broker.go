@@ -212,6 +212,7 @@ func New(cfg Config, log *slog.Logger, reg CollectorRegistrar) (*Broker, error) 
 		server.WithAuthenticator(authenticator),
 		server.WithSecurityHooks(server.SecurityHooks{
 			OnAuthFailure: func() { b.metrics.authFailures.Inc() },
+			OnACLDenied:   func() { b.metrics.aclDenied.Inc() },
 		}),
 	)
 	if reg != nil {

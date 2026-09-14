@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net"
 	"sync/atomic"
@@ -167,4 +168,85 @@ func (s *Server) handlePreAuth(ctx context.Context, conn net.Conn, f *protocol.F
 			Admin:       p.Admin,
 		}),
 	}, true
+}
+
+// ---- topic ACLs ----
+
+// access classifies an operation for ACL checks.
+type access int
+
+const (
+	accessNone  access = iota // any authenticated principal
+	accessRead                // needs topics_read on the topic
+	accessWrite               // needs topics_write on the topic
+	accessAdmin               // needs the admin flag
+)
+
+// topicAllowed reports whether patterns grant access to topic: "*"
+// matches everything, a trailing "*" is a prefix wildcard ("jobs.*"
+// matches "jobs.p1"), anything else must match exactly.
+func topicAllowed(patterns []string, topic string) bool {
+	for _, pat := range patterns {
+		switch {
+		case pat == "*":
+			return true
+		case pat == topic:
+			return true
+		case len(pat) > 1 && pat[len(pat)-1] == '*' && len(topic) >= len(pat)-1 && topic[:len(pat)-1] == pat[:len(pat)-1]:
+			return true
+		}
+	}
+	return false
+}
+
+// authorize enforces the per-frame ACL when authentication is on. In
+// open mode (no authenticator) it is a no-op, so dispatch stays a
+// single code path. Denials are counted (OnACLDenied) and returned as
+// UNAUTHORIZED; the message names the access and topic but never the
+// grant lists — those are server-side configuration.
+func (s *Server) authorize(p *Principal, acc access, topic string) error {
+	if s.authenticator == nil {
+		return nil
+	}
+	if p == nil {
+		// The read-loop gate makes this unreachable; stay fail-closed.
+		return protocol.NewError(protocol.CodeUnauthenticated, "authentication required")
+	}
+	if p.Admin {
+		return nil
+	}
+	ok := false
+	switch acc {
+	case accessNone:
+		ok = true
+	case accessRead:
+		ok = topicAllowed(p.TopicsRead, topic)
+	case accessWrite:
+		ok = topicAllowed(p.TopicsWrite, topic)
+	case accessAdmin:
+		ok = false
+	}
+	if ok {
+		return nil
+	}
+	s.hooks.aclDenied()
+	s.log.Warn("ACL denied",
+		slog.String("key_id", p.ID),
+		slog.String("access", accessName(acc)),
+		slog.String("topic", topic))
+	return protocol.NewError(protocol.CodeUnauthorized,
+		fmt.Sprintf("%s on topic %q is not allowed for key %q", accessName(acc), topic, p.ID))
+}
+
+func accessName(acc access) string {
+	switch acc {
+	case accessRead:
+		return "read"
+	case accessWrite:
+		return "write"
+	case accessAdmin:
+		return "admin"
+	default:
+		return "access"
+	}
 }
