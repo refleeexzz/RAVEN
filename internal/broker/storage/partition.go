@@ -326,6 +326,35 @@ func (p *Partition) HighWatermark() uint64 {
 // ID returns the partition index within its topic.
 func (p *Partition) ID() int32 { return p.id }
 
+// SegmentCount reports how many segment log files the partition holds.
+func (p *Partition) SegmentCount() int {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return len(p.segments)
+}
+
+// DiskUsageBytes sums the on-disk sizes of this partition's segment
+// files (.log + .index). It reads the directory instead of trusting
+// in-memory sizes, so it stays true after crashes and rebuilds. Cheap:
+// two files per segment, called at metrics-scrape cadence.
+func (p *Partition) DiskUsageBytes() int64 {
+	entries, err := os.ReadDir(p.dir)
+	if err != nil {
+		return 0
+	}
+	var total int64
+	for _, e := range entries {
+		name := e.Name()
+		if e.IsDir() || (!strings.HasSuffix(name, ".log") && !strings.HasSuffix(name, ".index")) {
+			continue
+		}
+		if fi, err := e.Info(); err == nil {
+			total += fi.Size()
+		}
+	}
+	return total
+}
+
 // RecordsSinceFlush reports how many records were appended since the
 // last Flush; the broker uses it for the fsync-every-N-records policy.
 func (p *Partition) RecordsSinceFlush() int {

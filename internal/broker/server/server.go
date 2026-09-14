@@ -142,6 +142,15 @@ func (s *Server) Addr() string {
 	return s.ln.Addr().String()
 }
 
+// ActiveConnections reports how many client connections are currently
+// tracked (accepted and not yet closed). Feeds the broker's
+// raven_broker_active_connections gauge.
+func (s *Server) ActiveConnections() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return len(s.conns)
+}
+
 // Run listens and serves until ctx is cancelled, then drains in-flight
 // handlers with a deadline and force-closes whatever is left. It
 // returns only after every connection goroutine has exited, so callers

@@ -17,6 +17,7 @@ import (
 	"github.com/refleeexzz/RAVEN/internal/middleware"
 	"github.com/refleeexzz/RAVEN/pkg/logger"
 	"github.com/refleeexzz/RAVEN/pkg/metrics"
+	"github.com/refleeexzz/RAVEN/pkg/tracing"
 	"github.com/refleeexzz/RAVEN/services/jobs"
 )
 
@@ -31,6 +32,11 @@ type Config struct {
 	Concurrency int           // WORKER_CONCURRENCY, default 8
 	JobTimeout  time.Duration // WORKER_JOB_TIMEOUT, default 30s
 	JobLease    time.Duration // WORKER_JOB_LEASE_MS, default 30s
+
+	// Tracing (OTel). Disabled by default locally; enabled in k8s via
+	// the raven-config ConfigMap.
+	OtelEndpoint string
+	OtelEnabled  bool
 }
 
 // shutdownDrain bounds how long we wait for in-flight jobs at shutdown.
@@ -42,6 +48,19 @@ const shutdownDrain = 15 * time.Second
 // the producer -> remove the registry entry.
 func Run(ctx context.Context, cfg Config) error {
 	log := logger.New("worker", cfg.LogLevel)
+
+	// Tracing must be live before the Worker is built: New captures the
+	// global tracer, and the extract→execute spans are what continue the
+	// trace the jobs service injected into the record headers.
+	shutdownTracing, err := tracing.Setup(ctx, "worker", cfg.OtelEndpoint, cfg.OtelEnabled)
+	if err != nil {
+		return fmt.Errorf("worker: tracing setup: %w", err)
+	}
+	defer func() {
+		shutdownCtx, stop := context.WithTimeout(context.Background(), 5*time.Second)
+		defer stop()
+		_ = shutdownTracing(shutdownCtx)
+	}()
 
 	pool, err := database.NewPool(ctx, cfg.DatabaseURL)
 	if err != nil {

@@ -13,9 +13,14 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/redis/go-redis/v9"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
 	"golang.org/x/sync/semaphore"
 
 	"github.com/refleeexzz/RAVEN/internal/broker/client"
+	"github.com/refleeexzz/RAVEN/internal/broker/protocol"
 	"github.com/refleeexzz/RAVEN/services/jobs"
 )
 
@@ -43,6 +48,7 @@ type Worker struct {
 	lease    time.Duration
 	log      *slog.Logger
 	metrics  *ServiceMetrics
+	tracer   trace.Tracer
 
 	concurrency int
 	startedAt   time.Time
@@ -57,10 +63,14 @@ type Worker struct {
 	closed   atomic.Bool           // set when shutdown starts
 }
 
-// retryTask is a scheduled republish of one job message.
+// retryTask is a scheduled republish of one job message. headers carry
+// the W3C trace context captured when the retry was scheduled, so the
+// republished message continues the original trace instead of starting a
+// disconnected one.
 type retryTask struct {
-	timer *time.Timer
-	raw   []byte
+	timer   *time.Timer
+	raw     []byte
+	headers []protocol.Header
 }
 
 // Params carries the worker dependencies.
@@ -111,6 +121,7 @@ func New(p Params) *Worker {
 		lease:       p.JobLease,
 		log:         p.Log,
 		metrics:     p.Metrics,
+		tracer:      otel.Tracer("raven/worker"),
 		concurrency: p.Concurrency,
 		startedAt:   time.Now().UTC(),
 		aliveCtx:    aliveCtx,
@@ -142,13 +153,13 @@ func (w *Worker) Handle(ctx context.Context, msg client.Message) error {
 	}
 	w.inFlight.Add(1)
 	if w.metrics != nil {
-		w.metrics.inFlight.Inc()
+		w.metrics.incInFlight()
 	}
 	go func() {
 		defer w.sem.Release(1)
 		defer w.inFlight.Add(-1)
 		if w.metrics != nil {
-			defer w.metrics.inFlight.Dec()
+			defer w.metrics.decInFlight()
 		}
 		w.execute(msg)
 	}()
@@ -156,14 +167,34 @@ func (w *Worker) Handle(ctx context.Context, msg client.Message) error {
 }
 
 // execute runs one message end to end: parse, fence, handler, outcome.
+//
+// Tracing: the W3C context the producer injected into the record headers
+// is extracted, and "job execute" continues that trace — Gateway → Jobs →
+// Broker → Worker lands as one trace in Jaeger. Child spans wrap the
+// handler run ("job handler") and the Postgres finish transaction
+// ("job db commit"). Attributes stay low-cardinality (job type, status,
+// topic, partition) — never payloads, emails or job ids.
 func (w *Worker) execute(msg client.Message) {
+	execCtx := protocol.ExtractTraceContext(context.Background(), msg.Headers)
+	execCtx, execSpan := w.tracer.Start(execCtx, "job execute",
+		trace.WithSpanKind(trace.SpanKindConsumer),
+		trace.WithAttributes(
+			attribute.String("messaging.system", "raven-broker"),
+			attribute.String("messaging.destination.name", msg.Topic),
+			attribute.Int("messaging.partition", int(msg.Partition)),
+		))
+	defer execSpan.End()
+
 	jobID, msgGen, err := jobs.ParseJobMessage(msg.Value)
 	if err != nil {
 		// Poison message: no job id, retrying can never parse it. DLQ the raw
 		// bytes so an operator can inspect them, and move on.
 		w.log.Warn("unparseable job message, sending to DLQ",
 			slog.String("topic", msg.Topic), slog.Uint64("offset", msg.Offset))
-		w.publishRawDLQ(msg.Key, msg.Value)
+		execSpan.RecordError(err)
+		execSpan.SetStatus(codes.Error, "poison message")
+		execSpan.SetAttributes(attribute.String("job.status", "poison"))
+		w.publishRawDLQ(execCtx, msg.Key, msg.Value)
 		w.countProcessed("poison")
 		return
 	}
@@ -181,12 +212,16 @@ func (w *Worker) execute(msg client.Message) {
 		// database recovers, the next delivery goes through.
 		w.log.Error("fence update failed, requeueing message",
 			slog.String("job_id", jobID), slog.Any("error", err))
-		w.scheduleRawRepublish(jobID, msg.Value, 2*time.Second)
+		execSpan.RecordError(err)
+		execSpan.SetStatus(codes.Error, "fence update failed")
+		w.scheduleRawRepublish(jobID, msg.Value, 2*time.Second,
+			protocol.InjectTraceContext(execCtx, nil))
 		return
 	}
 	if job == nil {
 		w.log.Info("job skipped by fence (cancelled, duplicate, finished or stale generation)",
 			slog.String("job_id", jobID))
+		execSpan.SetAttributes(attribute.String("job.status", "skipped"))
 		w.countProcessed("skipped")
 		return
 	}
@@ -196,19 +231,33 @@ func (w *Worker) execute(msg client.Message) {
 	handler, err := lookupHandler(w.handlers, job.Type)
 	if err != nil {
 		// Unknown type: straight to DEAD, no retries.
-		w.finishDead(job, job.ExecutionGeneration, job.Attempts+1, err.Error())
+		execSpan.RecordError(err)
+		execSpan.SetStatus(codes.Error, "unknown job type")
+		execSpan.SetAttributes(attribute.String("job.status", "dead"))
+		w.finishDead(execCtx, job, job.ExecutionGeneration, job.Attempts+1, err.Error())
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), w.timeout)
+	execSpan.SetAttributes(attribute.String("job.type", job.Type))
+	ctx, cancel := context.WithTimeout(execCtx, w.timeout)
+	handlerCtx, handlerSpan := w.tracer.Start(ctx, "job handler",
+		trace.WithAttributes(
+			attribute.String("job.type", job.Type),
+			attribute.Int("job.attempt", job.Attempts+1),
+		))
 	var lostLease atomic.Bool
 	renewDone := w.startLeaseRenewal(ctx, cancel, &lostLease, job.ID, job.ExecutionGeneration)
 
 	startedAt := time.Now()
-	runErr := handler(ctx, job)
+	runErr := handler(handlerCtx, job)
 	cancel()
 	<-renewDone
 	finishedAt := time.Now()
+	if runErr != nil {
+		handlerSpan.RecordError(runErr)
+		handlerSpan.SetStatus(codes.Error, runErr.Error())
+	}
+	handlerSpan.End()
 
 	if w.metrics != nil {
 		w.metrics.duration.WithLabelValues(job.Type).Observe(finishedAt.Sub(startedAt).Seconds())
@@ -222,17 +271,23 @@ func (w *Worker) execute(msg client.Message) {
 		w.log.Warn("job lease lost mid-execution, abandoning result",
 			slog.String("job_id", job.ID),
 			slog.Int("generation", job.ExecutionGeneration))
+		execSpan.SetAttributes(attribute.String("job.status", "lease_lost"))
 		w.countProcessed("lease_lost")
 		return
 	}
 
 	switch {
 	case runErr == nil:
-		w.finishSuccess(job, job.ExecutionGeneration, job.Attempts+1, startedAt, finishedAt)
+		execSpan.SetAttributes(attribute.String("job.status", "success"))
+		w.finishSuccess(execCtx, job, job.ExecutionGeneration, job.Attempts+1, startedAt, finishedAt)
 	case isPermanent(runErr):
-		w.finishDeadWithTimes(job, job.ExecutionGeneration, job.Attempts+1, runErr.Error(), startedAt, finishedAt)
+		execSpan.SetStatus(codes.Error, "permanent failure")
+		execSpan.SetAttributes(attribute.String("job.status", "dead"))
+		w.finishDeadWithTimes(execCtx, job, job.ExecutionGeneration, job.Attempts+1, runErr.Error(), startedAt, finishedAt)
 	default:
-		w.finishFailed(job, job.ExecutionGeneration, job.Attempts+1, runErr, startedAt, finishedAt)
+		execSpan.SetStatus(codes.Error, runErr.Error())
+		execSpan.SetAttributes(attribute.String("job.status", "retry"))
+		w.finishFailed(execCtx, job, job.ExecutionGeneration, job.Attempts+1, runErr, startedAt, finishedAt)
 	}
 }
 
@@ -288,15 +343,26 @@ func (w *Worker) startLeaseRenewal(ctx context.Context, cancel context.CancelFun
 	return done
 }
 
-// finishSuccess records the attempt and moves the job to SUCCESS.
-func (w *Worker) finishSuccess(job *jobs.Job, generation, attempt int, startedAt, finishedAt time.Time) {
-	updated, err := jobs.FinishJobSuccess(context.Background(), w.pool,
+// finishSuccess records the attempt and moves the job to SUCCESS. The
+// Postgres transaction is wrapped in a "job db commit" span, the last hop
+// of the Gateway → Jobs → Broker → Worker → Postgres trace.
+func (w *Worker) finishSuccess(ctx context.Context, job *jobs.Job, generation, attempt int, startedAt, finishedAt time.Time) {
+	commitCtx, commitSpan := w.tracer.Start(ctx, "job db commit",
+		trace.WithAttributes(
+			attribute.String("job.type", job.Type),
+			attribute.String("job.status", string(jobs.StatusSuccess)),
+		))
+	updated, err := jobs.FinishJobSuccess(commitCtx, w.pool,
 		job.ID, generation, attempt, w.id, startedAt, finishedAt)
 	if err != nil {
+		commitSpan.RecordError(err)
+		commitSpan.SetStatus(codes.Error, "finish write failed")
+		commitSpan.End()
 		w.log.Error("could not record success",
 			slog.String("job_id", job.ID), slog.Any("error", err))
 		return
 	}
+	commitSpan.End()
 	if updated == nil {
 		w.countFenced(job, "success")
 		return
@@ -310,21 +376,35 @@ func (w *Worker) finishSuccess(job *jobs.Job, generation, attempt int, startedAt
 
 // finishFailed records the attempt. When attempts remain, the job goes
 // RETRYING and is republished after a backoff; otherwise it goes DEAD and a
-// copy lands on jobs.dlq.
-func (w *Worker) finishFailed(job *jobs.Job, generation, attempt int, runErr error, startedAt, finishedAt time.Time) {
+// copy lands on jobs.dlq. The Postgres transaction runs inside a
+// "job db commit" span.
+func (w *Worker) finishFailed(ctx context.Context, job *jobs.Job, generation, attempt int, runErr error, startedAt, finishedAt time.Time) {
 	dead := attempt >= job.MaxAttempts
 	delay := retryBackoff(attempt)
+	commitStatus := string(jobs.StatusRetrying)
+	if dead {
+		commitStatus = string(jobs.StatusDead)
+	}
+	commitCtx, commitSpan := w.tracer.Start(ctx, "job db commit",
+		trace.WithAttributes(
+			attribute.String("job.type", job.Type),
+			attribute.String("job.status", commitStatus),
+		))
 	// RETRYING keeps a lease covering the backoff plus a full lease window:
 	// if this worker dies before its retry timer fires, the sweeper takes
 	// over once that window passes.
-	updated, err := jobs.FinishJobFailure(context.Background(), w.pool,
+	updated, err := jobs.FinishJobFailure(commitCtx, w.pool,
 		job.ID, generation, attempt, w.id, runErr.Error(), dead, startedAt, finishedAt,
 		delay+w.lease)
 	if err != nil {
+		commitSpan.RecordError(err)
+		commitSpan.SetStatus(codes.Error, "finish write failed")
+		commitSpan.End()
 		w.log.Error("could not record failure",
 			slog.String("job_id", job.ID), slog.Any("error", err))
 		return
 	}
+	commitSpan.End()
 	if updated == nil {
 		w.countFenced(job, "failure")
 		return
@@ -332,7 +412,7 @@ func (w *Worker) finishFailed(job *jobs.Job, generation, attempt int, runErr err
 	jobs.PublishJobEvent(context.Background(), w.rdb, w.log, updated)
 
 	if dead {
-		w.sendToDLQ(updated)
+		w.sendToDLQ(ctx, updated)
 		w.processed.Add(1)
 		w.countProcessed("dead")
 		w.log.Warn("job is DEAD",
@@ -342,34 +422,46 @@ func (w *Worker) finishFailed(job *jobs.Job, generation, attempt int, runErr err
 	}
 
 	w.countProcessed("retry")
+	if w.metrics != nil {
+		w.metrics.retries.Inc()
+	}
 	w.log.Info("job failed, scheduling retry",
 		slog.String("job_id", job.ID), slog.Int("attempt", attempt),
 		slog.Duration("backoff", delay), slog.Any("error", runErr))
-	w.scheduleRetryRepublish(updated, delay)
+	w.scheduleRetryRepublish(ctx, updated, delay)
 }
 
 // finishDead sends a job straight to DEAD (permanent failures that never
 // entered a handler run, e.g. unknown type).
-func (w *Worker) finishDead(job *jobs.Job, generation, attempt int, errMsg string) {
+func (w *Worker) finishDead(ctx context.Context, job *jobs.Job, generation, attempt int, errMsg string) {
 	now := time.Now()
-	w.finishDeadWithTimes(job, generation, attempt, errMsg, now, now)
+	w.finishDeadWithTimes(ctx, job, generation, attempt, errMsg, now, now)
 }
 
 // finishDeadWithTimes is finishDead with explicit attempt timestamps.
-func (w *Worker) finishDeadWithTimes(job *jobs.Job, generation, attempt int, errMsg string, startedAt, finishedAt time.Time) {
-	updated, err := jobs.FinishJobFailure(context.Background(), w.pool,
+func (w *Worker) finishDeadWithTimes(ctx context.Context, job *jobs.Job, generation, attempt int, errMsg string, startedAt, finishedAt time.Time) {
+	commitCtx, commitSpan := w.tracer.Start(ctx, "job db commit",
+		trace.WithAttributes(
+			attribute.String("job.type", job.Type),
+			attribute.String("job.status", string(jobs.StatusDead)),
+		))
+	updated, err := jobs.FinishJobFailure(commitCtx, w.pool,
 		job.ID, generation, attempt, w.id, errMsg, true, startedAt, finishedAt, 0)
 	if err != nil {
+		commitSpan.RecordError(err)
+		commitSpan.SetStatus(codes.Error, "finish write failed")
+		commitSpan.End()
 		w.log.Error("could not mark job dead",
 			slog.String("job_id", job.ID), slog.Any("error", err))
 		return
 	}
+	commitSpan.End()
 	if updated == nil {
 		w.countFenced(job, "dead")
 		return
 	}
 	jobs.PublishJobEvent(context.Background(), w.rdb, w.log, updated)
-	w.sendToDLQ(updated)
+	w.sendToDLQ(ctx, updated)
 	w.processed.Add(1)
 	w.countProcessed("dead")
 	w.log.Warn("job is DEAD (permanent failure)",
@@ -392,20 +484,25 @@ func (w *Worker) countFenced(job *jobs.Job, op string) {
 
 // sendToDLQ copies a dead job to jobs.dlq. Best effort: the Postgres row is
 // the real dead-letter record; the broker copy is for tooling and inspection.
-func (w *Worker) sendToDLQ(j *jobs.Job) {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+// The DLQ message re-uses the job message so PublishJob's span + header
+// injection keep the dead letter inside the original trace.
+func (w *Worker) sendToDLQ(ctx context.Context, j *jobs.Job) {
+	publishCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
-	if err := w.producer.PublishJob(ctx, jobs.TopicDLQ, j); err != nil {
+	if err := w.producer.PublishJob(publishCtx, jobs.TopicDLQ, j); err != nil {
 		w.log.Error("DLQ produce failed",
 			slog.String("job_id", j.ID), slog.Any("error", err))
 	}
 }
 
-// publishRawDLQ copies an unparseable message to the DLQ, best effort.
-func (w *Worker) publishRawDLQ(key, value []byte) {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+// publishRawDLQ copies an unparseable message to the DLQ, best effort. The
+// incoming trace context is forwarded in the headers so even poison messages
+// stay linked to the trace that produced them.
+func (w *Worker) publishRawDLQ(ctx context.Context, key, value []byte) {
+	publishCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
-	if err := w.producer.PublishRaw(ctx, jobs.TopicDLQ, key, value); err != nil {
+	headers := protocol.InjectTraceContext(ctx, nil)
+	if err := w.producer.PublishRawWithHeaders(publishCtx, jobs.TopicDLQ, key, value, headers); err != nil {
 		w.log.Error("DLQ produce failed for poison message", slog.Any("error", err))
 	}
 }
@@ -415,28 +512,30 @@ func (w *Worker) publishRawDLQ(key, value []byte) {
 // ---------------------------------------------------------------------------
 
 // scheduleRetryRepublish republishes job j to the jobs topic after delay.
-// The consumer loop never sleeps: a timer fires the republish later.
-func (w *Worker) scheduleRetryRepublish(j *jobs.Job, delay time.Duration) {
+// The consumer loop never sleeps: a timer fires the republish later. The
+// trace context of the current "job execute" span is injected now and
+// stored with the task, so the delayed message still carries it.
+func (w *Worker) scheduleRetryRepublish(ctx context.Context, j *jobs.Job, delay time.Duration) {
 	raw, err := j.MarshalMessage()
 	if err != nil {
 		w.log.Error("could not encode retry message",
 			slog.String("job_id", j.ID), slog.Any("error", err))
 		return
 	}
-	w.scheduleRawRepublish(j.ID, raw, delay)
+	w.scheduleRawRepublish(j.ID, raw, delay, protocol.InjectTraceContext(ctx, nil))
 }
 
 // scheduleRawRepublish schedules raw for republication after delay. Timers
 // are tracked per job id so Shutdown can flush them instead of stranding
 // RETRYING jobs. A hard-stopped worker (SIGKILL simulation) drops them —
 // the sweeper recovers the job once its lease expires.
-func (w *Worker) scheduleRawRepublish(jobID string, raw []byte, delay time.Duration) {
-	t := &retryTask{raw: raw}
+func (w *Worker) scheduleRawRepublish(jobID string, raw []byte, delay time.Duration, headers []protocol.Header) {
+	t := &retryTask{raw: raw, headers: headers}
 	t.timer = time.AfterFunc(delay, func() {
 		w.timersMu.Lock()
 		delete(w.timers, jobID)
 		w.timersMu.Unlock()
-		w.republish(jobID, raw)
+		w.republish(jobID, t.raw, t.headers)
 	})
 
 	w.timersMu.Lock()
@@ -449,17 +548,19 @@ func (w *Worker) scheduleRawRepublish(jobID string, raw []byte, delay time.Durat
 	if w.closed.Load() {
 		// Shutdown already started: fire now instead of scheduling.
 		t.timer.Stop()
-		go w.republish(jobID, raw)
+		go w.republish(jobID, t.raw, t.headers)
 		return
 	}
 	w.timers[jobID] = t
 }
 
-// republish puts the message back on the jobs topic.
-func (w *Worker) republish(jobID string, raw []byte) {
+// republish puts the message back on the jobs topic. The stored headers
+// (with the original trace context) go with it, so the next delivery's
+// "job execute" span joins the same trace.
+func (w *Worker) republish(jobID string, raw []byte, headers []protocol.Header) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	if err := w.producer.PublishRaw(ctx, jobs.TopicJobs, []byte(jobID), raw); err != nil {
+	if err := w.producer.PublishRawWithHeaders(ctx, jobs.TopicJobs, []byte(jobID), raw, headers); err != nil {
 		// The job row stays RETRYING with no message in flight. Log loudly;
 		// the sweeper picks it up once the lease written at finish expires.
 		w.log.Error("retry republish failed; job stays RETRYING until the sweeper recovers it",
@@ -502,7 +603,7 @@ func (w *Worker) flushRetries() {
 	w.timersMu.Unlock()
 	for jobID, t := range pending {
 		t.timer.Stop()
-		w.republish(jobID, t.raw)
+		w.republish(jobID, t.raw, t.headers)
 	}
 	if len(pending) > 0 {
 		w.log.Info("flushed pending retries at shutdown", slog.Int("count", len(pending)))

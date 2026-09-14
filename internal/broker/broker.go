@@ -57,9 +57,14 @@ type partWriter struct {
 func (pw *partWriter) run() {
 	defer close(pw.done)
 	for req := range pw.in {
+		start := time.Now()
 		base, err := pw.partition.Append(req.records)
-		if err == nil && pw.metrics != nil {
-			pw.metrics.produced.WithLabelValues(pw.topic, strconv.Itoa(int(pw.partitionID))).Add(float64(len(req.records)))
+		if pw.metrics != nil {
+			part := strconv.Itoa(int(pw.partitionID))
+			pw.metrics.appendLatency.WithLabelValues(pw.topic, part).Observe(time.Since(start).Seconds())
+			if err == nil {
+				pw.metrics.produced.WithLabelValues(pw.topic, part).Add(float64(len(req.records)))
+			}
 		}
 		req.resp <- appendResult{base: base, err: err}
 		if pw.partition.RecordsSinceFlush() >= pw.fsyncRecords {
@@ -129,14 +134,16 @@ func New(cfg Config, log *slog.Logger, reg CollectorRegistrar) (*Broker, error) 
 			b.registerWriter(t.Name, p)
 		}
 	}
-	if reg != nil {
-		b.registerMetrics(reg)
-	}
+	// The server must exist before registerMetrics: the
+	// active_connections gauge reads b.server at scrape time.
 	b.server = server.New(cfg.TCPAddr, b, cfg.DrainTimeout, log,
 		server.WithMaxConnections(cfg.MaxConnections),
 		server.WithIdleTimeout(cfg.IdleTimeout),
 		server.WithWriteTimeout(cfg.WriteTimeout),
 	)
+	if reg != nil {
+		b.registerMetrics(reg)
+	}
 	return b, nil
 }
 
@@ -391,7 +398,9 @@ func (b *Broker) Fetch(_ context.Context, req *protocol.FetchRequest) (*protocol
 		})
 	}
 	if len(recs) > 0 {
-		b.metrics.fetched.WithLabelValues(req.Topic, strconv.Itoa(int(req.Partition))).Add(float64(len(recs)))
+		part := strconv.Itoa(int(req.Partition))
+		b.metrics.fetched.WithLabelValues(req.Topic, part).Add(float64(len(recs)))
+		b.metrics.consumed.WithLabelValues(req.Topic, part).Add(float64(len(recs)))
 	}
 	return resp, nil
 }

@@ -16,14 +16,31 @@ type ServiceMetrics struct {
 	jobsTotal        *prometheus.CounterVec // raven_jobs_total{type,status}
 	created          prometheus.Counter     // raven_jobs_created_total
 	processing       prometheus.GaugeFunc   // raven_jobs_processing
+	queued           prometheus.GaugeFunc   // raven_jobs_queued
+	retrying         prometheus.GaugeFunc   // raven_jobs_retrying
+	dead             prometheus.GaugeFunc   // raven_jobs_dead
 	sweeperRuns      prometheus.Counter     // raven_jobs_sweeper_runs_total
 	sweeperRecovered *prometheus.CounterVec // raven_jobs_sweeper_recovered_total{outcome}
 }
 
-// NewServiceMetrics registers the collectors. processing is measured at
-// scrape time straight from Postgres, so the gauge survives restarts and
-// stays true even though workers (other processes) do the transitions.
-func NewServiceMetrics(reg *metrics.Registry, countProcessing func() (int64, error)) *ServiceMetrics {
+// NewServiceMetrics registers the collectors. The status gauges are measured
+// at scrape time straight from Postgres, so they survive restarts and stay
+// true even though workers (other processes) do the transitions.
+func NewServiceMetrics(reg *metrics.Registry, countStatus func(Status) (int64, error)) *ServiceMetrics {
+	statusGauge := func(name, help string, status Status) prometheus.GaugeFunc {
+		return prometheus.NewGaugeFunc(prometheus.GaugeOpts{
+			Namespace: "raven",
+			Subsystem: "jobs",
+			Name:      name,
+			Help:      help,
+		}, func() float64 {
+			n, err := countStatus(status)
+			if err != nil {
+				return -1
+			}
+			return float64(n)
+		})
+	}
 	m := &ServiceMetrics{
 		jobsTotal: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Namespace: "raven",
@@ -37,18 +54,18 @@ func NewServiceMetrics(reg *metrics.Registry, countProcessing func() (int64, err
 			Name:      "created_total",
 			Help:      "Jobs accepted by CreateJob (after validation, before broker produce).",
 		}),
-		processing: prometheus.NewGaugeFunc(prometheus.GaugeOpts{
-			Namespace: "raven",
-			Subsystem: "jobs",
-			Name:      "processing",
-			Help:      "Jobs currently in PROCESSING, read from Postgres at scrape time (-1 when the read fails).",
-		}, func() float64 {
-			n, err := countProcessing()
-			if err != nil {
-				return -1
-			}
-			return float64(n)
-		}),
+		processing: statusGauge("processing",
+			"Jobs currently in PROCESSING, read from Postgres at scrape time (-1 when the read fails).",
+			StatusProcessing),
+		queued: statusGauge("queued",
+			"Jobs currently in QUEUED, read from Postgres at scrape time (-1 when the read fails).",
+			StatusQueued),
+		retrying: statusGauge("retrying",
+			"Jobs currently in RETRYING, read from Postgres at scrape time (-1 when the read fails).",
+			StatusRetrying),
+		dead: statusGauge("dead",
+			"Jobs currently in DEAD, read from Postgres at scrape time (-1 when the read fails).",
+			StatusDead),
 		sweeperRuns: prometheus.NewCounter(prometheus.CounterOpts{
 			Namespace: "raven",
 			Subsystem: "jobs",
@@ -62,7 +79,8 @@ func NewServiceMetrics(reg *metrics.Registry, countProcessing func() (int64, err
 			Help:      "Stranded jobs taken over by the sweeper, by outcome (retry|dead).",
 		}, []string{"outcome"}),
 	}
-	reg.Register(m.jobsTotal, m.created, m.processing, m.sweeperRuns, m.sweeperRecovered)
+	reg.Register(m.jobsTotal, m.created, m.processing, m.queued, m.retrying, m.dead,
+		m.sweeperRuns, m.sweeperRecovered)
 	return m
 }
 
@@ -71,15 +89,16 @@ func (m *ServiceMetrics) observeTransition(jobType string, to Status) {
 	m.jobsTotal.WithLabelValues(jobType, string(to)).Inc()
 }
 
-// countProcessing queries Postgres with a bounded context. Kept as a small
-// closure factory so the GaugeFunc stays testable.
-func countProcessingFunc(log *slog.Logger, q querier) func() (int64, error) {
-	return func() (int64, error) {
+// countByStatusFunc queries Postgres with a bounded context. Kept as a small
+// closure factory so the status GaugeFuncs stay testable.
+func countByStatusFunc(log *slog.Logger, q querier) func(Status) (int64, error) {
+	return func(status Status) (int64, error) {
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		defer cancel()
-		n, err := countByStatus(ctx, q, StatusProcessing)
+		n, err := countByStatus(ctx, q, status)
 		if err != nil {
-			log.Warn("processing gauge query failed", slog.Any("error", err))
+			log.Warn("status gauge query failed",
+				slog.String("status", string(status)), slog.Any("error", err))
 		}
 		return n, err
 	}

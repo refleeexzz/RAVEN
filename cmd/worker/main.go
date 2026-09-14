@@ -28,7 +28,9 @@ func main() {
 		Concurrency: config.GetInt("WORKER_CONCURRENCY", 8),
 		JobTimeout:  config.GetDuration("WORKER_JOB_TIMEOUT", 30*time.Second),
 		// Milliseconds, not a Go duration string: the name says so.
-		JobLease: time.Duration(config.GetInt("WORKER_JOB_LEASE_MS", 30000)) * time.Millisecond,
+		JobLease:     time.Duration(config.GetInt("WORKER_JOB_LEASE_MS", 30000)) * time.Millisecond,
+		OtelEndpoint: config.Get("OTEL_ENDPOINT", "localhost:4317"),
+		OtelEnabled:  config.GetBool("OTEL_ENABLED", false),
 	}
 
 	if err := worker.Run(ctx, cfg); err != nil {

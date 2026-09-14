@@ -89,6 +89,13 @@ func (p *Producer) ProduceMessage(ctx context.Context, topic string, m protocol.
 	return off, err
 }
 
+// ProduceWithHeaders is Produce with record headers (e.g. W3C
+// traceparent for trace propagation). Backward-compatible convenience
+// over ProduceMessage.
+func (p *Producer) ProduceWithHeaders(ctx context.Context, topic string, key, value []byte, headers []protocol.Header) (uint64, error) {
+	return p.ProduceMessage(ctx, topic, protocol.Message{Key: key, Value: value, Headers: headers})
+}
+
 func (p *Producer) produce(ctx context.Context, topic string, m protocol.Message) (int32, uint64, error) {
 	if p.batch {
 		msg := batchMsg{topic: topic, msg: m, resp: make(chan produceResult, 1)}

@@ -29,7 +29,7 @@ spec:
               done
       containers:
         - name: migrate
-          image: raven/migrate:latest
+          image: raven/migrate:v2
           imagePullPolicy: IfNotPresent   # local build, never pushed
           args: ["up"]
           envFrom:

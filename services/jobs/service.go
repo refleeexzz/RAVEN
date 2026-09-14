@@ -79,7 +79,7 @@ func Run(ctx context.Context, cfg Config) error {
 	defer producer.Close()
 
 	metr := metrics.New("jobs")
-	sm := NewServiceMetrics(metr, countProcessingFunc(log, pool))
+	sm := NewServiceMetrics(metr, countByStatusFunc(log, pool))
 
 	healthReg := health.NewRegistry(3 * time.Second)
 	healthReg.Register("postgres", database.Checker(pool))

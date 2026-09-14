@@ -197,6 +197,29 @@ func (s *Store) Topics() []*Topic {
 	return out
 }
 
+// DiskUsageBytes sums the on-disk segment bytes of every topic and
+// partition in the store. The broker adds the offsets file on top.
+func (s *Store) DiskUsageBytes() int64 {
+	var total int64
+	for _, t := range s.Topics() {
+		for _, p := range t.Partitions {
+			total += p.DiskUsageBytes()
+		}
+	}
+	return total
+}
+
+// SegmentCount sums the segment files across every topic and partition.
+func (s *Store) SegmentCount() int {
+	total := 0
+	for _, t := range s.Topics() {
+		for _, p := range t.Partitions {
+			total += p.SegmentCount()
+		}
+	}
+	return total
+}
+
 // FlushAll fsyncs every dirty partition. Called by the broker's fsync
 // ticker and at shutdown.
 func (s *Store) FlushAll() {
