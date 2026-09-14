@@ -22,9 +22,29 @@ spec:
       labels:
         app: postgres
     spec:
+      # postgres keeps its OWN user: the alpine image's entrypoint and the
+      # initialized data dir on the PVC both expect uid 70, not 10001.
+      # Started directly as 70, the entrypoint skips its root-only chown
+      # path and never needs a single capability.
+      serviceAccountName: raven
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 70
+        runAsGroup: 70
+        fsGroup: 70   # keeps the PVC + scratch dirs group-writable
+        seccompProfile:
+          type: RuntimeDefault
       containers:
         - name: postgres
           image: postgres:17-alpine
+          securityContext:
+            allowPrivilegeEscalation: false
+            # PGDATA + the two scratch dirs below stay writable; the rest
+            # of the image is read-only.
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
           ports:
             - containerPort: 5432
           env:
@@ -56,10 +76,20 @@ spec:
           volumeMounts:
             - name: pgdata
               mountPath: /var/lib/postgresql/data
+            # postgres creates its unix socket + lock files here; with a
+            # read-only root fs this dir must be a writable mount.
+            - name: pg-run
+              mountPath: /run/postgresql
+            - name: pg-tmp
+              mountPath: /tmp
       volumes:
         - name: pgdata
           persistentVolumeClaim:
             claimName: pgdata
+        - name: pg-run
+          emptyDir: {}
+        - name: pg-tmp
+          emptyDir: {}
 ---
 apiVersion: v1
 kind: PersistentVolumeClaim

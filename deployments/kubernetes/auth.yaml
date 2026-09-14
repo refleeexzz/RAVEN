@@ -17,10 +17,25 @@ spec:
       labels:
         app: auth
     spec:
+      # No RAVEN pod calls the k8s API: dedicated SA, token not mounted.
+      serviceAccountName: raven
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001   # uid baked into every raven/* image
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
       containers:
         - name: auth
           image: raven/auth:latest
           imagePullPolicy: IfNotPresent   # local build, never pushed
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
           ports:
             - name: ops
               containerPort: 8081

@@ -1,0 +1,724 @@
+# NetworkPolicies for the raven namespace.
+#
+# Model: default-deny EVERYTHING (ingress + egress), then each workload
+# gets exactly the flows it needs, and nothing else. The headline win:
+# the broker's raw TCP port (9100) has no application-level auth, so
+# ONLY the jobs and worker pods may reach it — the network is the
+# control. Everything else follows the same least-privilege idea.
+#
+# These policies are enforced by real CNIs (Calico, Cilium, ...). They
+# were probe-tested on Docker Desktop's Kubernetes, which DOES enforce
+# them (see docs/security/infra.md). kubelet readiness/liveness probes
+# come from the node itself and are not subject to NetworkPolicy, so
+# health checks keep working under default-deny.
+#
+# Flow map (source → destination:port) is also written down in
+# docs/contracts/ports-and-env.md. Keep both in sync when you add a
+# service or a new dependency.
+---
+# Deny all ingress and egress for every pod in the namespace.
+# Anything not explicitly allowed below is blocked.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-all
+  namespace: raven
+  labels:
+    app.kubernetes.io/part-of: raven
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+    - Egress
+---
+# The one universal allowance: DNS. Service discovery here is plain
+# cluster DNS, so every pod may query kube-dns and nothing else
+# without its own policy below.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-dns-egress
+  namespace: raven
+  labels:
+    app.kubernetes.io/part-of: raven
+spec:
+  podSelector: {}
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+---
+# gateway — the public entrypoint. Ingress from the host through the
+# LoadBalancer (dev) and from Prometheus (scrapes). Egress only to its
+# upstreams. Note it can reach the broker's OPS port (9101, health
+# aggregation) but NOT the data port (9100).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: gateway
+  namespace: raven
+  labels:
+    app.kubernetes.io/part-of: raven
+spec:
+  podSelector:
+    matchLabels:
+      app: gateway
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    # LoadBalancer traffic from the host (Docker Desktop binds to
+    # localhost; the source IP is cluster-external).
+    - from:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+      ports:
+        - protocol: TCP
+          port: 8080
+    - from:
+        - podSelector:
+            matchLabels:
+              app: prometheus
+      ports:
+        - protocol: TCP
+          port: 8080
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app: auth
+      ports:
+        - protocol: TCP
+          port: 9081
+    - to:
+        - podSelector:
+            matchLabels:
+              app: users
+      ports:
+        - protocol: TCP
+          port: 9082
+    - to:
+        - podSelector:
+            matchLabels:
+              app: jobs
+      ports:
+        - protocol: TCP
+          port: 9083
+    - to:
+        - podSelector:
+            matchLabels:
+              app: websocket
+      ports:
+        - protocol: TCP
+          port: 8084
+    - to:
+        - podSelector:
+            matchLabels:
+              app: redis
+      ports:
+        - protocol: TCP
+          port: 6379
+    - to:
+        - podSelector:
+            matchLabels:
+              app: broker
+      ports:
+        - protocol: TCP
+          port: 9101
+    - to:
+        - podSelector:
+            matchLabels:
+              app: jaeger
+      ports:
+        - protocol: TCP
+          port: 4317
+---
+# auth — called by the gateway over gRPC, scraped by Prometheus.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: auth
+  namespace: raven
+  labels:
+    app.kubernetes.io/part-of: raven
+spec:
+  podSelector:
+    matchLabels:
+      app: auth
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: gateway
+      ports:
+        - protocol: TCP
+          port: 9081
+    - from:
+        - podSelector:
+            matchLabels:
+              app: prometheus
+      ports:
+        - protocol: TCP
+          port: 8081
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app: postgres
+      ports:
+        - protocol: TCP
+          port: 5432
+    - to:
+        - podSelector:
+            matchLabels:
+              app: redis
+      ports:
+        - protocol: TCP
+          port: 6379
+    - to:
+        - podSelector:
+            matchLabels:
+              app: jaeger
+      ports:
+        - protocol: TCP
+          port: 4317
+---
+# users — called by the gateway over gRPC, scraped by Prometheus.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: users
+  namespace: raven
+  labels:
+    app.kubernetes.io/part-of: raven
+spec:
+  podSelector:
+    matchLabels:
+      app: users
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: gateway
+      ports:
+        - protocol: TCP
+          port: 9082
+    - from:
+        - podSelector:
+            matchLabels:
+              app: prometheus
+      ports:
+        - protocol: TCP
+          port: 8082
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app: postgres
+      ports:
+        - protocol: TCP
+          port: 5432
+    - to:
+        - podSelector:
+            matchLabels:
+              app: jaeger
+      ports:
+        - protocol: TCP
+          port: 4317
+---
+# jobs — called by the gateway over gRPC, scraped by Prometheus.
+# One of only two workloads allowed to touch the broker data port.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: jobs
+  namespace: raven
+  labels:
+    app.kubernetes.io/part-of: raven
+spec:
+  podSelector:
+    matchLabels:
+      app: jobs
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: gateway
+      ports:
+        - protocol: TCP
+          port: 9083
+    - from:
+        - podSelector:
+            matchLabels:
+              app: prometheus
+      ports:
+        - protocol: TCP
+          port: 8083
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app: postgres
+      ports:
+        - protocol: TCP
+          port: 5432
+    - to:
+        - podSelector:
+            matchLabels:
+              app: broker
+      ports:
+        - protocol: TCP
+          port: 9100
+    - to:
+        - podSelector:
+            matchLabels:
+              app: redis
+      ports:
+        - protocol: TCP
+          port: 6379
+    - to:
+        - podSelector:
+            matchLabels:
+              app: jaeger
+      ports:
+        - protocol: TCP
+          port: 4317
+---
+# worker — nobody calls it (it pulls work), only Prometheus scrapes it.
+# The other workload allowed to touch the broker data port.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: worker
+  namespace: raven
+  labels:
+    app.kubernetes.io/part-of: raven
+spec:
+  podSelector:
+    matchLabels:
+      app: worker
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: prometheus
+      ports:
+        - protocol: TCP
+          port: 8085
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app: postgres
+      ports:
+        - protocol: TCP
+          port: 5432
+    - to:
+        - podSelector:
+            matchLabels:
+              app: redis
+      ports:
+        - protocol: TCP
+          port: 6379
+    - to:
+        - podSelector:
+            matchLabels:
+              app: broker
+      ports:
+        - protocol: TCP
+          port: 9100
+    - to:
+        - podSelector:
+            matchLabels:
+              app: jaeger
+      ports:
+        - protocol: TCP
+          port: 4317
+---
+# websocket — reached by the gateway (/ws proxy + /debug/stats), by the
+# console browser directly through the LoadBalancer (dev), and by
+# Prometheus. Talks only to Redis (pub/sub) and Jaeger.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: websocket
+  namespace: raven
+  labels:
+    app.kubernetes.io/part-of: raven
+spec:
+  podSelector:
+    matchLabels:
+      app: websocket
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+      ports:
+        - protocol: TCP
+          port: 8084
+    - from:
+        - podSelector:
+            matchLabels:
+              app: gateway
+      ports:
+        - protocol: TCP
+          port: 8084
+    - from:
+        - podSelector:
+            matchLabels:
+              app: prometheus
+      ports:
+        - protocol: TCP
+          port: 8084
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app: redis
+      ports:
+        - protocol: TCP
+          port: 6379
+    - to:
+        - podSelector:
+            matchLabels:
+              app: jaeger
+      ports:
+        - protocol: TCP
+          port: 4317
+---
+# broker — THE lockdown. The raw TCP data port (9100) has no
+# application-level authentication, so the network enforces who may
+# connect: jobs and worker pods only. The ops port (9101) is open to
+# the gateway (health aggregation) and Prometheus (scrapes). Any other
+# pod in the namespace — including a compromised one — cannot reach
+# the message log.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: broker
+  namespace: raven
+  labels:
+    app.kubernetes.io/part-of: raven
+spec:
+  podSelector:
+    matchLabels:
+      app: broker
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: jobs
+        - podSelector:
+            matchLabels:
+              app: worker
+      ports:
+        - protocol: TCP
+          port: 9100
+    - from:
+        - podSelector:
+            matchLabels:
+              app: gateway
+      ports:
+        - protocol: TCP
+          port: 9101
+    - from:
+        - podSelector:
+            matchLabels:
+              app: prometheus
+      ports:
+        - protocol: TCP
+          port: 9101
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app: jaeger
+      ports:
+        - protocol: TCP
+          port: 4317
+---
+# console — static files served by nginx. The browser calls the gateway
+# and websocket directly, so the pod itself needs NO egress at all
+# (DNS aside). Ingress from the host through the LoadBalancer.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: console
+  namespace: raven
+  labels:
+    app.kubernetes.io/part-of: raven
+spec:
+  podSelector:
+    matchLabels:
+      app: console
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+      ports:
+        - protocol: TCP
+          port: 8080
+---
+# postgres — accepts connections only from the services that hold a
+# DATABASE_URL, plus the migrate Job. No egress at all.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: postgres
+  namespace: raven
+  labels:
+    app.kubernetes.io/part-of: raven
+spec:
+  podSelector:
+    matchLabels:
+      app: postgres
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: auth
+        - podSelector:
+            matchLabels:
+              app: users
+        - podSelector:
+            matchLabels:
+              app: jobs
+        - podSelector:
+            matchLabels:
+              app: worker
+        - podSelector:
+            matchLabels:
+              app: migrate
+      ports:
+        - protocol: TCP
+          port: 5432
+---
+# redis — registry + pub/sub for the four services that use it.
+# No egress at all.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: redis
+  namespace: raven
+  labels:
+    app.kubernetes.io/part-of: raven
+spec:
+  podSelector:
+    matchLabels:
+      app: redis
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: gateway
+        - podSelector:
+            matchLabels:
+              app: auth
+        - podSelector:
+            matchLabels:
+              app: jobs
+        - podSelector:
+            matchLabels:
+              app: worker
+        - podSelector:
+            matchLabels:
+              app: websocket
+      ports:
+        - protocol: TCP
+          port: 6379
+---
+# prometheus — scraped UIs from the host (LoadBalancer, dev), queries
+# from Grafana, and egress to every ops port it scrapes.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: prometheus
+  namespace: raven
+  labels:
+    app.kubernetes.io/part-of: raven
+spec:
+  podSelector:
+    matchLabels:
+      app: prometheus
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+      ports:
+        - protocol: TCP
+          port: 9090
+    - from:
+        - podSelector:
+            matchLabels:
+              app: grafana
+      ports:
+        - protocol: TCP
+          port: 9090
+  egress:
+    # Scrape targets: every RAVEN ops port in this namespace.
+    - to:
+        - podSelector: {}
+      ports:
+        - protocol: TCP
+          port: 8080
+        - protocol: TCP
+          port: 8081
+        - protocol: TCP
+          port: 8082
+        - protocol: TCP
+          port: 8083
+        - protocol: TCP
+          port: 8084
+        - protocol: TCP
+          port: 8085
+        - protocol: TCP
+          port: 9101
+---
+# grafana — UI from the host (LoadBalancer, dev); egress only to its
+# two datasources.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: grafana
+  namespace: raven
+  labels:
+    app.kubernetes.io/part-of: raven
+spec:
+  podSelector:
+    matchLabels:
+      app: grafana
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+      ports:
+        - protocol: TCP
+          port: 3000
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app: prometheus
+      ports:
+        - protocol: TCP
+          port: 9090
+    - to:
+        - podSelector:
+            matchLabels:
+              app: jaeger
+      ports:
+        - protocol: TCP
+          port: 16686
+---
+# jaeger — UI from the host (LoadBalancer, dev); OTLP gRPC ingest from
+# every instrumented RAVEN service on 4317. No egress (in-memory store).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: jaeger
+  namespace: raven
+  labels:
+    app.kubernetes.io/part-of: raven
+spec:
+  podSelector:
+    matchLabels:
+      app: jaeger
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+      ports:
+        - protocol: TCP
+          port: 16686
+    - from:
+        - podSelector:
+            matchLabels:
+              app: gateway
+        - podSelector:
+            matchLabels:
+              app: auth
+        - podSelector:
+            matchLabels:
+              app: users
+        - podSelector:
+            matchLabels:
+              app: jobs
+        - podSelector:
+            matchLabels:
+              app: websocket
+        - podSelector:
+            matchLabels:
+              app: worker
+        - podSelector:
+            matchLabels:
+              app: broker
+      ports:
+        - protocol: TCP
+          port: 4317
+---
+# migrate — one-shot Job. Nothing ever connects TO it; it only needs
+# postgres (the initContainer's nc probe and the migration itself).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: migrate
+  namespace: raven
+  labels:
+    app.kubernetes.io/part-of: raven
+spec:
+  podSelector:
+    matchLabels:
+      app: migrate
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app: postgres
+      ports:
+        - protocol: TCP
+          port: 5432

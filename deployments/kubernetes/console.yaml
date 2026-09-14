@@ -21,13 +21,35 @@ spec:
       labels:
         app: console
     spec:
+      # No RAVEN pod calls the k8s API: dedicated SA, token not mounted.
+      serviceAccountName: raven
+      automountServiceAccountToken: false
+      securityContext:
+        # The unprivileged nginx image runs as uid 101 and listens on
+        # 8080 — no root, no capabilities needed to serve static files.
+        runAsNonRoot: true
+        runAsUser: 101
+        runAsGroup: 101
+        seccompProfile:
+          type: RuntimeDefault
       containers:
         - name: console
-          image: raven/console:latest
+          # Pinned tag, not :latest — Docker Desktop's k8s keeps a cached
+          # copy of a tag once resolved (IfNotPresent), so a moved :latest
+          # keeps serving the STALE image. Bump the tag on every console
+          # rebuild. This tag names the unprivileged-nginx build (uid 101).
+          image: raven/console:unpriv-nginx-20260914
           imagePullPolicy: IfNotPresent   # local build, never pushed
+          securityContext:
+            allowPrivilegeEscalation: false
+            # nginx needs three writable scratch dirs; they are emptyDir
+            # mounts below, so the root fs stays read-only.
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
           ports:
             - name: http
-              containerPort: 80
+              containerPort: 8080
           readinessProbe:
             httpGet:
               path: /
@@ -47,6 +69,20 @@ spec:
             limits:
               cpu: 100m
               memory: 128Mi
+          volumeMounts:
+            - name: nginx-cache
+              mountPath: /var/cache/nginx
+            - name: nginx-run
+              mountPath: /var/run
+            - name: nginx-tmp
+              mountPath: /tmp
+      volumes:
+        - name: nginx-cache
+          emptyDir: {}
+        - name: nginx-run
+          emptyDir: {}
+        - name: nginx-tmp
+          emptyDir: {}
 ---
 apiVersion: v1
 kind: Service

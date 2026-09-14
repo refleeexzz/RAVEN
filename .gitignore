@@ -21,6 +21,12 @@ web/console/dist/
 .env
 *.local
 
+# Real k8s secrets — never commit. secrets.example.yaml is the template;
+# copy it OUTSIDE the repo (or to secrets.yaml) and fill in real values.
+secrets.yaml
+*.secrets.yaml
+deployments/kubernetes/secrets.yaml
+
 # Owner's private spec (not part of the repo)
 RAVEN -- Especificação Técnica.md
 RAVEN_IMPLEMENTATION_ROADMAP.md

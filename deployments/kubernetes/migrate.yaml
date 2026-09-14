@@ -16,10 +16,36 @@ spec:
         app: migrate
     spec:
       restartPolicy: OnFailure
+      # No RAVEN pod calls the k8s API: dedicated SA, token not mounted.
+      serviceAccountName: raven
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001   # uid baked into every raven/* image
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
       initContainers:
         # Wait for postgres to accept connections before running migrations.
         - name: wait-for-postgres
           image: busybox:1.37
+          # busybox runs fine unprivileged (nobody, uid 65534): nc needs
+          # no capabilities and writes nothing.
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 65534
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests:
+              cpu: 10m
+              memory: 16Mi
+            limits:
+              cpu: 50m
+              memory: 32Mi
           command:
             - sh
             - -c
@@ -31,6 +57,11 @@ spec:
         - name: migrate
           image: raven/migrate:v2
           imagePullPolicy: IfNotPresent   # local build, never pushed
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
           args: ["up"]
           envFrom:
             - configMapRef:

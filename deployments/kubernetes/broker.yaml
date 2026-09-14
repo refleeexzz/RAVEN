@@ -27,10 +27,28 @@ spec:
       labels:
         app: broker
     spec:
+      # No RAVEN pod calls the k8s API: dedicated SA, token not mounted.
+      serviceAccountName: raven
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001   # uid baked into every raven/* image
+        runAsGroup: 10001
+        # fsGroup makes the brokerdata PVC group-writable for uid 10001,
+        # so the commit logs stay writable with a read-only root fs.
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
       containers:
         - name: broker
           image: raven/broker:latest
           imagePullPolicy: IfNotPresent   # local build, never pushed
+          securityContext:
+            allowPrivilegeEscalation: false
+            # /data (the PVC mount) stays writable; the rest is read-only.
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
           ports:
             - name: tcp
               containerPort: 9100

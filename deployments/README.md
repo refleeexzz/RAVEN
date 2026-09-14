@@ -122,3 +122,37 @@ docker-compose.yml the full local stack
 One rule: ports and env var names are fixed by
 `docs/contracts/ports-and-env.md`. If you change something there, change
 it everywhere.
+
+## Security notes (Kubernetes)
+
+The k8s manifests are hardened for a dev cluster — and the same files are
+a decent starting point for real deployments:
+
+- **NetworkPolicies** (`networkpolicy.yaml`): default-deny ingress AND
+  egress for the whole namespace, then one allow-list per workload. The
+  broker's data port (9100) — which has no application-level auth — is
+  reachable only from `jobs` and `worker` pods. Docker Desktop's
+  Kubernetes enforces these policies (probe-tested), so they are not
+  decoration.
+- **ServiceAccount** (`serviceaccount.yaml`): every pod runs as the
+  `raven` account with `automountServiceAccountToken: false`. No pod
+  calls the k8s API, and there are zero Roles/Bindings on purpose.
+- **Pod security**: every container runs as a non-root uid (10001 for
+  raven/* images; 70 postgres / 999 redis / 101 nginx / 65534 prometheus
+  / 472 grafana), `readOnlyRootFilesystem: true`, `capabilities:
+  drop: ["ALL"]`, `allowPrivilegeEscalation: false`, seccomp
+  RuntimeDefault. Writable paths are explicit `emptyDir`/PVC mounts.
+- **LoadBalancers are dev-only.** gateway :8080, console :7100,
+  websocket :8084, Grafana :3000, Prometheus :9090 and Jaeger :16686 are
+  bound to localhost by Docker Desktop. None of them (except the
+  gateway's API) has any login. In production, expose them (if at all)
+  through an authenticated Ingress — never as raw LoadBalancers.
+- **Image tags are sticky on Docker Desktop.** With
+  `imagePullPolicy: IfNotPresent` the node keeps the FIRST image it
+  resolved for a tag forever. Rebuilding `raven/console:latest` does NOT
+  update what the cluster runs. Bump the tag in `console.yaml` on every
+  console rebuild (current: `unpriv-nginx-20260914`), e.g.
+  `docker build -f deployments/docker/Dockerfile.console -t raven/console:<new-tag> web/console/`.
+
+See `docs/security/infra.md` for the full audit and `SECURITY.md` for
+the production deployment checklist.

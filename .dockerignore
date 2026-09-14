@@ -18,6 +18,8 @@ docs/
 *.md
 .env
 .env.*
+secrets.yaml
+*.secrets.yaml
 
 # Kubernetes / compose definitions live outside the images
 deployments/kubernetes/

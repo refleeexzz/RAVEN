@@ -19,9 +19,28 @@ spec:
       labels:
         app: redis
     spec:
+      # The redis alpine image's own user is uid 999 (group 1000). Running
+      # as it directly makes the entrypoint skip its root-only su-exec
+      # path — the process never touches root at all.
+      serviceAccountName: raven
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 999
+        runAsGroup: 1000
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
       containers:
         - name: redis
           image: redis:8-alpine
+          securityContext:
+            allowPrivilegeEscalation: false
+            # /data (workdir for dump.rdb) is an emptyDir below; the rest
+            # of the image is read-only.
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
           ports:
             - containerPort: 6379
           readinessProbe:
@@ -41,6 +60,12 @@ spec:
             limits:
               cpu: 500m
               memory: 512Mi
+          volumeMounts:
+            - name: redis-data
+              mountPath: /data
+      volumes:
+        - name: redis-data
+          emptyDir: {}
 ---
 apiVersion: v1
 kind: Service
