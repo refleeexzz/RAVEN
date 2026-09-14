@@ -5,6 +5,7 @@ package client
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -23,6 +24,10 @@ type transport struct {
 	addr        string
 	dialTimeout time.Duration
 	log         *slog.Logger
+
+	// tlsCfg, when non-nil, upgrades every dialed connection to TLS
+	// before any frame is written. Set via the With*TLS options.
+	tlsCfg *tls.Config
 
 	mu      sync.Mutex // guards conn, pending
 	conn    net.Conn
@@ -125,6 +130,33 @@ func (t *transport) ensureConnected(ctx context.Context) (net.Conn, error) {
 				backoff = 2 * time.Second
 			}
 			continue
+		}
+		if t.tlsCfg != nil {
+			// Clone per connection: ServerName defaults to the dial
+			// host, and a caller-owned config must never be mutated.
+			cfg := t.tlsCfg.Clone()
+			if cfg.ServerName == "" {
+				if host, _, err := net.SplitHostPort(t.addr); err == nil {
+					cfg.ServerName = host
+				}
+			}
+			tc := tls.Client(conn, cfg)
+			if err := tc.HandshakeContext(ctx); err != nil {
+				_ = conn.Close()
+				t.log.Debug("broker TLS handshake failed, retrying",
+					slog.String("addr", t.addr), slog.Any("err", err))
+				select {
+				case <-time.After(backoff):
+				case <-ctx.Done():
+					return nil, ctx.Err()
+				}
+				backoff *= 2
+				if backoff > 2*time.Second {
+					backoff = 2 * time.Second
+				}
+				continue
+			}
+			conn = tc
 		}
 		t.mu.Lock()
 		if t.conn != nil {

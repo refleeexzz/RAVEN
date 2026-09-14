@@ -88,6 +88,19 @@ type Config struct {
 	// TopicConfigs holds per-topic cleanup overrides (env
 	// BROKER_TOPIC_CONFIGS, JSON object keyed by topic name).
 	TopicConfigs map[string]TopicOverride
+	// TLSCertFile and TLSKeyFile enable TLS on the client listener when
+	// both are set (env BROKER_TLS_CERT_FILE / BROKER_TLS_KEY_FILE).
+	// Both empty (the default) keeps plaintext for dev compatibility.
+	TLSCertFile string
+	TLSKeyFile  string
+	// TLSClientCAFile turns on mTLS: every client must present a
+	// certificate signed by this CA (env BROKER_TLS_CLIENT_CA_FILE,
+	// RequireAndVerifyClientCert). Only meaningful with TLS on.
+	TLSClientCAFile string
+	// TLSReloadInterval is the certificate hot-reload poll cadence (env
+	// BROKER_TLS_RELOAD_SEC, default 5s). See certReloader for why this
+	// is polling rather than stat-per-handshake.
+	TLSReloadInterval time.Duration
 }
 
 // policyFor resolves the effective cleanup policy for one topic: global
@@ -131,6 +144,10 @@ func ConfigFromEnv() Config {
 		RetentionMaxBytes:  int64(config.GetInt("BROKER_RETENTION_BYTES", 0)),
 		CleanupInterval:    time.Duration(config.GetInt("BROKER_CLEANUP_INTERVAL_MS", 300000)) * time.Millisecond,
 		TopicConfigs:       parseTopicConfigs(config.Get("BROKER_TOPIC_CONFIGS", "")),
+		TLSCertFile:        config.Get("BROKER_TLS_CERT_FILE", ""),
+		TLSKeyFile:         config.Get("BROKER_TLS_KEY_FILE", ""),
+		TLSClientCAFile:    config.Get("BROKER_TLS_CLIENT_CA_FILE", ""),
+		TLSReloadInterval:  time.Duration(config.GetInt("BROKER_TLS_RELOAD_SEC", 5)) * time.Second,
 	}
 }
 
@@ -225,6 +242,14 @@ func (c Config) withDefaults() Config {
 	}
 	if c.TopicConfigs != nil {
 		def.TopicConfigs = c.TopicConfigs
+	}
+	// TLS is opt-in: empty file paths pass through as "off".
+	def.TLSCertFile = c.TLSCertFile
+	def.TLSKeyFile = c.TLSKeyFile
+	def.TLSClientCAFile = c.TLSClientCAFile
+	def.TLSReloadInterval = 5 * time.Second
+	if c.TLSReloadInterval > 0 {
+		def.TLSReloadInterval = c.TLSReloadInterval
 	}
 	return def
 }

@@ -2,6 +2,7 @@ package client
 
 import (
 	"context"
+	"crypto/tls"
 	"fmt"
 	"log/slog"
 	"sync"
@@ -13,6 +14,8 @@ import (
 // Producer produces records to the broker. Safe for concurrent use.
 type Producer struct {
 	t *transport
+
+	tlsCfg *tls.Config
 
 	batch      bool
 	flushEvery time.Duration
@@ -55,6 +58,14 @@ func WithProducerLogger(log *slog.Logger) ProducerOption {
 	return func(p *Producer) { p.log = log }
 }
 
+// WithProducerTLS upgrades the broker connection to TLS (cfg is cloned
+// per dial; ServerName defaults to the dial host). Pass a config
+// trusting the broker's CA; use WithProducerAuth as well when the
+// broker also requires API-key authentication.
+func WithProducerTLS(cfg *tls.Config) ProducerOption {
+	return func(p *Producer) { p.tlsCfg = cfg }
+}
+
 // NewProducer creates a producer. It dials lazily on the first Produce
 // and reconnects automatically with exponential backoff.
 func NewProducer(addr string, opts ...ProducerOption) *Producer {
@@ -67,6 +78,7 @@ func NewProducer(addr string, opts ...ProducerOption) *Producer {
 		o(p)
 	}
 	p.t.log = p.log
+	p.t.tlsCfg = p.tlsCfg
 	if p.batch {
 		p.batchCh = make(chan batchMsg, p.flushCount*4)
 		p.batchDone = make(chan struct{})

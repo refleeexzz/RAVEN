@@ -95,6 +95,10 @@ type Broker struct {
 	compactionFreed   *prometheus.CounterVec
 	compactionDropped *prometheus.CounterVec
 
+	// tlsReloader swaps the serving certificate on file rotation; nil
+	// when TLS is off. Started by Run.
+	tlsReloader *certReloader
+
 	// writers holds one partWriter per partition. Channels are closed
 	// only during shutdown, after the server has fully drained, so no
 	// handler ever sends on a closed channel.
@@ -133,6 +137,14 @@ func New(cfg Config, log *slog.Logger, reg CollectorRegistrar) (*Broker, error) 
 		_ = store.Close()
 		return nil, fmt.Errorf("open coordinator: %w", err)
 	}
+	// TLS is resolved before the server exists so a bad cert/key/CA
+	// fails the boot instead of the first handshake.
+	tlsCfg, tlsReloader, err := buildServerTLSConfig(cfg, log)
+	if err != nil {
+		_ = groups.Close()
+		_ = store.Close()
+		return nil, err
+	}
 	b := &Broker{
 		cfg:       cfg,
 		log:       log,
@@ -159,6 +171,7 @@ func New(cfg Config, log *slog.Logger, reg CollectorRegistrar) (*Broker, error) 
 			Name:      "compaction_records_dropped_total",
 			Help:      "Total superseded records removed by log compaction, by topic and partition.",
 		}, []string{"topic", "partition"}),
+		tlsReloader: tlsReloader,
 		cleanupDone: make(chan struct{}),
 	}
 	for _, t := range store.Topics() {
@@ -172,6 +185,7 @@ func New(cfg Config, log *slog.Logger, reg CollectorRegistrar) (*Broker, error) 
 		server.WithMaxConnections(cfg.MaxConnections),
 		server.WithIdleTimeout(cfg.IdleTimeout),
 		server.WithWriteTimeout(cfg.WriteTimeout),
+		server.WithTLS(tlsCfg),
 	)
 	if reg != nil {
 		b.registerMetrics(reg)
@@ -194,6 +208,13 @@ func (b *Broker) Addr() string { return b.server.Addr() }
 //  5. coordinator compacts the offsets file
 func (b *Broker) Run(ctx context.Context) error {
 	b.groups.Start(ctx)
+	if b.tlsReloader != nil {
+		go b.tlsReloader.run(ctx, b.cfg.TLSReloadInterval)
+		b.log.Info("broker TLS hot-reload watching",
+			slog.String("cert_file", b.cfg.TLSCertFile),
+			slog.String("reload_interval", b.cfg.TLSReloadInterval.String()),
+			slog.Bool("mtls", b.cfg.TLSClientCAFile != ""))
+	}
 	go func() {
 		defer close(b.flushDone)
 		t := time.NewTicker(b.cfg.FsyncEvery)

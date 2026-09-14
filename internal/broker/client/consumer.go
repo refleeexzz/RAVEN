@@ -2,6 +2,7 @@ package client
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -37,6 +38,8 @@ type Consumer struct {
 	topics  []string
 	handler Handler
 
+	tlsCfg *tls.Config
+
 	memberID       string
 	heartbeatEvery time.Duration
 	pollInterval   time.Duration
@@ -52,6 +55,14 @@ type ConsumerOption func(*Consumer)
 // WithConsumerLogger sets the logger.
 func WithConsumerLogger(log *slog.Logger) ConsumerOption {
 	return func(c *Consumer) { c.log = log }
+}
+
+// WithConsumerTLS upgrades the broker connection to TLS (cfg is cloned
+// per dial; ServerName defaults to the dial host). Use
+// WithConsumerAuth as well when the broker requires API-key
+// authentication.
+func WithConsumerTLS(cfg *tls.Config) ConsumerOption {
+	return func(c *Consumer) { c.tlsCfg = cfg }
 }
 
 // WithFetchLimits sets per-fetch batch bounds (defaults 100 records / 1 MiB).
@@ -104,6 +115,7 @@ func NewConsumer(addr, group string, topics []string, handler Handler, opts ...C
 		o(c)
 	}
 	c.t.log = c.log
+	c.t.tlsCfg = c.tlsCfg
 	return c
 }
 

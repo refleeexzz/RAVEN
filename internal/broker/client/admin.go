@@ -2,6 +2,7 @@ package client
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"time"
@@ -15,9 +16,24 @@ type Admin struct {
 	t *transport
 }
 
+// AdminOption customizes an Admin client.
+type AdminOption func(*Admin)
+
+// WithAdminTLS upgrades the broker connection to TLS (cfg is cloned
+// per dial; ServerName defaults to the dial host). Admin operations
+// need an admin API key when the broker enforces authentication — pair
+// it with WithAdminAuth.
+func WithAdminTLS(cfg *tls.Config) AdminOption {
+	return func(a *Admin) { a.t.tlsCfg = cfg }
+}
+
 // NewAdmin creates an admin client (lazy dial).
-func NewAdmin(addr string) *Admin {
-	return &Admin{t: newTransport(addr, 5*time.Second, nil)}
+func NewAdmin(addr string, opts ...AdminOption) *Admin {
+	a := &Admin{t: newTransport(addr, 5*time.Second, nil)}
+	for _, o := range opts {
+		o(a)
+	}
+	return a
 }
 
 // CreateTopic creates a topic. partitions <= 0 uses the broker default

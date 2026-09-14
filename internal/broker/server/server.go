@@ -6,6 +6,7 @@ package server
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -57,6 +58,10 @@ const (
 	// defaultWriteTimeout bounds a single frame write so a stalled
 	// client cannot pin a connection goroutine forever.
 	defaultWriteTimeout = 30 * time.Second
+	// defaultHandshakeTimeout bounds the TLS handshake. Without it a
+	// slow-loris client could park a connection goroutine before the
+	// first frame for the whole idle timeout.
+	defaultHandshakeTimeout = 10 * time.Second
 )
 
 // Option customizes a Server. Options exist so tests and the broker can
@@ -93,6 +98,26 @@ func WithWriteTimeout(d time.Duration) Option {
 	}
 }
 
+// WithTLS wraps the listener in TLS. A nil config keeps the listener
+// plaintext (the default, for local/dev compatibility). The config
+// owns version policy, cipher suites and client-cert (mTLS) rules;
+// hot-reload belongs in a GetCertificate callback on the config.
+func WithTLS(cfg *tls.Config) Option {
+	return func(s *Server) {
+		s.tlsCfg = cfg
+	}
+}
+
+// WithHandshakeTimeout sets the TLS handshake deadline (0 keeps the
+// default of 10 seconds). Only used when WithTLS is set.
+func WithHandshakeTimeout(d time.Duration) Option {
+	return func(s *Server) {
+		if d > 0 {
+			s.handshakeTimeout = d
+		}
+	}
+}
+
 // Server is the TCP listener for the broker protocol.
 type Server struct {
 	addr    string
@@ -103,6 +128,9 @@ type Server struct {
 	maxConns     int
 	idleTimeout  time.Duration
 	writeTimeout time.Duration
+
+	tlsCfg           *tls.Config
+	handshakeTimeout time.Duration
 
 	ln      net.Listener
 	mu      sync.Mutex
@@ -117,14 +145,15 @@ func New(addr string, backend Backend, drainTimeout time.Duration, log *slog.Log
 		log = slog.Default()
 	}
 	s := &Server{
-		addr:         addr,
-		backend:      backend,
-		log:          log,
-		drain:        drainTimeout,
-		maxConns:     defaultMaxConnections,
-		idleTimeout:  defaultIdleTimeout,
-		writeTimeout: defaultWriteTimeout,
-		conns:        make(map[net.Conn]struct{}),
+		addr:             addr,
+		backend:          backend,
+		log:              log,
+		drain:            drainTimeout,
+		maxConns:         defaultMaxConnections,
+		idleTimeout:      defaultIdleTimeout,
+		writeTimeout:     defaultWriteTimeout,
+		handshakeTimeout: defaultHandshakeTimeout,
+		conns:            make(map[net.Conn]struct{}),
 	}
 	for _, o := range opts {
 		o(s)
@@ -159,6 +188,12 @@ func (s *Server) Run(ctx context.Context) error {
 	ln, err := net.Listen("tcp", s.addr)
 	if err != nil {
 		return fmt.Errorf("broker listen %s: %w", s.addr, err)
+	}
+	if s.tlsCfg != nil {
+		// The handshake runs lazily inside serveConn (bounded by
+		// handshakeTimeout), so a slow peer never stalls Accept.
+		ln = tls.NewListener(ln, s.tlsCfg)
+		s.log.Info("broker TLS enabled", slog.String("addr", ln.Addr().String()))
 	}
 	s.mu.Lock()
 	s.ln = ln
@@ -245,11 +280,17 @@ func (s *Server) Run(ctx context.Context) error {
 
 // rejectConn tells a refused client why (BROKER_BUSY) and closes. Best
 // effort: a 2-second write deadline so a hostile client that never
-// reads cannot stall the accept loop.
+// reads cannot stall the accept loop. Under TLS there is no safe
+// cleartext error channel — the client is mid-handshake and would read
+// the frame as handshake garbage — so the connection is just closed.
 func (s *Server) rejectConn(conn net.Conn) {
 	s.log.Warn("connection refused: at max connections",
 		slog.String("remote", conn.RemoteAddr().String()),
 		slog.Int("max", s.maxConns))
+	if s.tlsCfg != nil {
+		_ = conn.Close()
+		return
+	}
 	f := protocol.ErrorFrame(0, protocol.NewError(protocol.CodeBrokerBusy, "too many connections"))
 	_ = conn.SetWriteDeadline(time.Now().Add(2 * time.Second))
 	_ = protocol.WriteFrame(conn, f)
@@ -283,6 +324,29 @@ func (s *Server) serveConn(ctx context.Context, conn net.Conn) {
 	defer s.wg.Done()
 	defer s.untrack(conn)
 	defer func() { _ = conn.Close() }()
+
+	// TLS first, when enabled: no frame is read before the handshake
+	// completes. The deadline keeps a stalled handshake from parking the
+	// goroutine for the whole idle timeout.
+	if tc, ok := conn.(*tls.Conn); ok {
+		_ = conn.SetReadDeadline(time.Now().Add(s.handshakeTimeout))
+		if err := tc.Handshake(); err != nil {
+			if !s.closing.Load() {
+				s.log.Debug("TLS handshake failed",
+					slog.String("remote", conn.RemoteAddr().String()),
+					slog.Any("err", err))
+			}
+			return
+		}
+		// Clear the handshake deadline; the read loop installs its own
+		// per-frame deadlines from here on.
+		_ = conn.SetReadDeadline(time.Time{})
+		if cs := tc.ConnectionState(); len(cs.PeerCertificates) > 0 {
+			s.log.Debug("mTLS client certificate verified",
+				slog.String("remote", conn.RemoteAddr().String()),
+				slog.String("subject", cs.PeerCertificates[0].Subject.String()))
+		}
+	}
 
 	// connCtx is cancelled only when the connection itself goes away,
 	// not when the server starts shutting down: a draining server still
