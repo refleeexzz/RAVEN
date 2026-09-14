@@ -130,6 +130,7 @@ func listSegmentBases(dir string) ([]uint64, error) {
 func (p *Partition) recoverActive(s *segment) error {
 	s.entries = nil
 	s.bytesSinceIndex = 0
+	s.maxTs = 0 // the scan below is authoritative, not the mtime fallback
 	next := s.baseOffset
 	expected := s.baseOffset
 	var lastGood int64
@@ -150,6 +151,9 @@ func (p *Partition) recoverActive(s *segment) error {
 		expected++
 		next = r.Offset + 1
 		lastGood = pos + size
+		if r.TimestampMs > s.maxTs {
+			s.maxTs = r.TimestampMs
+		}
 		return true
 	})
 	if err != nil {
@@ -176,6 +180,7 @@ func (p *Partition) recoverActive(s *segment) error {
 func (p *Partition) rebuildIndex(s *segment) error {
 	s.entries = nil
 	s.bytesSinceIndex = 0
+	s.maxTs = 0 // the scan below is authoritative, not the mtime fallback
 	expected := s.baseOffset
 	var scanErr error
 	err := streamRecords(s.log, 0, s.size, true, func(r *Record, pos, size int64) bool {
@@ -189,6 +194,9 @@ func (p *Partition) rebuildIndex(s *segment) error {
 		}
 		s.bytesSinceIndex += size
 		expected++
+		if r.TimestampMs > s.maxTs {
+			s.maxTs = r.TimestampMs
+		}
 		return true
 	})
 	if err != nil {
@@ -232,6 +240,9 @@ func (p *Partition) Append(records []Record) (uint64, error) {
 		rec.Offset = base + uint64(i)
 		if rec.TimestampMs == 0 {
 			rec.TimestampMs = now
+		}
+		if rec.TimestampMs > active.maxTs {
+			active.maxTs = rec.TimestampMs
 		}
 		start := len(buf)
 		var err error
@@ -321,6 +332,18 @@ func (p *Partition) HighWatermark() uint64 {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
 	return p.nextOffset
+}
+
+// FirstOffset is the low-water mark: the base offset of the oldest
+// segment still on disk. Retention and compaction move it forward;
+// reading below it returns ErrOffsetOutOfRange.
+func (p *Partition) FirstOffset() uint64 {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	if len(p.segments) == 0 {
+		return 0
+	}
+	return p.segments[0].baseOffset
 }
 
 // ID returns the partition index within its topic.

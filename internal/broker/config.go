@@ -1,10 +1,26 @@
 package broker
 
 import (
+	"encoding/json"
+	"log/slog"
 	"time"
 
+	"github.com/refleeexzz/RAVEN/internal/broker/storage"
 	"github.com/refleeexzz/RAVEN/internal/config"
 )
+
+// TopicOverride holds per-topic cleanup settings. It rides the
+// BROKER_TOPIC_CONFIGS env var as JSON, e.g.:
+//
+//	BROKER_TOPIC_CONFIGS={"jobs-dlq":{"retention_ms":86400000},"state":{"retention_bytes":1073741824}}
+//
+// Fields absent from the JSON inherit the global defaults
+// (RetentionMaxAge / RetentionMaxBytes). Overrides for topics that do
+// not exist are ignored at sweep time.
+type TopicOverride struct {
+	RetentionMs    *int64 `json:"retention_ms,omitempty"`
+	RetentionBytes *int64 `json:"retention_bytes,omitempty"`
+}
 
 // Config holds every broker knob. All of it comes from env vars
 // (12-factor); see docs/contracts/ports-and-env.md.
@@ -53,6 +69,41 @@ type Config struct {
 	// BROKER_WRITE_TIMEOUT, default 30s). A client that stops reading
 	// loses its connection instead of pinning a goroutine forever.
 	WriteTimeout time.Duration
+	// RetentionMaxAge is the global default for time-based retention:
+	// closed segments whose newest record is older than this are deleted
+	// (env BROKER_RETENTION_MS, default 0 = disabled). The active
+	// segment is never deleted, and committed consumer offsets are
+	// always protected (see storage.ApplyRetention).
+	RetentionMaxAge time.Duration
+	// RetentionMaxBytes is the global default for size-based retention:
+	// while a partition exceeds this many log bytes, the oldest closed
+	// segments are deleted (env BROKER_RETENTION_BYTES, default 0 =
+	// disabled). Same safety rules as RetentionMaxAge.
+	RetentionMaxBytes int64
+	// CleanupInterval is the retention/compaction sweep cadence (env
+	// BROKER_CLEANUP_INTERVAL_MS, default 300000 = 5m).
+	CleanupInterval time.Duration
+	// TopicConfigs holds per-topic cleanup overrides (env
+	// BROKER_TOPIC_CONFIGS, JSON object keyed by topic name).
+	TopicConfigs map[string]TopicOverride
+}
+
+// policyFor resolves the effective cleanup policy for one topic: global
+// defaults plus the per-topic override, when one exists.
+func (c Config) policyFor(topic string) storage.Policy {
+	pol := storage.Policy{
+		RetentionMaxAge:   c.RetentionMaxAge,
+		RetentionMaxBytes: c.RetentionMaxBytes,
+	}
+	if ov, ok := c.TopicConfigs[topic]; ok {
+		if ov.RetentionMs != nil {
+			pol.RetentionMaxAge = time.Duration(*ov.RetentionMs) * time.Millisecond
+		}
+		if ov.RetentionBytes != nil {
+			pol.RetentionMaxBytes = *ov.RetentionBytes
+		}
+	}
+	return pol
 }
 
 // ConfigFromEnv loads the broker configuration from the environment.
@@ -73,7 +124,28 @@ func ConfigFromEnv() Config {
 		MaxGroups:          config.GetInt("BROKER_MAX_GROUPS", 1024),
 		IdleTimeout:        config.GetDuration("BROKER_IDLE_TIMEOUT", 5*time.Minute),
 		WriteTimeout:       config.GetDuration("BROKER_WRITE_TIMEOUT", 30*time.Second),
+		RetentionMaxAge:    time.Duration(config.GetInt("BROKER_RETENTION_MS", 0)) * time.Millisecond,
+		RetentionMaxBytes:  int64(config.GetInt("BROKER_RETENTION_BYTES", 0)),
+		CleanupInterval:    time.Duration(config.GetInt("BROKER_CLEANUP_INTERVAL_MS", 300000)) * time.Millisecond,
+		TopicConfigs:       parseTopicConfigs(config.Get("BROKER_TOPIC_CONFIGS", "")),
 	}
+}
+
+// parseTopicConfigs decodes BROKER_TOPIC_CONFIGS. Bad JSON is not fatal:
+// the broker keeps its global defaults and warns loudly, because a
+// broker that refuses to boot over a typo is worse than one that runs
+// with defaults and tells you.
+func parseTopicConfigs(raw string) map[string]TopicOverride {
+	if raw == "" {
+		return nil
+	}
+	var out map[string]TopicOverride
+	if err := json.Unmarshal([]byte(raw), &out); err != nil {
+		slog.Default().Warn("BROKER_TOPIC_CONFIGS is not valid JSON; ignoring it",
+			slog.Any("err", err))
+		return nil
+	}
+	return out
 }
 
 // withDefaults fills zero fields so tests can build partial configs.
@@ -94,6 +166,7 @@ func (c Config) withDefaults() Config {
 		MaxGroups:          1024,
 		IdleTimeout:        5 * time.Minute,
 		WriteTimeout:       30 * time.Second,
+		CleanupInterval:    5 * time.Minute,
 	}
 	if c.TCPAddr != "" {
 		def.TCPAddr = c.TCPAddr
@@ -139,6 +212,16 @@ func (c Config) withDefaults() Config {
 	}
 	if c.WriteTimeout > 0 {
 		def.WriteTimeout = c.WriteTimeout
+	}
+	// Retention defaults are "disabled", which is the zero value, so
+	// there is nothing to fill: an explicit zero keeps cleanup off.
+	def.RetentionMaxAge = c.RetentionMaxAge
+	def.RetentionMaxBytes = c.RetentionMaxBytes
+	if c.CleanupInterval > 0 {
+		def.CleanupInterval = c.CleanupInterval
+	}
+	if c.TopicConfigs != nil {
+		def.TopicConfigs = c.TopicConfigs
 	}
 	return def
 }

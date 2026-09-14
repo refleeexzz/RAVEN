@@ -28,6 +28,12 @@ type segment struct {
 	index      *os.File
 	size       int64 // next write position in the log file
 	entries    []indexEntry
+	// maxTs is the largest record timestamp in the segment (millis). It
+	// drives time-based retention. Segments opened without a full scan
+	// (inactive, index still valid) fall back to the log file mtime: for
+	// a closed segment that is the moment of the last write, which is a
+	// close approximation of the newest record inside.
+	maxTs int64
 	// indexInterval: one index entry per this many log bytes.
 	indexInterval   int64
 	bytesSinceIndex int64
@@ -56,6 +62,13 @@ func openSegment(dir string, base uint64, indexInterval int64) (*segment, error)
 		return nil, fmt.Errorf("stat segment log %d: %w", base, err)
 	}
 	s := &segment{baseOffset: base, log: logFile, index: indexFile, size: st.Size(), indexInterval: indexInterval}
+	// maxTs starts at the file mtime for non-empty segments: for a
+	// closed segment that is the moment of the last write, a close
+	// approximation of the newest record inside. Empty segments start at
+	// 0 — appends (or a recovery scan) raise it to the true value.
+	if st.Size() > 0 {
+		s.maxTs = st.ModTime().UnixMilli()
+	}
 	if err := s.loadIndex(); err != nil {
 		// Corrupt index file: start from an empty in-memory index; the
 		// caller rebuilds it by scanning the log.

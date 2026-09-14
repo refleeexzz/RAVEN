@@ -97,6 +97,54 @@ every 100 ms **or** every 256 records, whichever comes first (env:
 `BROKER_FSYNC_MS`, `BROKER_FSYNC_RECORDS`). A crash can lose up to that window.
 This is the same deal Kafka offers; syncing every record would be much slower.
 
+## Retention
+
+Logs no longer grow forever. A background **cleaner** sweeps every partition
+on a cadence (`BROKER_CLEANUP_INTERVAL_MS`, default 5 min) and deletes closed
+segments that break one of two policies:
+
+- **`retention.time`** (`BROKER_RETENTION_MS`) — a closed segment expires when
+  its newest record is older than this. Zero (the default) means off.
+- **`retention.bytes`** (`BROKER_RETENTION_BYTES`) — while a partition holds
+  more log bytes than this, the oldest closed segments are deleted until it
+  fits. Zero (the default) means off.
+
+Both defaults are **off** on purpose: turning on deletion should be a decision,
+not a surprise after an upgrade. Per-topic overrides ride
+`BROKER_TOPIC_CONFIGS` as JSON, e.g.
+`BROKER_TOPIC_CONFIGS={"jobs-dlq":{"retention_ms":86400000}}` keeps the DLQ for
+one day while everything else stays unlimited.
+
+Deletion is segment-granular (whole `.log` + `.index` files), never
+record-granular, and follows three hard safety rules:
+
+1. **The active segment is never deleted.** Ever. Only closed ones can go.
+2. **Committed consumers are protected.** A segment goes only if every offset
+   it holds is below the smallest committed offset across all groups with
+   commits on that partition. Committed offset = next record to consume, so
+   deleting above it would strand a group on `OFFSET_OUT_OF_RANGE` forever.
+   This is stricter than Kafka, which ignores consumer offsets entirely.
+3. **Offsets never rewind.** Deleting old segments moves the low-water mark
+   forward; the high-water mark keeps climbing. New records never reuse an
+   offset.
+
+Recovery after cleanup is boring on purpose: the remaining segment files are
+untouched, so the normal boot path works as-is. The one new rule is about
+reading *below* the low-water mark — a fetch for a deleted offset gets
+`OFFSET_OUT_OF_RANGE` (same answer Kafka gives). A fetch at the low-water
+mark works normally. Groups that committed are safe by rule 2; a group that
+never committed has no position to protect, so it would rejoin and start
+wherever the client chooses anyway.
+
+How old is a segment? Each segment tracks the max record timestamp it has
+seen. One caveat: for a closed segment opened from disk without a scan we use
+the file's mtime as an approximation — good enough for deletion, and we
+document it here so nobody is surprised.
+
+Metrics: `raven_broker_retention_bytes_freed_total` (counter per
+topic/partition) tells you how much the cleaner freed;
+`raven_broker_segment_count` (existing gauge) drops as segments are deleted.
+
 ## Concurrency design
 
 - One goroutine per connection reads frames and dispatches handlers.
@@ -171,8 +219,8 @@ at scrape time), `raven_broker_active_groups`.
 ## Current limitations (being honest)
 
 1. **Single node.** No replication. The disk dies, data is gone.
-2. **No retention/deletion.** Logs grow forever. Old segments are never
-   compacted or removed.
+2. **No compaction.** Retention deletes old segments (see above), but
+   superseded values inside a segment are never cleaned by key.
 3. **No idempotent/exactly-once produce.** Retrying a produce after an
    ambiguous failure can duplicate records.
 4. **Static partition count.** You pick it at topic creation; there's no

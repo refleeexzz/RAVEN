@@ -13,6 +13,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
+
 	"github.com/refleeexzz/RAVEN/internal/broker/group"
 	"github.com/refleeexzz/RAVEN/internal/broker/protocol"
 	"github.com/refleeexzz/RAVEN/internal/broker/server"
@@ -84,13 +86,19 @@ type Broker struct {
 	server  *server.Server
 	metrics *Metrics
 
+	// retentionFreed counts bytes deleted by retention sweeps
+	// (raven_broker_retention_bytes_freed_total). Kept on the Broker, not
+	// in Metrics, so metrics.go stays untouched for parallel work.
+	retentionFreed *prometheus.CounterVec
+
 	// writers holds one partWriter per partition. Channels are closed
 	// only during shutdown, after the server has fully drained, so no
 	// handler ever sends on a closed channel.
 	writersMu sync.RWMutex
 	writers   map[topicPart]*partWriter
 
-	flushDone chan struct{}
+	flushDone   chan struct{}
+	cleanupDone chan struct{}
 }
 
 // New builds a broker: opens the store (with crash recovery), loads
@@ -129,6 +137,13 @@ func New(cfg Config, log *slog.Logger, reg CollectorRegistrar) (*Broker, error) 
 		metrics:   newMetrics(),
 		writers:   make(map[topicPart]*partWriter),
 		flushDone: make(chan struct{}),
+		retentionFreed: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Namespace: "raven",
+			Subsystem: "broker",
+			Name:      "retention_bytes_freed_total",
+			Help:      "Total bytes deleted by retention sweeps (.log + .index), by topic and partition.",
+		}, []string{"topic", "partition"}),
+		cleanupDone: make(chan struct{}),
 	}
 	for _, t := range store.Topics() {
 		for _, p := range t.Partitions {
@@ -144,6 +159,7 @@ func New(cfg Config, log *slog.Logger, reg CollectorRegistrar) (*Broker, error) 
 	)
 	if reg != nil {
 		b.registerMetrics(reg)
+		reg.Register(b.retentionFreed)
 	}
 	return b, nil
 }
@@ -151,13 +167,15 @@ func New(cfg Config, log *slog.Logger, reg CollectorRegistrar) (*Broker, error) 
 // Addr returns the TCP listen address (after Run started).
 func (b *Broker) Addr() string { return b.server.Addr() }
 
-// Run starts the fsync ticker, the group reaper and the TCP server,
-// and blocks until ctx is cancelled. Shutdown order matters:
+// Run starts the fsync ticker, the group reaper, the retention cleaner
+// and the TCP server, and blocks until ctx is cancelled. Shutdown order
+// matters:
 //
 //  1. server stops and drains connections (no handler touches writers)
-//  2. writer channels close; writers drain their queues and exit
-//  3. store flushes and closes every file
-//  4. coordinator compacts the offsets file
+//  2. cleaner finishes its current sweep step and exits (ctx done)
+//  3. writer channels close; writers drain their queues and exit
+//  4. store flushes and closes every file
+//  5. coordinator compacts the offsets file
 func (b *Broker) Run(ctx context.Context) error {
 	b.groups.Start(ctx)
 	go func() {
@@ -173,10 +191,18 @@ func (b *Broker) Run(ctx context.Context) error {
 			}
 		}
 	}()
+	go func() {
+		defer close(b.cleanupDone)
+		b.store.RunCleaner(ctx, b.cfg.CleanupInterval, b.cfg.policyFor,
+			b.minCommittedSnapshot, b.observeCleanup)
+	}()
 
 	serveErr := b.server.Run(ctx)
 
 	<-b.flushDone
+	// The cleaner may be mid-sweep holding a partition lock; wait for it
+	// before closing the store underneath it.
+	<-b.cleanupDone
 	b.writersMu.Lock()
 	for _, w := range b.writers {
 		close(w.in)
@@ -520,6 +546,39 @@ func (b *Broker) writerFor(topic string, partition int32) *partWriter {
 	b.writersMu.RLock()
 	defer b.writersMu.RUnlock()
 	return b.writers[topicPart{topic, partition}]
+}
+
+// minCommittedSnapshot feeds the retention cleaner: for every
+// topic/partition, the smallest committed offset across every consumer
+// group with a commit there. Retention never deletes at or above it, so
+// a committed group can never be stranded on OFFSET_OUT_OF_RANGE by a
+// cleanup sweep. Partitions with no commits are absent from the map and
+// get no protection.
+func (b *Broker) minCommittedSnapshot() map[string]map[int32]uint64 {
+	out := make(map[string]map[int32]uint64)
+	for _, g := range b.groups.OffsetGroupIDs() {
+		for topic, parts := range b.groups.GroupOffsets(g) {
+			for part, off := range parts {
+				m, ok := out[topic]
+				if !ok {
+					m = make(map[int32]uint64)
+					out[topic] = m
+				}
+				if cur, ok := m[part]; !ok || off < cur {
+					m[part] = off
+				}
+			}
+		}
+	}
+	return out
+}
+
+// observeCleanup turns one partition's sweep stats into metrics.
+func (b *Broker) observeCleanup(stats storage.CleanupStats) {
+	if stats.Retention.BytesFreed > 0 {
+		part := strconv.Itoa(int(stats.Partition))
+		b.retentionFreed.WithLabelValues(stats.Topic, part).Add(float64(stats.Retention.BytesFreed))
+	}
 }
 
 func convertHeaders(hs []protocol.Header) []storage.Header {
