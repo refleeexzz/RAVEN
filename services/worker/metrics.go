@@ -16,6 +16,7 @@ type ServiceMetrics struct {
 	inFlightN    atomic.Int64             // backs raven_worker_in_flight + raven_worker_active_jobs
 	retries      prometheus.Counter       // raven_worker_retries_total
 	fencedWrites *prometheus.CounterVec   // raven_worker_fenced_writes_total{op}
+	deliveries   *prometheus.CounterVec   // raven_worker_webhook_deliveries_total{outcome}
 }
 
 // NewServiceMetrics registers the collectors on reg.
@@ -46,9 +47,15 @@ func NewServiceMetrics(reg *metrics.Registry) *ServiceMetrics {
 			Name:      "fenced_writes_total",
 			Help:      "Finish writes rejected by the generation fence (a newer generation owns the job), by op (success|failure|dead).",
 		}, []string{"op"}),
+		deliveries: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Namespace: "raven",
+			Subsystem: "worker",
+			Name:      "webhook_deliveries_total",
+			Help:      "Webhook delivery attempts by outcome (success|http_error|transport_error|blocked|invalid).",
+		}, []string{"outcome"}),
 	}
 	readInFlight := func() float64 { return float64(m.inFlightN.Load()) }
-	reg.Register(m.processed, m.duration, m.retries, m.fencedWrites,
+	reg.Register(m.processed, m.duration, m.retries, m.fencedWrites, m.deliveries,
 		prometheus.NewGaugeFunc(prometheus.GaugeOpts{
 			Namespace: "raven",
 			Subsystem: "worker",

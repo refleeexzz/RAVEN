@@ -150,13 +150,30 @@ type webhookPayload struct {
 
 // WebhookHandler POSTs the job payload to payload.url through the egress
 // guard. Exported so the security suite can drive it directly.
+//
+// Delivery observability: when the context carries a recorder (the worker's
+// execute puts one there), the handler fills it with the attempt facts —
+// status, latency, a 1 KiB body snippet, blocked/error detail. With no
+// recorder (unit tests, the security suite) nothing is recorded.
 func WebhookHandler(client *http.Client, guard *EgressGuard) Handler {
 	return func(ctx context.Context, job *jobs.Job) error {
+		rec := recorderFrom(ctx)
 		var p webhookPayload
 		if err := json.Unmarshal([]byte(job.Payload), &p); err != nil {
+			if rec != nil {
+				rec.invalid = true
+				rec.errMsg = fmt.Sprintf("webhook payload is not an object: %v", err)
+			}
 			return permanentf("webhook payload is not an object: %v", err)
 		}
+		if rec != nil {
+			rec.url = p.URL
+		}
 		if p.URL == "" {
+			if rec != nil {
+				rec.invalid = true
+				rec.errMsg = "webhook payload requires a 'url'"
+			}
 			return permanentf("webhook payload requires a 'url'")
 		}
 
@@ -164,7 +181,14 @@ func WebhookHandler(client *http.Client, guard *EgressGuard) Handler {
 		// DNS failures are retryable; policy refusals are permanent.
 		if err := guard.CheckURL(ctx, p.URL); err != nil {
 			if IsBlockedTarget(err) {
+				if rec != nil {
+					rec.blocked = true
+					rec.errMsg = err.Error()
+				}
 				return permanentf("%v", err)
+			}
+			if rec != nil {
+				rec.errMsg = err.Error()
 			}
 			return err
 		}
@@ -172,27 +196,56 @@ func WebhookHandler(client *http.Client, guard *EgressGuard) Handler {
 		req, err := http.NewRequestWithContext(ctx, http.MethodPost, p.URL,
 			bytes.NewReader([]byte(job.Payload)))
 		if err != nil {
+			if rec != nil {
+				rec.invalid = true
+				rec.errMsg = fmt.Sprintf("webhook url is invalid: %v", err)
+			}
 			return permanentf("webhook url is invalid: %v", err)
 		}
 		req.Header.Set("Content-Type", "application/json")
 
+		if rec != nil {
+			rec.dispatched = true
+		}
+		startedAt := time.Now()
 		resp, err := client.Do(req)
+		latency := time.Since(startedAt)
 		if err != nil {
 			// Egress gates 2+3 surface as *url.Error wrapping the refusal.
 			var urlErr *url.Error
 			if errors.As(err, &urlErr) {
 				if IsBlockedTarget(urlErr.Err) || errors.Is(urlErr.Err, ErrRedirectLimit) {
+					if rec != nil {
+						rec.blocked = true
+						rec.latency = latency
+						rec.errMsg = fmt.Sprintf("webhook target rejected: %v", urlErr.Err)
+					}
 					return permanentf("webhook target rejected: %v", urlErr.Err)
 				}
+			}
+			if rec != nil {
+				rec.latency = latency
+				rec.errMsg = fmt.Sprintf("webhook POST %s: %v", p.URL, err)
 			}
 			return fmt.Errorf("webhook POST %s: %w", p.URL, err) // retryable
 		}
 		defer func() { _ = resp.Body.Close() }()
-		// The body is never parsed; drain a capped amount so the connection
-		// can be reused, never the whole thing (a hostile target could stream
-		// forever and pin the handler until the client timeout).
+		// The body is never parsed; keep the first KiB for the delivery
+		// record, then drain a capped amount so the connection can be reused,
+		// never the whole thing (a hostile target could stream forever and
+		// pin the handler until the client timeout).
+		var snippet bytes.Buffer
+		_, _ = io.Copy(&snippet, io.LimitReader(resp.Body, jobs.MaxDeliverySnippetBytes))
 		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, MaxWebhookResponseBody))
+		if rec != nil {
+			rec.statusCode = resp.StatusCode
+			rec.latency = latency
+			rec.snippet = snippet.String()
+		}
 		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+			if rec != nil {
+				rec.errMsg = fmt.Sprintf("webhook POST %s: got status %d", p.URL, resp.StatusCode)
+			}
 			return fmt.Errorf("webhook POST %s: got status %d", p.URL, resp.StatusCode)
 		}
 		return nil

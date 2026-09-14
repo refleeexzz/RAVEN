@@ -261,6 +261,13 @@ func (w *Worker) execute(msg client.Message) {
 			attribute.String("job.type", job.Type),
 			attribute.Int("job.attempt", job.Attempts+1),
 		))
+	// Webhook attempts are observed end to end: the handler fills this
+	// recorder with status/latency/snippet/blocked and it is flushed to
+	// webhook_deliveries below, whatever the job outcome.
+	var drec *webhookDeliveryRecorder
+	if job.Type == "webhook" {
+		handlerCtx, drec = withDeliveryRecorder(handlerCtx)
+	}
 	var lostLease atomic.Bool
 	renewDone := w.startLeaseRenewal(ctx, cancel, &lostLease, job.ID, job.ExecutionGeneration)
 
@@ -274,6 +281,13 @@ func (w *Worker) execute(msg client.Message) {
 		handlerSpan.SetStatus(codes.Error, runErr.Error())
 	}
 	handlerSpan.End()
+
+	if drec != nil {
+		// Best effort and outside the job state machine: even a delivery
+		// whose lease was lost mid-flight really happened, so it is
+		// recorded before the lostLease branch below.
+		w.recordDelivery(job, job.Attempts+1, drec)
+	}
 
 	if w.metrics != nil {
 		w.metrics.duration.WithLabelValues(job.Type).Observe(finishedAt.Sub(startedAt).Seconds())
