@@ -129,3 +129,28 @@ func (c *Cluster) RegisterMetrics(reg interface{ Register(...prometheus.Collecto
 
 // partLabel renders a partition id for metric labels.
 func partLabel(p int32) string { return strconv.Itoa(int(p)) }
+
+// ---- data-plane metric observers (called by the broker's replication
+// manager; all cheap gauge/counter sets) ----
+
+// ObserveReplicationLag records how far a replica trails, in offsets.
+func (c *Cluster) ObserveReplicationLag(topic string, part int32, replica NodeID, lag uint64) {
+	c.metrics.replicationLag.WithLabelValues(topic, partLabel(part), string(replica)).Set(float64(lag))
+}
+
+// ObserveCommittedOffset records the committed offset (stable HWM) this
+// node knows for a partition.
+func (c *Cluster) ObserveCommittedOffset(topic string, part int32, off uint64) {
+	c.metrics.committedOffset.WithLabelValues(topic, partLabel(part)).Set(float64(off))
+}
+
+// ObserveFollowerOffset records one replica's replicated offset as
+// known by this node.
+func (c *Cluster) ObserveFollowerOffset(topic string, part int32, replica NodeID, off uint64) {
+	c.metrics.followerOffset.WithLabelValues(topic, partLabel(part), string(replica)).Set(float64(off))
+}
+
+// ObserveLeaderChange counts a leadership flip for a topic.
+func (c *Cluster) ObserveLeaderChange(topic string) {
+	c.metrics.leaderChanges.WithLabelValues(topic).Inc()
+}

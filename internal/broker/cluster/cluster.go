@@ -231,6 +231,12 @@ func (c *Cluster) callPeer(ctx context.Context, id NodeID, op protocol.Opcode, p
 	return resp.Payload, nil
 }
 
+// CallPeer is the exported callPeer: the broker's data plane
+// (replication, elections, reassignment) uses it to talk to peers.
+func (c *Cluster) CallPeer(ctx context.Context, id NodeID, op protocol.Opcode, payload []byte) ([]byte, error) {
+	return c.callPeer(ctx, id, op, payload)
+}
+
 // ---- heartbeats + failure detection ----
 
 // heartbeatLoop pings every peer on the heartbeat cadence and advances

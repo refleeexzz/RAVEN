@@ -105,6 +105,10 @@ type Broker struct {
 	// in which case zero cluster code runs.
 	cluster *cluster.Cluster
 
+	// repl is the replication data plane. nil exactly when cluster is
+	// nil, so every cluster-aware code path keys off the same condition.
+	repl *replicationManager
+
 	// writers holds one partWriter per partition. Channels are closed
 	// only during shutdown, after the server has fully drained, so no
 	// handler ever sends on a closed channel.
@@ -247,6 +251,9 @@ func New(cfg Config, log *slog.Logger, reg CollectorRegistrar) (*Broker, error) 
 			b.cluster.RegisterMetrics(reg)
 		}
 	}
+	if b.cluster != nil {
+		b.repl = newReplicationManager(b)
+	}
 	return b, nil
 }
 
@@ -280,6 +287,7 @@ func (b *Broker) Run(ctx context.Context) error {
 				b.log.Error("cluster run failed", slog.Any("err", err))
 			}
 		}()
+		b.repl.run(ctx)
 	}
 	if b.tlsReloader != nil {
 		go b.tlsReloader.run(ctx, b.cfg.TLSReloadInterval)
@@ -319,6 +327,9 @@ func (b *Broker) Run(ctx context.Context) error {
 		// this wait covers the leaving-announce and listener teardown.
 		b.cluster.Close()
 		<-clusterDone
+		// Follower loops may be mid-append; they exit on ctx.Done, and
+		// this wait guarantees they are done before the store closes.
+		b.repl.wait()
 	}
 	b.writersMu.Lock()
 	for _, w := range b.writers {
@@ -442,6 +453,18 @@ func (b *Broker) Produce(ctx context.Context, req *protocol.ProduceRequest) (*pr
 		parts[i] = p
 	}
 
+	// Cluster mode: writes only happen on the partition leader. A
+	// follower (or non-replica) rejects the whole batch with NOT_LEADER
+	// and names the leader so the caller can reconnect there.
+	if b.repl != nil {
+		for _, p := range parts {
+			if a := b.cluster.AssignmentFor(req.Topic, p); a.Leader != b.cluster.Self() {
+				return nil, protocol.NewError(protocol.CodeNotLeader,
+					fmt.Sprintf("partition %s/%d is led by node %s", req.Topic, p, a.Leader))
+			}
+		}
+	}
+
 	// Group records by partition, remembering original positions.
 	type indexed struct {
 		idx int
@@ -540,11 +563,25 @@ func (b *Broker) Fetch(_ context.Context, req *protocol.FetchRequest) (*protocol
 	if err != nil {
 		return nil, fmt.Errorf("fetch read: %w", err)
 	}
+	// Cluster mode caps reads at the committed offset (the stable
+	// high-water mark): consumers never see records a quorum has not
+	// confirmed, because those can still be rolled back by log matching
+	// after a leader change. Standalone keeps the historical behavior:
+	// the log end is the limit.
+	readLimit := p.HighWatermark()
+	if b.repl != nil {
+		if c := b.repl.committedFor(req.Topic, req.Partition); c < readLimit {
+			readLimit = c
+		}
+	}
 	resp := &protocol.FetchResponse{
-		HighWatermark: p.HighWatermark(),
+		HighWatermark: readLimit,
 		Records:       make([]protocol.FetchedMessage, 0, len(recs)),
 	}
 	for _, r := range recs {
+		if b.repl != nil && r.Offset >= readLimit {
+			break // uncommitted tail: not visible to consumers
+		}
 		resp.Records = append(resp.Records, protocol.FetchedMessage{
 			Offset:    r.Offset,
 			Timestamp: r.TimestampMs,
@@ -644,6 +681,30 @@ func (b *Broker) Heartbeat(_ context.Context, req *protocol.HeartbeatRequest) (*
 }
 
 // ---- helpers ----
+
+// ensureTopicLocal creates the topic locally when absent and returns
+// its partition count. Used by replication topic sync: a topic created
+// on a peer must materialize on every replica before follower loops
+// can append to it. Already-existing topics are returned as-is (the
+// sync loop logs partition-count conflicts separately).
+func (b *Broker) ensureTopicLocal(name string, partitions int32) error {
+	if _, err := b.store.Topic(name); err == nil {
+		return nil
+	} else if !errors.Is(err, storage.ErrTopicNotFound) {
+		return err
+	}
+	t, err := b.store.CreateTopic(name, partitions)
+	if errors.Is(err, storage.ErrTopicExists) {
+		return nil // a client CREATE_TOPIC won the race
+	}
+	if err != nil {
+		return fmt.Errorf("ensure topic %s: %w", name, err)
+	}
+	for _, p := range t.Partitions {
+		b.registerWriter(t.Name, p)
+	}
+	return nil
+}
 
 func (b *Broker) checkTopicPartition(topic string, partition int32) (*storage.Topic, error) {
 	t, err := b.store.Topic(topic)

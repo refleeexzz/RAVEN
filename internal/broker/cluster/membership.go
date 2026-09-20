@@ -44,6 +44,13 @@ func (s MemberState) String() string {
 	}
 }
 
+// Alive reports whether a member in this state counts toward quorums
+// and is worth contacting: ACTIVE or SUSPECT. DEAD, LEAVING and JOINING
+// members do not count.
+func (s MemberState) Alive() bool {
+	return s == StateActive || s == StateSuspect
+}
+
 // Member is the local view of one cluster member.
 type Member struct {
 	NodeInfo
@@ -186,8 +193,7 @@ func (m *Membership) State(id NodeID) MemberState {
 // Alive reports whether id is reachable enough to count in a quorum:
 // ACTIVE or SUSPECT. DEAD and LEAVING members do not count.
 func (m *Membership) Alive(id NodeID) bool {
-	s := m.State(id)
-	return s == StateActive || s == StateSuspect
+	return m.State(id).Alive()
 }
 
 // Snapshot returns a copy of the member table in configuration order.
