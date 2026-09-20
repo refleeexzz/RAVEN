@@ -45,6 +45,14 @@ type Opcode uint8
 // and proceeds in open mode), and a v1 client talking to an
 // auth-enabled v1.1 server gets a clear UNAUTHENTICATED error frame on
 // its first non-AUTH request. No handshake negotiation needed.
+//
+// v1.2 adds the cluster opcodes (0x0B–0x0F). They are purely additive
+// too: a single-node (or v1/v1.1) broker answers them with
+// UNKNOWN_OPCODE, and a v1.2 broker without cluster configuration
+// (BROKER_NODE_ID / BROKER_CLUSTER_NODES unset) behaves exactly like a
+// v1.1 broker. OpReplicate, OpRequestVote and OpNodePing are
+// node-to-node only; OpClusterStatus and OpReassignPartition are the
+// operator-facing surface.
 const (
 	OpError        Opcode = 0x00
 	OpCreateTopic  Opcode = 0x01
@@ -57,6 +65,22 @@ const (
 	OpLeaveGroup   Opcode = 0x08
 	OpHeartbeat    Opcode = 0x09
 	OpAuth         Opcode = 0x0A
+	// OpReplicate (v1.2, node-to-node): a follower pulls a batch of
+	// records from the partition leader, starting at a given offset.
+	// The response also carries the leader's committed offset.
+	OpReplicate Opcode = 0x0B
+	// OpRequestVote (v1.2, node-to-node): raft-style per-partition
+	// leader election. Carries (term, candidate, last log offset).
+	OpRequestVote Opcode = 0x0C
+	// OpNodePing (v1.2, node-to-node): membership heartbeat and leader
+	// liveness signal. Carries the sender's id and leaving flag.
+	OpNodePing Opcode = 0x0D
+	// OpClusterStatus (v1.2, ops): member table, per-partition
+	// leader/ISR/committed offsets and in-flight reassignments.
+	OpClusterStatus Opcode = 0x0E
+	// OpReassignPartition (v1.2, ops): move a partition's replica set
+	// (and optionally its leadership) between nodes.
+	OpReassignPartition Opcode = 0x0F
 )
 
 func (o Opcode) String() string {
@@ -83,6 +107,16 @@ func (o Opcode) String() string {
 		return "HEARTBEAT"
 	case OpAuth:
 		return "AUTH"
+	case OpReplicate:
+		return "REPLICATE"
+	case OpRequestVote:
+		return "REQUEST_VOTE"
+	case OpNodePing:
+		return "NODE_PING"
+	case OpClusterStatus:
+		return "CLUSTER_STATUS"
+	case OpReassignPartition:
+		return "REASSIGN_PARTITION"
 	default:
 		return fmt.Sprintf("UNKNOWN(0x%02x)", uint8(o))
 	}
@@ -106,6 +140,19 @@ const (
 	// CodeUnauthorized: the connection is authenticated but the
 	// principal's ACL does not allow the operation on that topic. v1.1.
 	CodeUnauthorized = "UNAUTHORIZED"
+	// CodeNotLeader: the request reached a node that is not the leader
+	// for the partition. The response payload names the current leader
+	// so the caller can retry there. v1.2.
+	CodeNotLeader = "NOT_LEADER"
+	// CodeNotEnoughReplicas: an acks=all produce could not reach the ISR
+	// quorum before its deadline (a replica is down or lagging). The
+	// batch is durably stored on the leader and will commit once the ISR
+	// recovers. v1.2.
+	CodeNotEnoughReplicas = "NOT_ENOUGH_REPLICAS"
+	// CodeStaleTerm: the request carried a leader term older than the
+	// node's current term (fencing). The stale leader must step down.
+	// v1.2.
+	CodeStaleTerm = "STALE_TERM"
 )
 
 // Error is a broker-side failure that maps 1:1 onto an OpError frame.

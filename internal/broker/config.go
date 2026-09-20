@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/refleeexzz/RAVEN/internal/broker/cluster"
 	"github.com/refleeexzz/RAVEN/internal/broker/storage"
 	"github.com/refleeexzz/RAVEN/internal/config"
 )
@@ -108,10 +109,22 @@ type Config struct {
 	// connection must complete AUTH before any other frame.
 	APIKeys []APIKey
 
+	// Cluster holds the parsed cluster configuration and ClusterEnabled
+	// reports whether cluster mode is on. Both BROKER_NODE_ID and
+	// BROKER_CLUSTER_NODES empty (the default) means standalone: the
+	// broker behaves exactly like a single node and no cluster code
+	// runs at all. A half-filled pair fails the boot via clusterErr.
+	Cluster        cluster.Config
+	ClusterEnabled bool
+
 	// apiKeysErr carries a BROKER_API_KEYS parse failure into New so a
 	// malformed security config fails the boot instead of silently
 	// running without authentication (fail closed).
 	apiKeysErr error
+	// clusterErr carries a BROKER_NODE_ID / BROKER_CLUSTER_NODES parse
+	// failure into New: a malformed cluster config fails the boot for
+	// the same fail-closed reason.
+	clusterErr error
 }
 
 // policyFor resolves the effective cleanup policy for one topic: global
@@ -136,6 +149,30 @@ func (c Config) policyFor(topic string) storage.Policy {
 // ConfigFromEnv loads the broker configuration from the environment.
 func ConfigFromEnv() Config {
 	keys, keysErr := parseAPIKeys(config.Get("BROKER_API_KEYS", ""))
+	clusterCfg, clusterOn, clusterErr := cluster.ParseEnv(
+		config.Get("BROKER_NODE_ID", ""), config.Get("BROKER_CLUSTER_NODES", ""))
+	if clusterOn {
+		// Numeric cluster knobs ride their own env vars; ParseEnv only
+		// owns identity + membership. All optional: defaults apply.
+		if v := config.GetInt("BROKER_REPLICATION_FACTOR", 0); v > 0 {
+			clusterCfg.ReplicationFactor = v
+			clusterCfg = capReplicationFactor(clusterCfg)
+		}
+		clusterCfg.HeartbeatEvery = durationMs(config.GetInt("BROKER_CLUSTER_HEARTBEAT_MS", 0), clusterCfg.HeartbeatEvery)
+		clusterCfg.SuspectAfter = durationMs(config.GetInt("BROKER_CLUSTER_SUSPECT_MS", 0), clusterCfg.SuspectAfter)
+		clusterCfg.DeadAfter = durationMs(config.GetInt("BROKER_CLUSTER_DEAD_MS", 0), clusterCfg.DeadAfter)
+		clusterCfg.FetchInterval = durationMs(config.GetInt("BROKER_CLUSTER_FETCH_MS", 0), clusterCfg.FetchInterval)
+		if v := config.GetInt("BROKER_CLUSTER_FETCH_MAX_BYTES", 0); v > 0 {
+			clusterCfg.FetchMaxBytes = v
+		}
+		if v := config.GetInt("BROKER_CLUSTER_ISR_LAG_MAX", 0); v > 0 {
+			clusterCfg.ReplicaLagMax = uint64(v)
+		}
+		clusterCfg.ElectionTimeoutMin = durationMs(config.GetInt("BROKER_CLUSTER_ELECTION_MIN_MS", 0), clusterCfg.ElectionTimeoutMin)
+		clusterCfg.ElectionTimeoutMax = durationMs(config.GetInt("BROKER_CLUSTER_ELECTION_MAX_MS", 0), clusterCfg.ElectionTimeoutMax)
+		clusterCfg.QuorumAckTimeout = durationMs(config.GetInt("BROKER_CLUSTER_QUORUM_ACK_MS", 0), clusterCfg.QuorumAckTimeout)
+		clusterCfg.LeaderAbdicateAfter = durationMs(config.GetInt("BROKER_CLUSTER_ABDICATE_MS", 0), clusterCfg.LeaderAbdicateAfter)
+	}
 	return Config{
 		TCPAddr:            config.Get("BROKER_TCP_ADDR", ":9100"),
 		DataDir:            config.Get("BROKER_DATA_DIR", "./data"),
@@ -162,7 +199,26 @@ func ConfigFromEnv() Config {
 		TLSReloadInterval:  time.Duration(config.GetInt("BROKER_TLS_RELOAD_SEC", 5)) * time.Second,
 		APIKeys:            keys,
 		apiKeysErr:         keysErr,
+		Cluster:            clusterCfg,
+		ClusterEnabled:     clusterOn,
+		clusterErr:         clusterErr,
 	}
+}
+
+// durationMs returns ms milliseconds when ms > 0, else the fallback.
+func durationMs(ms int, fallback time.Duration) time.Duration {
+	if ms > 0 {
+		return time.Duration(ms) * time.Millisecond
+	}
+	return fallback
+}
+
+// capReplicationFactor keeps R <= len(Nodes) after an env override.
+func capReplicationFactor(c cluster.Config) cluster.Config {
+	if c.ReplicationFactor > len(c.Nodes) {
+		c.ReplicationFactor = len(c.Nodes)
+	}
+	return c
 }
 
 // parseTopicConfigs decodes BROKER_TOPIC_CONFIGS. Bad JSON is not fatal:
@@ -269,5 +325,11 @@ func (c Config) withDefaults() Config {
 	// recorded parse error must survive so New can fail closed.
 	def.APIKeys = c.APIKeys
 	def.apiKeysErr = c.apiKeysErr
+	// Cluster passes through untouched too: ParseEnv already applied
+	// its own defaults, and a recorded parse error must survive so New
+	// can fail closed on a malformed BROKER_CLUSTER_NODES.
+	def.Cluster = c.Cluster
+	def.ClusterEnabled = c.ClusterEnabled
+	def.clusterErr = c.clusterErr
 	return def
 }

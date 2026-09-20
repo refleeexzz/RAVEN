@@ -15,6 +15,7 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus"
 
+	"github.com/refleeexzz/RAVEN/internal/broker/cluster"
 	"github.com/refleeexzz/RAVEN/internal/broker/group"
 	"github.com/refleeexzz/RAVEN/internal/broker/protocol"
 	"github.com/refleeexzz/RAVEN/internal/broker/server"
@@ -99,6 +100,11 @@ type Broker struct {
 	// when TLS is off. Started by Run.
 	tlsReloader *certReloader
 
+	// cluster is the node-to-node control plane (membership, placement,
+	// replication, elections). nil in standalone mode — the default —
+	// in which case zero cluster code runs.
+	cluster *cluster.Cluster
+
 	// writers holds one partWriter per partition. Channels are closed
 	// only during shutdown, after the server has fully drained, so no
 	// handler ever sends on a closed channel.
@@ -168,6 +174,24 @@ func New(cfg Config, log *slog.Logger, reg CollectorRegistrar) (*Broker, error) 
 			"any client that can reach the TCP port can produce, consume and admin. " +
 			"Fine for local dev, wrong for anything else.")
 	}
+	// Cluster config is validated the same fail-closed way: a malformed
+	// BROKER_NODE_ID / BROKER_CLUSTER_NODES pair must fail the boot —
+	// silently running standalone while the operator thinks the node is
+	// clustered would turn a typo into a silent loss of replication.
+	if cfg.clusterErr != nil {
+		_ = groups.Close()
+		_ = store.Close()
+		return nil, fmt.Errorf("BROKER_CLUSTER_*: %w", cfg.clusterErr)
+	}
+	var cl *cluster.Cluster
+	if cfg.ClusterEnabled {
+		cl, err = cluster.New(cfg.Cluster, log)
+		if err != nil {
+			_ = groups.Close()
+			_ = store.Close()
+			return nil, fmt.Errorf("cluster: %w", err)
+		}
+	}
 	b := &Broker{
 		cfg:       cfg,
 		log:       log,
@@ -195,6 +219,7 @@ func New(cfg Config, log *slog.Logger, reg CollectorRegistrar) (*Broker, error) 
 			Help:      "Total superseded records removed by log compaction, by topic and partition.",
 		}, []string{"topic", "partition"}),
 		tlsReloader: tlsReloader,
+		cluster:     cl,
 		cleanupDone: make(chan struct{}),
 	}
 	for _, t := range store.Topics() {
@@ -218,9 +243,16 @@ func New(cfg Config, log *slog.Logger, reg CollectorRegistrar) (*Broker, error) 
 	if reg != nil {
 		b.registerMetrics(reg)
 		reg.Register(b.retentionFreed, b.compactionFreed, b.compactionDropped)
+		if b.cluster != nil {
+			b.cluster.RegisterMetrics(reg)
+		}
 	}
 	return b, nil
 }
+
+// Cluster returns the cluster control plane, or nil in standalone mode.
+// Tests and the ops surface use it to inspect membership and placement.
+func (b *Broker) Cluster() *cluster.Cluster { return b.cluster }
 
 // Addr returns the TCP listen address (after Run started).
 func (b *Broker) Addr() string { return b.server.Addr() }
@@ -236,6 +268,19 @@ func (b *Broker) Addr() string { return b.server.Addr() }
 //  5. coordinator compacts the offsets file
 func (b *Broker) Run(ctx context.Context) error {
 	b.groups.Start(ctx)
+	var clusterDone chan struct{}
+	if b.cluster != nil {
+		// The cluster control plane runs alongside the client server.
+		// It is shut down (and stops touching storage) before the
+		// writers drain below: see the shutdown order at the bottom.
+		clusterDone = make(chan struct{})
+		go func() {
+			defer close(clusterDone)
+			if err := b.cluster.Run(ctx); err != nil {
+				b.log.Error("cluster run failed", slog.Any("err", err))
+			}
+		}()
+	}
 	if b.tlsReloader != nil {
 		go b.tlsReloader.run(ctx, b.cfg.TLSReloadInterval)
 		b.log.Info("broker TLS hot-reload watching",
@@ -268,6 +313,13 @@ func (b *Broker) Run(ctx context.Context) error {
 	// The cleaner may be mid-sweep holding a partition lock; wait for it
 	// before closing the store underneath it.
 	<-b.cleanupDone
+	if b.cluster != nil {
+		// The cluster data plane must stop touching storage before the
+		// writers drain and the store closes. Run returned on ctx.Done;
+		// this wait covers the leaving-announce and listener teardown.
+		b.cluster.Close()
+		<-clusterDone
+	}
 	b.writersMu.Lock()
 	for _, w := range b.writers {
 		close(w.in)
