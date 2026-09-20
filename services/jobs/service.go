@@ -32,6 +32,16 @@ type Config struct {
 	BrokerAddr  string
 	LogLevel    string
 
+	// Broker client protection (docs/broker-security.md), all optional.
+	// Empty everywhere = open mode: plaintext, no AUTH frame, fully
+	// compatible with a default broker.
+	BrokerAPIKeyID          string // BROKER_API_KEY_ID
+	BrokerAPIKeySecret      string // BROKER_API_KEY_SECRET
+	BrokerTLSCAFile         string // BROKER_TLS_CA_FILE
+	BrokerTLSServerName     string // BROKER_TLS_SERVER_NAME (optional)
+	BrokerTLSClientCertFile string // BROKER_TLS_CLIENT_CERT_FILE (optional, mTLS)
+	BrokerTLSClientKeyFile  string // BROKER_TLS_CLIENT_KEY_FILE (optional, mTLS)
+
 	// SweepInterval is how often the stranded-job sweeper runs
 	// (JOBS_SWEEP_INTERVAL, default 15s). <= 0 disables the sweeper (tests,
 	// single-purpose debug deployments); disabling it reopens the kill -9
@@ -79,15 +89,30 @@ func Run(ctx context.Context, cfg Config) error {
 	}
 
 	// The broker is NOT optional: without it we can store jobs but never run
-	// them. Ensure the topics exist before accepting traffic.
+	// them. Build the client security posture first — a typo in auth/TLS
+	// config must fail the boot, not surface as perpetual produce errors —
+	// then ensure the topics exist before accepting traffic.
+	bsec, err := NewBrokerSecurity(BrokerSecurityConfig{
+		APIKeyID:          cfg.BrokerAPIKeyID,
+		APIKeySecret:      cfg.BrokerAPIKeySecret,
+		TLSCAFile:         cfg.BrokerTLSCAFile,
+		TLSServerName:     cfg.BrokerTLSServerName,
+		TLSClientCertFile: cfg.BrokerTLSClientCertFile,
+		TLSClientKeyFile:  cfg.BrokerTLSClientKeyFile,
+	})
+	if err != nil {
+		return fmt.Errorf("jobs: broker security config: %w", err)
+	}
+	log.Info("broker client security", slog.String("mode", bsec.Mode()))
+
 	topicCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-	if err := EnsureTopics(topicCtx, cfg.BrokerAddr, log); err != nil {
+	if err := EnsureTopicsWithSecurity(topicCtx, cfg.BrokerAddr, log, bsec); err != nil {
 		cancel()
 		return fmt.Errorf("jobs: ensure broker topics: %w", err)
 	}
 	cancel()
 
-	producer := NewProducer(cfg.BrokerAddr, log)
+	producer := NewProducerWithSecurity(cfg.BrokerAddr, log, bsec)
 	producer.SetLegacyFanout(cfg.LegacyTopicFanout)
 	defer func() { _ = producer.Close() }()
 
@@ -97,7 +122,7 @@ func Run(ctx context.Context, cfg Config) error {
 	healthReg := health.NewRegistry(3 * time.Second)
 	healthReg.Register("postgres", database.Checker(pool))
 	healthReg.Register("redis", redisChecker(rdb))
-	healthReg.Register("broker", BrokerChecker(cfg.BrokerAddr))
+	healthReg.Register("broker", BrokerCheckerWithSecurity(cfg.BrokerAddr, bsec))
 
 	// Stranded-job sweeper: one goroutine per replica, exactly one active at
 	// a time across replicas via the advisory lock inside SweepOnce.

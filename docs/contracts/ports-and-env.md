@@ -43,6 +43,12 @@ prometheus 9090, grafana 3000, jaeger 16686 (UI) / 4317 (OTLP gRPC).
 | `JWT_SECRET`     | auth, gateway, websocket | `dev-only-secret-change-me` (never in prod)  |
 | `JWT_SECRET_PREVIOUS` | auth, gateway, websocket | empty — set only during a rotation window; verification fallback while signing uses `JWT_SECRET` (see docs/security/rotation.md) |
 | `BROKER_ADDR`    | jobs, worker       | `localhost:9100`                                  |
+| `BROKER_API_KEY_ID` | jobs, worker    | empty — API key id sent in the AUTH frame; set with `BROKER_API_KEY_SECRET` (docs/broker-security.md) |
+| `BROKER_API_KEY_SECRET` | jobs, worker | empty — API key secret; empty pair = open mode (no AUTH frame) |
+| `BROKER_TLS_CA_FILE` | jobs, worker    | empty — PEM bundle trusting the broker cert; set = TLS on the broker connection |
+| `BROKER_TLS_SERVER_NAME` | jobs, worker | empty — overrides the expected TLS server name (default: dial host) |
+| `BROKER_TLS_CLIENT_CERT_FILE` | jobs, worker | empty — client cert for mTLS; requires `BROKER_TLS_CA_FILE` + `BROKER_TLS_CLIENT_KEY_FILE` |
+| `BROKER_TLS_CLIENT_KEY_FILE` | jobs, worker | empty — client key for mTLS; setting only one of the pair fails the boot |
 | `BROKER_DATA_DIR`| broker             | `./data`                                          |
 | `BROKER_MAX_CONNECTIONS` | broker   | `1024` (extra conns get BROKER_BUSY + close)      |
 | `BROKER_IDLE_TIMEOUT` | broker        | `5m` (closes silent connections)                  |

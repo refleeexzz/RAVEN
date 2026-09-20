@@ -73,6 +73,13 @@ services:
       BROKER_TCP_ADDR: ":9100"
       HTTP_ADDR: ":9101"          # ops port
       BROKER_DATA_DIR: /data      # matches the mounted volume below
+      # Broker protection is opt-in (docs/broker-security.md). Uncomment to
+      # turn on TLS and/or API-key auth — and set the matching client-side
+      # BROKER_API_KEY_ID/SECRET + BROKER_TLS_CA_FILE on jobs/worker below.
+      # BROKER_TLS_CERT_FILE: /certs/broker.crt
+      # BROKER_TLS_KEY_FILE: /certs/broker.key
+      # BROKER_TLS_CLIENT_CA_FILE: /certs/client-ca.crt   # mTLS
+      # BROKER_API_KEYS: '[{"id":"jobs-svc","secret_sha256":"<hex>","topics_read":[],"topics_write":["jobs","jobs.*"]},{"id":"worker","secret_sha256":"<hex>","topics_read":["jobs","jobs.*"],"topics_write":["jobs","jobs.*"]},{"id":"admin","secret_sha256":"<hex>","admin":true}]'
       LOG_LEVEL: ${LOG_LEVEL:-info}
       OTEL_ENABLED: "true"
       OTEL_ENDPOINT: jaeger:4317
@@ -96,6 +103,9 @@ services:
       DATABASE_URL: postgres://raven:raven@postgres:5432/raven?sslmode=disable
       REDIS_ADDR: redis:6379
       JWT_SECRET: ${JWT_SECRET:-dev-only-secret-change-me}
+      # Rotation window (docs/security/rotation.md): set only while rotating
+      # JWT_SECRET; empty = single-secret operation.
+      JWT_SECRET_PREVIOUS: ${JWT_SECRET_PREVIOUS:-}
       LOG_LEVEL: ${LOG_LEVEL:-info}
       OTEL_ENABLED: "true"
       OTEL_ENDPOINT: jaeger:4317
@@ -147,6 +157,14 @@ services:
       GRPC_ADDR: ":9083"
       DATABASE_URL: postgres://raven:raven@postgres:5432/raven?sslmode=disable
       BROKER_ADDR: broker:9100
+      # Broker client auth/TLS (docs/broker-security.md). Empty = open mode.
+      # Set these when the broker above enables BROKER_API_KEYS / TLS.
+      BROKER_API_KEY_ID: ${BROKER_API_KEY_ID:-}
+      BROKER_API_KEY_SECRET: ${BROKER_API_KEY_SECRET:-}
+      BROKER_TLS_CA_FILE: ${BROKER_TLS_CA_FILE:-}
+      # BROKER_TLS_SERVER_NAME: broker
+      # BROKER_TLS_CLIENT_CERT_FILE: /certs/jobs.crt   # mTLS
+      # BROKER_TLS_CLIENT_KEY_FILE: /certs/jobs.key    # mTLS
       LOG_LEVEL: ${LOG_LEVEL:-info}
       OTEL_ENABLED: "true"
       OTEL_ENDPOINT: jaeger:4317
@@ -177,6 +195,14 @@ services:
       DATABASE_URL: postgres://raven:raven@postgres:5432/raven?sslmode=disable
       REDIS_ADDR: redis:6379
       BROKER_ADDR: broker:9100
+      # Broker client auth/TLS (docs/broker-security.md). Empty = open mode.
+      # Set these when the broker above enables BROKER_API_KEYS / TLS.
+      BROKER_API_KEY_ID: ${BROKER_API_KEY_ID:-}
+      BROKER_API_KEY_SECRET: ${BROKER_API_KEY_SECRET:-}
+      BROKER_TLS_CA_FILE: ${BROKER_TLS_CA_FILE:-}
+      # BROKER_TLS_SERVER_NAME: broker
+      # BROKER_TLS_CLIENT_CERT_FILE: /certs/worker.crt   # mTLS
+      # BROKER_TLS_CLIENT_KEY_FILE: /certs/worker.key    # mTLS
       LOG_LEVEL: ${LOG_LEVEL:-info}
       OTEL_ENABLED: "true"
       OTEL_ENDPOINT: jaeger:4317
@@ -205,6 +231,9 @@ services:
       HTTP_ADDR: ":8084"
       REDIS_ADDR: redis:6379      # subscribes to raven:events:jobs
       JWT_SECRET: ${JWT_SECRET:-dev-only-secret-change-me}
+      # Rotation window (docs/security/rotation.md): set only while rotating
+      # JWT_SECRET; empty = single-secret operation.
+      JWT_SECRET_PREVIOUS: ${JWT_SECRET_PREVIOUS:-}
       LOG_LEVEL: ${LOG_LEVEL:-info}
       OTEL_ENABLED: "true"
       OTEL_ENDPOINT: jaeger:4317
@@ -230,6 +259,9 @@ services:
       HTTP_ADDR: ":8080"
       REDIS_ADDR: redis:6379      # worker registry lives here
       JWT_SECRET: ${JWT_SECRET:-dev-only-secret-change-me}
+      # Rotation window (docs/security/rotation.md): set only while rotating
+      # JWT_SECRET; empty = single-secret operation.
+      JWT_SECRET_PREVIOUS: ${JWT_SECRET_PREVIOUS:-}
       # Service discovery overrides — inside the network, services are
       # reached by their compose service names.
       AUTH_GRPC_ADDR: auth:9081

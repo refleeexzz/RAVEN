@@ -41,6 +41,19 @@ func NewProducer(addr string, log *slog.Logger) *Producer {
 	return p
 }
 
+// NewProducerWithSecurity is NewProducer with the broker client's auth/TLS
+// options applied (docs/broker-security.md). A nil sec is open mode and
+// behaves exactly like NewProducer.
+func NewProducerWithSecurity(addr string, log *slog.Logger, sec *BrokerSecurity) *Producer {
+	opts := append([]client.ProducerOption{client.WithProducerLogger(log)}, sec.ProducerOptions()...)
+	p := &Producer{
+		p:   client.NewProducer(addr, opts...),
+		log: log,
+	}
+	p.legacyFanout.Store(true)
+	return p
+}
+
 // SetLegacyFanout toggles the duplicate publish onto the legacy "jobs"
 // topic (see the Producer docs).
 func (p *Producer) SetLegacyFanout(on bool) { p.legacyFanout.Store(on) }
@@ -125,7 +138,15 @@ func (p *Producer) PublishRawWithHeaders(ctx context.Context, topic string, key,
 // pinned priority family jobs.p1..jobs.p9. Already-existing topics are
 // fine (TOPIC_EXISTS is swallowed); anything else is fatal at boot.
 func EnsureTopics(ctx context.Context, addr string, log *slog.Logger) error {
-	admin := client.NewAdmin(addr)
+	return EnsureTopicsWithSecurity(ctx, addr, log, nil)
+}
+
+// EnsureTopicsWithSecurity is EnsureTopics with the broker client's auth/TLS
+// options applied (docs/broker-security.md). A nil sec is open mode. Broker
+// auth failures come back decorated by ExplainBrokerError, so a misconfigured
+// key fails the boot fast with a readable message.
+func EnsureTopicsWithSecurity(ctx context.Context, addr string, log *slog.Logger, sec *BrokerSecurity) error {
+	admin := client.NewAdmin(addr, sec.AdminOptions()...)
 	defer func() { _ = admin.Close() }()
 
 	topics := []string{TopicJobs, TopicDLQ, TopicRetry}
@@ -142,7 +163,7 @@ func EnsureTopics(ctx context.Context, addr string, log *slog.Logger) error {
 		if stderrors.As(err, &pe) && pe.Code == protocol.CodeTopicExists {
 			continue
 		}
-		return err
+		return ExplainBrokerError("ensure topics", err)
 	}
 	return nil
 }
@@ -150,12 +171,18 @@ func EnsureTopics(ctx context.Context, addr string, log *slog.Logger) error {
 // BrokerChecker returns a health checker that lists topics with a short
 // timeout. Good enough to know the broker answers the protocol.
 func BrokerChecker(addr string) func(ctx context.Context) error {
+	return BrokerCheckerWithSecurity(addr, nil)
+}
+
+// BrokerCheckerWithSecurity is BrokerChecker with the broker client's
+// auth/TLS options applied. A nil sec is open mode.
+func BrokerCheckerWithSecurity(addr string, sec *BrokerSecurity) func(ctx context.Context) error {
 	return func(ctx context.Context) error {
-		admin := client.NewAdmin(addr)
+		admin := client.NewAdmin(addr, sec.AdminOptions()...)
 		defer func() { _ = admin.Close() }()
 		ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
 		defer cancel()
 		_, err := admin.ListTopics(ctx)
-		return err
+		return ExplainBrokerError("broker health check", err)
 	}
 }

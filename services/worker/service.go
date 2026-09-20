@@ -36,6 +36,16 @@ type Config struct {
 	JobTimeout  time.Duration // WORKER_JOB_TIMEOUT, default 30s
 	JobLease    time.Duration // WORKER_JOB_LEASE_MS, default 30s
 
+	// Broker client protection (docs/broker-security.md), all optional.
+	// Empty everywhere = open mode: plaintext, no AUTH frame, fully
+	// compatible with a default broker.
+	BrokerAPIKeyID          string // BROKER_API_KEY_ID
+	BrokerAPIKeySecret      string // BROKER_API_KEY_SECRET
+	BrokerTLSCAFile         string // BROKER_TLS_CA_FILE
+	BrokerTLSServerName     string // BROKER_TLS_SERVER_NAME (optional)
+	BrokerTLSClientCertFile string // BROKER_TLS_CLIENT_CERT_FILE (optional, mTLS)
+	BrokerTLSClientKeyFile  string // BROKER_TLS_CLIENT_KEY_FILE (optional, mTLS)
+
 	// WebhookAllowPrivate disables the webhook egress range checks
 	// (WORKER_WEBHOOK_ALLOW_PRIVATE). Dev/test escape hatch — never in prod.
 	WebhookAllowPrivate bool
@@ -92,9 +102,24 @@ func Run(ctx context.Context, cfg Config) error {
 	// Topics are also ensured by the jobs service; doing it here too keeps the
 	// worker bootable on its own. Existing topics are fine. The priority
 	// topics get the same treatment so a worker running ahead of the jobs
-	// service rollout can still join the group.
+	// service rollout can still join the group. A typo in the broker auth/TLS
+	// config fails the boot right here instead of surfacing as perpetual
+	// consume errors.
+	bsec, err := jobs.NewBrokerSecurity(jobs.BrokerSecurityConfig{
+		APIKeyID:          cfg.BrokerAPIKeyID,
+		APIKeySecret:      cfg.BrokerAPIKeySecret,
+		TLSCAFile:         cfg.BrokerTLSCAFile,
+		TLSServerName:     cfg.BrokerTLSServerName,
+		TLSClientCertFile: cfg.BrokerTLSClientCertFile,
+		TLSClientKeyFile:  cfg.BrokerTLSClientKeyFile,
+	})
+	if err != nil {
+		return fmt.Errorf("worker: broker security config: %w", err)
+	}
+	log.Info("broker client security", slog.String("mode", bsec.Mode()))
+
 	topicCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-	if err := jobs.EnsureTopics(topicCtx, cfg.BrokerAddr, log); err != nil {
+	if err := jobs.EnsureTopicsWithSecurity(topicCtx, cfg.BrokerAddr, log, bsec); err != nil {
 		cancel()
 		return fmt.Errorf("worker: ensure broker topics: %w", err)
 	}
@@ -103,13 +128,13 @@ func Run(ctx context.Context, cfg Config) error {
 		cancel()
 		return err
 	}
-	if err := ensureTopics(topicCtx, cfg.BrokerAddr, topics, log); err != nil {
+	if err := ensureTopics(topicCtx, cfg.BrokerAddr, topics, log, bsec); err != nil {
 		cancel()
 		return fmt.Errorf("worker: ensure priority topics: %w", err)
 	}
 	cancel()
 
-	producer := jobs.NewProducer(cfg.BrokerAddr, log)
+	producer := jobs.NewProducerWithSecurity(cfg.BrokerAddr, log, bsec)
 
 	metr := metrics.New("worker")
 	sm := NewServiceMetrics(metr)
@@ -142,7 +167,7 @@ func Run(ctx context.Context, cfg Config) error {
 	healthReg := health.NewRegistry(3 * time.Second)
 	healthReg.Register("postgres", database.Checker(pool))
 	healthReg.Register("redis", redisChecker(rdb))
-	healthReg.Register("broker", jobs.BrokerChecker(cfg.BrokerAddr))
+	healthReg.Register("broker", jobs.BrokerCheckerWithSecurity(cfg.BrokerAddr, bsec))
 
 	// Child contexts so shutdown can stop pieces in order.
 	consumeCtx, stopConsume := context.WithCancel(context.Background())
@@ -152,10 +177,11 @@ func Run(ctx context.Context, cfg Config) error {
 	// same execution pipeline. The priority order is enforced at dispatch
 	// (see priority.go): while urgent lanes saturate the execution slots,
 	// cheaper lanes block in Handle and their offsets simply wait.
+	consumerOpts := append([]client.ConsumerOption{client.WithConsumerLogger(log)}, bsec.ConsumerOptions()...)
 	consumerDone := make(chan error, len(topics))
 	for _, topic := range topics {
 		consumer := client.NewConsumer(cfg.BrokerAddr, "workers", []string{topic},
-			w.Handle, client.WithConsumerLogger(log))
+			w.Handle, consumerOpts...)
 		go func() { consumerDone <- consumer.Run(consumeCtx) }()
 	}
 	stopConsumers := func() {
@@ -240,9 +266,11 @@ func redisChecker(rdb redis.UniversalClient) func(ctx context.Context) error {
 
 // ensureTopics creates the given topics, swallowing TOPIC_EXISTS. Same
 // pattern as jobs.EnsureTopics, kept here so the worker can boot its
-// priority lanes without waiting on a jobs-service rollout.
-func ensureTopics(ctx context.Context, addr string, topics []string, log *slog.Logger) error {
-	admin := client.NewAdmin(addr)
+// priority lanes without waiting on a jobs-service rollout. sec carries the
+// broker client auth/TLS settings (nil = open mode); auth failures are
+// decorated by jobs.ExplainBrokerError so a bad key fails the boot fast.
+func ensureTopics(ctx context.Context, addr string, topics []string, log *slog.Logger, sec *jobs.BrokerSecurity) error {
+	admin := client.NewAdmin(addr, sec.AdminOptions()...)
 	defer func() { _ = admin.Close() }()
 	for _, topic := range topics {
 		_, err := admin.CreateTopic(ctx, topic, 0) // 0 = broker default partitions
@@ -254,7 +282,7 @@ func ensureTopics(ctx context.Context, addr string, topics []string, log *slog.L
 		if stderrors.As(err, &pe) && pe.Code == protocol.CodeTopicExists {
 			continue
 		}
-		return err
+		return jobs.ExplainBrokerError("ensure topics", err)
 	}
 	return nil
 }
