@@ -1,0 +1,24 @@
+{
+  "name": "raven-sdk",
+  "version": "1.0.0",
+  "description": "Official JavaScript SDK for the RAVEN distributed jobs platform",
+  "type": "module",
+  "main": "src/index.js",
+  "exports": {
+    ".": "./src/index.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "test": "node --test"
+  },
+  "keywords": [
+    "raven",
+    "jobs",
+    "task-queue",
+    "distributed"
+  ],
+  "license": "MIT",
+  "dependencies": {}
+}
