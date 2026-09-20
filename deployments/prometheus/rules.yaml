@@ -1,0 +1,223 @@
+# RAVEN SLO recording + burn-rate alert rules.
+#
+# Implements the multiwindow, multi-burn-rate alerting pattern from the
+# Google SRE Workbook ("Alerting on SLOs", chapter 5). See docs/slo.md for
+# the full SLI/SLO definitions and the error-budget policy.
+#
+# WIRING (not automatic yet):
+#   - Compose: add `rule_files: ["/etc/prometheus/rules.yaml"]` to
+#     deployments/prometheus/prometheus.yml and mount this file into the
+#     prometheus container (docker-compose.yml currently mounts only
+#     prometheus.yml).
+#   - k8s: embed this file in a ConfigMap, mount it into the prometheus pod
+#     (observability.yaml), and add the same rule_files line to the
+#     prometheus-config ConfigMap's prometheus.yml. Restart the pod.
+#   Validate before applying: `promtool check rules rules.yaml`.
+
+groups:
+  # ---------------------------------------------------------------
+  # Recording rules: SLI ratios pre-computed at every window the
+  # alerts need, so alert expressions stay short and cheap.
+  # ---------------------------------------------------------------
+  - name: raven.sli-recording
+    interval: 15s
+    rules:
+      # Gateway availability SLI: 5xx share of all gateway requests.
+      # 5xx = we failed the client. 4xx = the client failed itself, so it
+      # does not burn the budget.
+      - record: raven:gateway_error_ratio:5m
+        expr: |
+          sum(rate(raven_gateway_http_requests_total{status=~"5.."}[5m]))
+          /
+          sum(rate(raven_gateway_http_requests_total[5m]))
+
+      - record: raven:gateway_error_ratio:30m
+        expr: |
+          sum(rate(raven_gateway_http_requests_total{status=~"5.."}[30m]))
+          /
+          sum(rate(raven_gateway_http_requests_total[30m]))
+
+      - record: raven:gateway_error_ratio:1h
+        expr: |
+          sum(rate(raven_gateway_http_requests_total{status=~"5.."}[1h]))
+          /
+          sum(rate(raven_gateway_http_requests_total[1h]))
+
+      - record: raven:gateway_error_ratio:6h
+        expr: |
+          sum(rate(raven_gateway_http_requests_total{status=~"5.."}[6h]))
+          /
+          sum(rate(raven_gateway_http_requests_total[6h]))
+
+      # Job success SLI: terminal failures / all executions.
+      # Terminal = dead (exhausted retries, lands in the DLQ) or poison
+      # (crashes the worker loop). "retry" is NOT a failure — the retry
+      # machinery working as designed must not burn budget.
+      - record: raven:jobs_failure_ratio:5m
+        expr: |
+          sum(rate(raven_worker_jobs_processed_total{result=~"dead|poison"}[5m]))
+          /
+          sum(rate(raven_worker_jobs_processed_total[5m]))
+
+      - record: raven:jobs_failure_ratio:30m
+        expr: |
+          sum(rate(raven_worker_jobs_processed_total{result=~"dead|poison"}[30m]))
+          /
+          sum(rate(raven_worker_jobs_processed_total[30m]))
+
+      - record: raven:jobs_failure_ratio:1h
+        expr: |
+          sum(rate(raven_worker_jobs_processed_total{result=~"dead|poison"}[1h]))
+          /
+          sum(rate(raven_worker_jobs_processed_total[1h]))
+
+      - record: raven:jobs_failure_ratio:6h
+        expr: |
+          sum(rate(raven_worker_jobs_processed_total{result=~"dead|poison"}[6h]))
+          /
+          sum(rate(raven_worker_jobs_processed_total[6h]))
+
+      # Job latency SLI (proxy): p95 of handler execution time.
+      # NOTE: this measures worker handler time, not true submit-to-finish
+      # end-to-end latency — see docs/slo.md "Known gaps".
+      - record: raven:jobs_duration_p95:5m
+        expr: |
+          histogram_quantile(0.95,
+            sum by (le) (rate(raven_worker_job_duration_seconds_bucket[5m])))
+
+      # Consumer-lag SLI input: worst lag across every topic/partition/group.
+      - record: raven:broker_consumer_lag_max
+        expr: max(raven_broker_consumer_lag)
+
+  # ---------------------------------------------------------------
+  # Burn-rate alerts, Google SRE Workbook style.
+  #
+  # Budget math:
+  #   99.9% SLO -> 0.1% budget  -> ~43m50s of full outage per 30 days
+  #   99.5% SLO -> 0.5% budget  -> ~3h39m  of full failure per 30 days
+  #
+  # Burn rate = observed error ratio / budget ratio.
+  #   Fast burn (14.4x): consumes the whole 30-day budget in ~2 days;
+  #     pages someone now. Long window 1h, short window 5m.
+  #   Slow burn (6x): consumes the budget in ~5 days; tickets, not pages.
+  #     Long window 6h, short window 30m.
+  # Both windows must be over the threshold at the same time, so a
+  # 30-second blip that already recovered does not page anyone.
+  # ---------------------------------------------------------------
+  - name: raven.slo-alerts
+    rules:
+      - alert: GatewayErrorBudgetBurnFast
+        expr: |
+          (
+            raven:gateway_error_ratio:1h > (14.4 * 0.001)
+          )
+          and
+          (
+            raven:gateway_error_ratio:5m > (14.4 * 0.001)
+          )
+        for: 2m
+        labels:
+          severity: critical
+          team: raven
+          slo: gateway-availability
+        annotations:
+          summary: Gateway burns the 99.9% availability budget at >14.4x
+          description: >-
+            5xx ratio has been above {{ $value }} for the last hour and the
+            last 5 minutes. At this rate the 30-day error budget is gone in
+            ~2 days. Page the on-call: check upstream health
+            (raven_gateway_circuit_breaker_state), Postgres and the broker.
+
+      - alert: GatewayErrorBudgetBurnSlow
+        expr: |
+          (
+            raven:gateway_error_ratio:6h > (6 * 0.001)
+          )
+          and
+          (
+            raven:gateway_error_ratio:30m > (6 * 0.001)
+          )
+        for: 1h
+        labels:
+          severity: warning
+          team: raven
+          slo: gateway-availability
+        annotations:
+          summary: Gateway burns the 99.9% availability budget at >6x
+          description: >-
+            Sustained elevated 5xx for 6h. Budget exhausted in ~5 days if
+            nothing changes. Open a ticket and investigate during business
+            hours.
+
+      - alert: JobSuccessErrorBudgetBurnFast
+        expr: |
+          (
+            raven:jobs_failure_ratio:1h > (14.4 * 0.005)
+          )
+          and
+          (
+            raven:jobs_failure_ratio:5m > (14.4 * 0.005)
+          )
+        for: 2m
+        labels:
+          severity: critical
+          team: raven
+          slo: job-success
+        annotations:
+          summary: Jobs burn the 99.5% success budget at >14.4x
+          description: >-
+            Terminal failures (dead|poison) are spiking. Check the Workers
+            dashboard: which job type is dying, is a bad deploy rolling out,
+            is the DLQ growing (raven_jobs_dead)?
+
+      - alert: JobSuccessErrorBudgetBurnSlow
+        expr: |
+          (
+            raven:jobs_failure_ratio:6h > (6 * 0.005)
+          )
+          and
+          (
+            raven:jobs_failure_ratio:30m > (6 * 0.005)
+          )
+        for: 1h
+        labels:
+          severity: warning
+          team: raven
+          slo: job-success
+        annotations:
+          summary: Jobs burn the 99.5% success budget at >6x
+          description: >-
+            A slow leak of dead/poison jobs. Often one broken job type or a
+            flaky external dependency. Check executions-by-result and the
+            DLQ.
+
+      # Latency SLOs use threshold alerting, not burn rate: a histogram
+      # quantile is not a ratio of good events, so the burn-rate math does
+      # not apply cleanly.
+      - alert: JobLatencyP95High
+        expr: raven:jobs_duration_p95:5m > 10
+        for: 15m
+        labels:
+          severity: warning
+          team: raven
+          slo: job-latency
+        annotations:
+          summary: Job handler p95 above 10s for 15m
+          description: >-
+            p95 of raven_worker_job_duration_seconds is {{ $value }}s against
+            a 10s objective. Check for slow handlers, resource saturation on
+            workers, or downstream timeouts (webhooks, DB).
+
+      - alert: BrokerConsumerLagHigh
+        expr: raven:broker_consumer_lag_max > 10000
+        for: 5m
+        labels:
+          severity: warning
+          team: raven
+          slo: consumer-lag
+        annotations:
+          summary: Consumer lag above 10k messages for 5m
+          description: >-
+            Worst group/partition lag is {{ $value }} messages. Consumers are
+            falling behind producers: scale workers (the lag-based HPA should
+            react — see docs/autoscaling.md) or find the slow consumer.
