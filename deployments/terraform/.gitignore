@@ -1,0 +1,14 @@
+# Terraform working dir artifacts — never commit these.
+.terraform/
+.terraform.lock.hcl
+terraform.tfstate
+terraform.tfstate.*
+crash.log
+crash.*.log
+*.tfplan
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+# Local secrets files (real tfvars with secrets belong to your vault).
+secrets.auto.tfvars
