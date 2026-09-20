@@ -10,6 +10,9 @@ coverage.html
 # Data dirs (broker segments, local dev)
 data/
 
+# Local RAVEN backups (scripts/backup.sh output — never commit snapshots)
+backups/
+
 # Tools (protoc etc, downloaded locally)
 tools/
 
