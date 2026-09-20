@@ -15,6 +15,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/prometheus/client_golang/prometheus"
 	"github.com/redis/go-redis/v9"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/metadata"
@@ -47,7 +48,7 @@ type Server struct {
 	pool       *pgxpool.Pool
 	rdb        redis.UniversalClient // may be nil in unit tests
 	log        *slog.Logger
-	secret     string
+	verifier   *ravenauth.Verifier // dual-secret during a rotation window; nil only when no secret is configured
 	bcryptCost int
 	metrics    *ServiceMetrics
 	// dummyHash is a bcrypt hash of a throwaway password, built once at
@@ -61,14 +62,39 @@ type Server struct {
 // equalizer hash.
 const dummyLoginPassword = "raven-timing-equalizer-not-a-real-password"
 
-// NewServer wires the gRPC service implementation. rdb may be nil; every
-// Redis use degrades gracefully (see ValidateToken for the trade-off).
+// NewServer wires the gRPC service implementation with a single JWT secret
+// (no rotation window). It is the backward-compatible constructor: callers
+// that need the dual-secret rotation window build a Verifier themselves and
+// call NewServerWithVerifier. rdb may be nil; every Redis use degrades
+// gracefully (see ValidateToken for the trade-off).
 func NewServer(pool *pgxpool.Pool, rdb redis.UniversalClient, log *slog.Logger, jwtSecret string, bcryptCost int, m *ServiceMetrics) *Server {
+	var counter prometheus.Counter
+	if m != nil {
+		counter = m.previousSecretUsed
+	}
+	verifier, err := ravenauth.NewVerifier(jwtSecret, "", counter)
+	if err != nil {
+		// Preserve the historical boot behavior: the service still comes up
+		// and token operations fail per-request (mint reports
+		// jwt_secret_missing, parse rejects) instead of refusing to start.
+		log.Warn("JWT secret not configured; token operations will fail",
+			slog.Any("error", err))
+	}
+	return NewServerWithVerifier(pool, rdb, log, verifier, bcryptCost, m)
+}
+
+// NewServerWithVerifier is NewServer with an explicit token Verifier, so the
+// service can run the JWT_SECRET + JWT_SECRET_PREVIOUS rotation window. The
+// verifier should carry the metrics.previousSecretUsed counter (the wiring
+// in service.go does exactly that). A nil verifier keeps the old
+// misconfigured-secret behavior: mint fails with jwt_secret_missing and
+// parse rejects every token.
+func NewServerWithVerifier(pool *pgxpool.Pool, rdb redis.UniversalClient, log *slog.Logger, verifier *ravenauth.Verifier, bcryptCost int, m *ServiceMetrics) *Server {
 	s := &Server{
 		pool:       pool,
 		rdb:        rdb,
 		log:        log,
-		secret:     jwtSecret,
+		verifier:   verifier,
 		bcryptCost: bcryptCost,
 		metrics:    m,
 	}
@@ -82,6 +108,26 @@ func NewServer(pool *pgxpool.Pool, rdb redis.UniversalClient, log *slog.Logger, 
 		s.dummyHash = h
 	}
 	return s
+}
+
+// mintAccess signs claims with the PRIMARY secret — always, even inside a
+// rotation window (see internal/auth Verifier docs).
+func (s *Server) mintAccess(c ravenauth.Claims) (string, error) {
+	if s.verifier == nil {
+		// No secret configured: surface the same jwt_secret_missing error
+		// the pre-Verifier code path produced.
+		return ravenauth.MintAccessToken("", c)
+	}
+	return s.verifier.MintAccessToken(c)
+}
+
+// parseAccess validates a token against the primary secret and, during a
+// rotation window, the previous one.
+func (s *Server) parseAccess(token string) (ravenauth.Claims, error) {
+	if s.verifier == nil {
+		return ravenauth.ParseAccessToken("", token)
+	}
+	return s.verifier.ParseAccessToken(token)
 }
 
 // ---------------------------------------------------------------------------
@@ -190,7 +236,7 @@ func (s *Server) mintTokenPair(ctx context.Context, q querier, user userRecord, 
 	}
 
 	accessExp := time.Now().Add(ravenauth.AccessTokenTTL)
-	access, err := ravenauth.MintAccessToken(s.secret, ravenauth.Claims{
+	access, err := s.mintAccess(ravenauth.Claims{
 		Email:            user.Email,
 		Roles:            roles,
 		Perms:            perms,
@@ -339,7 +385,7 @@ func (s *Server) Logout(ctx context.Context, req *genauth.LogoutRequest) (*genau
 // ---------------------------------------------------------------------------
 
 func (s *Server) ValidateToken(ctx context.Context, req *genauth.ValidateTokenRequest) (*genauth.ValidateTokenResponse, error) {
-	claims, err := ravenauth.ParseAccessToken(s.secret, req.GetAccessToken())
+	claims, err := s.parseAccess(req.GetAccessToken())
 	if err != nil {
 		s.metrics.tokensValidated.WithLabelValues("invalid").Inc()
 		return &genauth.ValidateTokenResponse{Valid: false}, nil
@@ -370,7 +416,7 @@ func (s *Server) ValidateToken(ctx context.Context, req *genauth.ValidateTokenRe
 }
 
 func (s *Server) RevokeToken(ctx context.Context, req *genauth.RevokeTokenRequest) (*genauth.RevokeTokenResponse, error) {
-	claims, err := ravenauth.ParseAccessToken(s.secret, req.GetAccessToken())
+	claims, err := s.parseAccess(req.GetAccessToken())
 	if err != nil {
 		// An unparseable or already-expired token needs no revocation.
 		return &genauth.RevokeTokenResponse{Ok: true}, nil

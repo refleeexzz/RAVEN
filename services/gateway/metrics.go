@@ -7,6 +7,7 @@ package gateway
 import (
 	"github.com/prometheus/client_golang/prometheus"
 
+	ravenauth "github.com/refleeexzz/RAVEN/internal/auth"
 	"github.com/refleeexzz/RAVEN/pkg/metrics"
 )
 
@@ -17,6 +18,10 @@ type serviceMetrics struct {
 	authCacheMisses    prometheus.Counter       // raven_gateway_auth_cache_misses_total
 	rateLimitFallbacks prometheus.Counter       // raven_gateway_rate_limit_fallback_total
 	breakerState       *prometheus.GaugeVec     // raven_gateway_circuit_breaker_state{upstream} 0/1/2
+	// jwtPreviousSecretUsed is the rotation-window collector from
+	// internal/auth, shared with the local token Verifier. Always
+	// registered; it sits at 0 outside a JWT rotation window.
+	jwtPreviousSecretUsed prometheus.Counter // raven_auth_jwt_previous_secret_used_total
 }
 
 func newServiceMetrics(reg *metrics.Registry) *serviceMetrics {
@@ -58,7 +63,8 @@ func newServiceMetrics(reg *metrics.Registry) *serviceMetrics {
 			Name:      "circuit_breaker_state",
 			Help:      "Circuit breaker state per upstream: 0 closed, 1 open, 2 half-open.",
 		}, []string{"upstream"}),
+		jwtPreviousSecretUsed: ravenauth.NewPreviousSecretUsedCounter(),
 	}
-	reg.Register(m.upstreamDuration, m.rateLimited, m.authCacheHits, m.authCacheMisses, m.rateLimitFallbacks, m.breakerState)
+	reg.Register(m.upstreamDuration, m.rateLimited, m.authCacheHits, m.authCacheMisses, m.rateLimitFallbacks, m.breakerState, m.jwtPreviousSecretUsed)
 	return m
 }

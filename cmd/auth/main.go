@@ -18,15 +18,17 @@ func main() {
 	defer stop()
 
 	cfg := auth.Config{
-		GRPCAddr:     config.Get("GRPC_ADDR", ":9081"),
-		HTTPAddr:     config.Get("HTTP_ADDR", ":8081"),
-		DatabaseURL:  config.Get("DATABASE_URL", "postgres://raven:raven@localhost:5432/raven?sslmode=disable"),
-		RedisAddr:    config.Get("REDIS_ADDR", "localhost:6379"),
-		JWTSecret:    config.Get("JWT_SECRET", "dev-only-secret-change-me"),
-		LogLevel:     config.Get("LOG_LEVEL", "info"),
-		BcryptCost:   config.GetInt("AUTH_BCRYPT_COST", 12),
-		OtelEndpoint: config.Get("OTEL_ENDPOINT", "localhost:4317"),
-		OtelEnabled:  config.GetBool("OTEL_ENABLED", false),
+		GRPCAddr:    config.Get("GRPC_ADDR", ":9081"),
+		HTTPAddr:    config.Get("HTTP_ADDR", ":8081"),
+		DatabaseURL: config.Get("DATABASE_URL", "postgres://raven:raven@localhost:5432/raven?sslmode=disable"),
+		RedisAddr:   config.Get("REDIS_ADDR", "localhost:6379"),
+		JWTSecret:   config.Get("JWT_SECRET", "dev-only-secret-change-me"),
+		// Empty outside a rotation window (docs/security/rotation.md).
+		JWTSecretPrevious: config.Get("JWT_SECRET_PREVIOUS", ""),
+		LogLevel:          config.Get("LOG_LEVEL", "info"),
+		BcryptCost:        config.GetInt("AUTH_BCRYPT_COST", 12),
+		OtelEndpoint:      config.Get("OTEL_ENDPOINT", "localhost:4317"),
+		OtelEnabled:       config.GetBool("OTEL_ENABLED", false),
 	}
 
 	if err := auth.Run(ctx, cfg); err != nil {

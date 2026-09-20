@@ -22,6 +22,7 @@ import (
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 
 	"github.com/refleeexzz/RAVEN/internal/audit"
+	ravenauth "github.com/refleeexzz/RAVEN/internal/auth"
 	"github.com/refleeexzz/RAVEN/internal/config"
 	"github.com/refleeexzz/RAVEN/internal/database"
 	"github.com/refleeexzz/RAVEN/internal/health"
@@ -50,12 +51,16 @@ type Config struct {
 	// JWTSecret is part of the contract env table. Token validation itself
 	// is delegated to the auth service over gRPC, so the gateway only keeps
 	// it for parity/future local checks.
-	JWTSecret      string
-	LogLevel       string
-	OtelEnabled    bool
-	OtelEndpoint   string
-	RateLimitRPM   int // RATE_LIMIT_RPM, default 100
-	RateLimitBurst int // RATE_LIMIT_BURST, default 20
+	JWTSecret string
+	// JWTSecretPrevious (JWT_SECRET_PREVIOUS) opens the JWT rotation window
+	// for the local parses the gateway does (audit login attribution).
+	// Empty = single-secret operation (docs/security/rotation.md).
+	JWTSecretPrevious string
+	LogLevel          string
+	OtelEnabled       bool
+	OtelEndpoint      string
+	RateLimitRPM      int // RATE_LIMIT_RPM, default 100
+	RateLimitBurst    int // RATE_LIMIT_BURST, default 20
 	// RateLimitStore picks the rate-limit backend (RATE_LIMIT_STORE):
 	// "redis" (default — one shared budget per key across gateway replicas,
 	// fail-open to in-process buckets when Redis errors) or "memory"
@@ -89,10 +94,15 @@ type server struct {
 	audit     auditEmitter // nil → the audit middleware is a pass-through
 	auditH    *auditHandlers
 	jwtSecret string // lets the audit middleware attribute login successes
-	health    *health.Registry
-	healthAgg *healthAgg
-	wsProxy   http.Handler
-	otelMW    middleware.Middleware
+	// jwtVerifier is the dual-secret token verifier (JWT_SECRET +
+	// JWT_SECRET_PREVIOUS) used by the audit middleware to attribute logins.
+	// nil when no secret is configured — validation still goes through the
+	// auth service over gRPC, so the gateway serves normally without it.
+	jwtVerifier *ravenauth.Verifier
+	health      *health.Registry
+	healthAgg   *healthAgg
+	wsProxy     http.Handler
+	otelMW      middleware.Middleware
 }
 
 // Run wires everything and serves until ctx is cancelled (SIGINT/SIGTERM).
@@ -161,6 +171,20 @@ func Run(ctx context.Context, cfg Config) error {
 	}
 	cache := newAuthCache()
 	go cache.sweep(ctx)
+
+	// Dual-secret JWT verifier for the local parses (audit attribution of
+	// login successes). The gateway never gates requests on it — token
+	// validation is delegated to the auth service over gRPC — so a missing
+	// secret downgrades attribution to the attempted email, never the API.
+	jwtVerifier, err := ravenauth.NewVerifier(cfg.JWTSecret, cfg.JWTSecretPrevious,
+		gatewayMetrics.jwtPreviousSecretUsed)
+	if err != nil {
+		log.Warn("JWT secret not configured; login audit attribution falls back to email",
+			slog.Any("error", err))
+	} else if jwtVerifier.HasPrevious() {
+		log.Info("JWT rotation window open: verifying against JWT_SECRET_PREVIOUS as fallback",
+			slog.String("metric", "raven_auth_jwt_previous_secret_used_total"))
+	}
 
 	wsProxy, err := newWSProxy(cfg.WSAddr, log)
 	if err != nil {
@@ -249,17 +273,18 @@ func Run(ctx context.Context, cfg Config) error {
 			log:       log,
 			touchCh:   make(chan string, 1024),
 		},
-		authH:     newAuthHandlers(authUp),
-		usersH:    newUsersHandlers(usersUp),
-		jobsH:     newJobsHandlers(jobsUp, rdb),
-		keysH:     newKeysHandlers(keysStore),
-		audit:     auditSink,
-		auditH:    newAuditHandlers(auditReader),
-		jwtSecret: cfg.JWTSecret,
-		health:    healthReg,
-		healthAgg: newHealthAggregator(cfg, authUp, usersUp, jobsUp, rdb, log),
-		wsProxy:   wsProxy,
-		otelMW:    otelMiddleware(cfg.OtelEnabled),
+		authH:       newAuthHandlers(authUp),
+		usersH:      newUsersHandlers(usersUp),
+		jobsH:       newJobsHandlers(jobsUp, rdb),
+		keysH:       newKeysHandlers(keysStore),
+		audit:       auditSink,
+		auditH:      newAuditHandlers(auditReader),
+		jwtSecret:   cfg.JWTSecret,
+		jwtVerifier: jwtVerifier,
+		health:      healthReg,
+		healthAgg:   newHealthAggregator(cfg, authUp, usersUp, jobsUp, rdb, log),
+		wsProxy:     wsProxy,
+		otelMW:      otelMiddleware(cfg.OtelEnabled),
 	}
 
 	// Async last_used_at updater for API-key auth. Stops with the server;

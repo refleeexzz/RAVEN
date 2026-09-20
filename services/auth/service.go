@@ -12,6 +12,7 @@ import (
 	"go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc"
 	"google.golang.org/grpc"
 
+	ravenauth "github.com/refleeexzz/RAVEN/internal/auth"
 	"github.com/refleeexzz/RAVEN/internal/database"
 	genauth "github.com/refleeexzz/RAVEN/internal/gen/auth"
 	"github.com/refleeexzz/RAVEN/internal/health"
@@ -30,8 +31,12 @@ type Config struct {
 	DatabaseURL string
 	RedisAddr   string
 	JWTSecret   string
-	LogLevel    string
-	BcryptCost  int // AUTH_BCRYPT_COST; clamped to [10, ∞) by HashPassword
+	// JWTSecretPrevious (JWT_SECRET_PREVIOUS) opens the JWT rotation
+	// window: verification falls back to it while signing keeps using
+	// JWTSecret. Empty = single-secret operation (docs/security/rotation.md).
+	JWTSecretPrevious string
+	LogLevel          string
+	BcryptCost        int // AUTH_BCRYPT_COST; clamped to [10, ∞) by HashPassword
 
 	// Tracing (OTel). Disabled by default locally; enabled in k8s via
 	// the raven-config ConfigMap.
@@ -64,11 +69,25 @@ func Run(ctx context.Context, cfg Config) error {
 	metr := metrics.New("auth")
 	sm := NewServiceMetrics(metr)
 
+	// Dual-secret JWT verification (docs/security/rotation.md): signing
+	// always uses JWT_SECRET; JWT_SECRET_PREVIOUS, when set, keeps tokens
+	// minted just before a rotation valid until they expire. The auth
+	// service is the token issuer — booting without a primary secret is a
+	// config error, so fail fast instead of serving 5xx on every login.
+	verifier, err := ravenauth.NewVerifier(cfg.JWTSecret, cfg.JWTSecretPrevious, sm.previousSecretUsed)
+	if err != nil {
+		return fmt.Errorf("auth: %w", err)
+	}
+	if verifier.HasPrevious() {
+		log.Info("JWT rotation window open: verifying against JWT_SECRET_PREVIOUS as fallback",
+			slog.String("metric", "raven_auth_jwt_previous_secret_used_total"))
+	}
+
 	healthReg := health.NewRegistry(3 * time.Second)
 	healthReg.Register("postgres", database.Checker(pool))
 	healthReg.Register("redis", redisChecker(rdb))
 
-	srv := NewServer(pool, rdb, log, cfg.JWTSecret, cfg.BcryptCost, sm)
+	srv := NewServerWithVerifier(pool, rdb, log, verifier, cfg.BcryptCost, sm)
 
 	shutdownTracing, err := tracing.Setup(ctx, "auth", cfg.OtelEndpoint, cfg.OtelEnabled)
 	if err != nil {

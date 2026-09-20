@@ -9,9 +9,10 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/golang-jwt/jwt/v5"
 	gws "github.com/gorilla/websocket"
+	"github.com/prometheus/client_golang/prometheus"
 
+	ravenauth "github.com/refleeexzz/RAVEN/internal/auth"
 	"github.com/refleeexzz/RAVEN/internal/health"
 	"github.com/refleeexzz/RAVEN/internal/middleware"
 	ravenerrors "github.com/refleeexzz/RAVEN/pkg/errors"
@@ -21,11 +22,16 @@ import (
 
 // HandlerConfig wires NewHandler.
 type HandlerConfig struct {
-	Hub            *Hub
-	Fanout         *Fanout
-	Presence       *Presence
-	JWTSecret      string
-	AllowAnonymous bool // WS_ALLOW_ANONYMOUS: accept ?token=anon-<name> (local demos)
+	Hub       *Hub
+	Fanout    *Fanout
+	Presence  *Presence
+	JWTSecret string
+	// JWTSecretPrevious (JWT_SECRET_PREVIOUS) opens the JWT rotation
+	// window: tokens signed with the previous secret keep validating until
+	// they expire. Empty = single-secret operation
+	// (docs/security/rotation.md).
+	JWTSecretPrevious string
+	AllowAnonymous    bool // WS_ALLOW_ANONYMOUS: accept ?token=anon-<name> (local demos)
 	// AllowedOrigins (WS_ALLOWED_ORIGINS, comma-separated) lists the exact
 	// origins ("https://console.example.com") allowed to open cross-origin
 	// WebSocket handshakes. Empty means: same-origin and non-browser clients
@@ -40,13 +46,34 @@ type HandlerConfig struct {
 // NewHandler builds the :8084 mux: the public WebSocket upgrade endpoint
 // plus the standard ops endpoints from docs/contracts/ports-and-env.md.
 func NewHandler(cfg HandlerConfig) http.Handler {
+	// Dual-secret JWT verification (docs/security/rotation.md). A missing
+	// primary secret is a misconfiguration: fail closed — every real token
+	// is rejected — with a loud boot log, instead of validating tokens
+	// against an empty key.
+	var (
+		verifier *ravenauth.Verifier
+		counter  prometheus.Counter
+	)
+	if cfg.Metrics != nil {
+		counter = ravenauth.NewPreviousSecretUsedCounter()
+		cfg.Metrics.Register(counter)
+	}
+	verifier, err := ravenauth.NewVerifier(cfg.JWTSecret, cfg.JWTSecretPrevious, counter)
+	if err != nil {
+		cfg.Logger.Error("JWT secret not configured; all token authentications will be rejected",
+			slog.Any("error", err))
+	} else if verifier.HasPrevious() {
+		cfg.Logger.Info("JWT rotation window open: verifying against JWT_SECRET_PREVIOUS as fallback",
+			slog.String("metric", "raven_auth_jwt_previous_secret_used_total"))
+	}
+
 	h := &handler{
 		hub:            cfg.Hub,
 		fanout:         cfg.Fanout,
 		presence:       cfg.Presence,
 		allowAnonymous: cfg.AllowAnonymous,
 		allowedOrigins: canonicalOrigins(cfg.AllowedOrigins),
-		jwtSecret:      cfg.JWTSecret,
+		jwt:            verifier,
 		log:            cfg.Logger,
 		upgrader: gws.Upgrader{
 			ReadBufferSize:  4096,
@@ -90,7 +117,7 @@ type handler struct {
 	presence       *Presence
 	allowAnonymous bool
 	allowedOrigins map[string]struct{}
-	jwtSecret      string
+	jwt            *ravenauth.Verifier // nil = misconfigured secret, fail closed
 	log            *slog.Logger
 	upgrader       gws.Upgrader
 }
@@ -162,9 +189,17 @@ func (h *handler) authenticate(token string) (userID string, anonymous bool, err
 			return name, true, nil
 		}
 	}
-	claims, err := parseJWT(h.jwtSecret, token)
+	if h.jwt == nil {
+		return "", false, ravenerrors.E(ravenerrors.KindUnauthorized,
+			"jwt_not_configured", "token validation is not configured", nil)
+	}
+	claims, err := h.jwt.ParseAccessToken(token)
 	if err != nil {
 		return "", false, err
+	}
+	if claims.Subject == "" {
+		return "", false, ravenerrors.E(ravenerrors.KindUnauthorized,
+			"no_subject", "token has no subject", nil)
 	}
 	return claims.Subject, false, nil
 }
@@ -238,33 +273,6 @@ func sameOriginHost(origin *url.URL, reqHost string) bool {
 }
 
 var anonNameRE = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`)
-
-// jwtClaims are the HS256 claims RAVEN issues at login.
-//
-// TODO(auth): internal/auth is being built in parallel by another agent.
-// Replace this local validator with that package once it lands so claim
-// handling lives in exactly one place.
-type jwtClaims struct {
-	Email string `json:"email"`
-	jwt.RegisteredClaims
-}
-
-// parseJWT validates an HS256 token with required sub and exp claims.
-func parseJWT(secret, token string) (*jwtClaims, error) {
-	claims := &jwtClaims{}
-	_, err := jwt.ParseWithClaims(token, claims,
-		func(t *jwt.Token) (any, error) { return []byte(secret), nil },
-		jwt.WithValidMethods([]string{"HS256"}),
-		jwt.WithExpirationRequired(),
-	)
-	if err != nil {
-		return nil, ravenerrors.E(ravenerrors.KindUnauthorized, "bad_token", "token validation failed", err)
-	}
-	if claims.Subject == "" {
-		return nil, ravenerrors.E(ravenerrors.KindUnauthorized, "no_subject", "token has no subject", nil)
-	}
-	return claims, nil
-}
 
 func writeError(w http.ResponseWriter, status int, message string) {
 	w.Header().Set("Content-Type", "application/json")

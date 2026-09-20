@@ -275,8 +275,8 @@ func (s *server) auditActorFromAuthFlow(pattern string, reqBody, respBody []byte
 			}
 		case "POST /api/auth/login":
 			var resp tokenPairJSON
-			if json.Unmarshal(respBody, &resp) == nil && resp.AccessToken != "" && s.jwtSecret != "" {
-				if claims, err := ravenauth.ParseAccessToken(s.jwtSecret, resp.AccessToken); err == nil && claims.Subject != "" {
+			if json.Unmarshal(respBody, &resp) == nil && resp.AccessToken != "" {
+				if claims, ok := s.parseLoginToken(resp.AccessToken); ok && claims.Subject != "" {
 					return claims.Subject
 				}
 			}
@@ -289,6 +289,24 @@ func (s *server) auditActorFromAuthFlow(pattern string, reqBody, respBody []byte
 		return req.Email
 	}
 	return audit.ActorAnonymous
+}
+
+// parseLoginToken verifies a freshly minted login token with the dual-secret
+// verifier (JWT_SECRET + JWT_SECRET_PREVIOUS during a rotation window). The
+// token was just issued by our own auth service, so trusting a verified
+// parse is safe. Tests that build a server directly, without a verifier,
+// fall back to the single-secret parse of jwtSecret — the pre-rotation
+// behavior.
+func (s *server) parseLoginToken(token string) (ravenauth.Claims, bool) {
+	if s.jwtVerifier != nil {
+		claims, err := s.jwtVerifier.ParseAccessToken(token)
+		return claims, err == nil
+	}
+	if s.jwtSecret == "" {
+		return ravenauth.Claims{}, false
+	}
+	claims, err := ravenauth.ParseAccessToken(s.jwtSecret, token)
+	return claims, err == nil
 }
 
 // auditDetail builds the detail column: route pattern, final status, path

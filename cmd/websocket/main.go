@@ -59,15 +59,16 @@ func run() error {
 	})
 
 	handler := ws.NewHandler(ws.HandlerConfig{
-		Hub:            hub,
-		Fanout:         fanout,
-		Presence:       presence,
-		JWTSecret:      config.Get("JWT_SECRET", "dev-only-secret-change-me"),
-		AllowAnonymous: config.GetBool("WS_ALLOW_ANONYMOUS", false),
-		AllowedOrigins: splitCSV(config.Get("WS_ALLOWED_ORIGINS", "")),
-		Logger:         log,
-		Metrics:        reg,
-		Health:         healthReg,
+		Hub:               hub,
+		Fanout:            fanout,
+		Presence:          presence,
+		JWTSecret:         config.Get("JWT_SECRET", "dev-only-secret-change-me"),
+		JWTSecretPrevious: config.Get("JWT_SECRET_PREVIOUS", ""), // empty outside a rotation window
+		AllowAnonymous:    config.GetBool("WS_ALLOW_ANONYMOUS", false),
+		AllowedOrigins:    splitCSV(config.Get("WS_ALLOWED_ORIGINS", "")),
+		Logger:            log,
+		Metrics:           reg,
+		Health:            healthReg,
 	})
 
 	g, gctx := errgroup.WithContext(ctx)

@@ -3,6 +3,7 @@ package auth
 import (
 	"github.com/prometheus/client_golang/prometheus"
 
+	ravenauth "github.com/refleeexzz/RAVEN/internal/auth"
 	"github.com/refleeexzz/RAVEN/pkg/metrics"
 )
 
@@ -12,6 +13,10 @@ type ServiceMetrics struct {
 	logins          *prometheus.CounterVec // raven_auth_logins_total{result}
 	tokensValidated *prometheus.CounterVec // raven_auth_tokens_validated_total{result}
 	refreshRotated  prometheus.Counter     // raven_auth_refresh_rotations_total
+	// previousSecretUsed is the rotation-window collector from internal/auth;
+	// it feeds the service Verifier so /metrics shows when the window can
+	// close. Always registered, even outside a rotation (it just sits at 0).
+	previousSecretUsed prometheus.Counter // raven_auth_jwt_previous_secret_used_total
 }
 
 func NewServiceMetrics(reg *metrics.Registry) *ServiceMetrics {
@@ -34,7 +39,8 @@ func NewServiceMetrics(reg *metrics.Registry) *ServiceMetrics {
 			Name:      "refresh_rotations_total",
 			Help:      "Successful refresh-token rotations.",
 		}),
+		previousSecretUsed: ravenauth.NewPreviousSecretUsedCounter(),
 	}
-	reg.Register(m.logins, m.tokensValidated, m.refreshRotated)
+	reg.Register(m.logins, m.tokensValidated, m.refreshRotated, m.previousSecretUsed)
 	return m
 }
