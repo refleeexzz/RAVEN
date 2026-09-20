@@ -1,0 +1,81 @@
+{{- if and .Values.observability.enabled .Values.observability.jaeger.enabled -}}
+# Jaeger all-in-one: collector + query + UI in one pod. Perfect for dev,
+# not for production.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: jaeger
+  namespace: {{ include "raven.namespace" . }}
+  labels:
+    {{- include "raven.labels" (dict "ctx" . "component" "jaeger") | nindent 4 }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "raven.selectorLabels" "jaeger" | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "raven.labels" (dict "ctx" . "component" "jaeger") | nindent 8 }}
+    spec:
+      serviceAccountName: {{ include "raven.serviceAccountName" . }}
+      automountServiceAccountToken: false
+      securityContext:
+        # The jaeger all-in-one image already runs as uid 10001.
+        runAsNonRoot: true
+        runAsUser: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: jaeger
+          image: {{ include "raven.image" (dict "ctx" . "image" .Values.observability.jaeger.image) }}
+          imagePullPolicy: {{ include "raven.imagePullPolicy" (dict "ctx" . "image" .Values.observability.jaeger.image) }}
+          securityContext:
+            {{- include "raven.containerSecurityContext" . | nindent 12 }}
+          ports:
+            - name: ui
+              containerPort: {{ .Values.observability.jaeger.service.uiPort }}
+            - name: otlp-grpc
+              containerPort: {{ .Values.observability.jaeger.service.otlpGrpcPort }}
+          env:
+            # Without this the all-in-one image doesn't open the OTLP
+            # receiver and our traces would have nowhere to go.
+            - name: COLLECTOR_OTLP_ENABLED
+              value: "true"
+          readinessProbe:
+            httpGet:
+              path: /
+              port: ui
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /
+              port: ui
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          resources:
+            {{- toYaml .Values.observability.jaeger.resources | nindent 12 }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: jaeger
+  namespace: {{ include "raven.namespace" . }}
+  labels:
+    {{- include "raven.labels" (dict "ctx" . "component" "jaeger") | nindent 4 }}
+spec:
+  # DEV: LoadBalancer binds the UI to localhost and lets host-run services
+  # push OTLP. In production the UI belongs behind an authenticated
+  # Ingress; the collector stays internal.
+  type: {{ .Values.observability.jaeger.service.type }}
+  selector:
+    {{- include "raven.selectorLabels" "jaeger" | nindent 4 }}
+  ports:
+    - name: ui
+      port: {{ .Values.observability.jaeger.service.uiPort }}
+      targetPort: ui
+    - name: otlp-grpc
+      port: {{ .Values.observability.jaeger.service.otlpGrpcPort }}
+      targetPort: otlp-grpc
+{{- end }}

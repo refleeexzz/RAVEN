@@ -1,0 +1,123 @@
+{{- if and .Values.observability.enabled .Values.observability.prometheus.enabled -}}
+# Prometheus scrape config as a ConfigMap so it can be edited with a plain
+# `kubectl edit` + pod restart.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: prometheus-config
+  namespace: {{ include "raven.namespace" . }}
+  labels:
+    {{- include "raven.labels" (dict "ctx" . "component" "prometheus") | nindent 4 }}
+data:
+  prometheus.yml: |
+    global:
+      scrape_interval: {{ .Values.observability.prometheus.scrapeInterval }}
+      evaluation_interval: {{ .Values.observability.prometheus.scrapeInterval }}
+    scrape_configs:
+      - job_name: prometheus
+        static_configs:
+          - targets: ["localhost:{{ .Values.observability.prometheus.service.port }}"]
+      - job_name: gateway
+        static_configs:
+          - targets: ["gateway:{{ .Values.gateway.service.httpPort }}"]
+      - job_name: auth
+        static_configs:
+          - targets: ["auth:{{ .Values.auth.service.opsPort }}"]
+      - job_name: users
+        static_configs:
+          - targets: ["users:{{ .Values.users.service.opsPort }}"]
+      - job_name: jobs
+        static_configs:
+          - targets: ["jobs:{{ .Values.jobs.service.opsPort }}"]
+      - job_name: websocket
+        static_configs:
+          - targets: ["websocket:{{ .Values.websocket.service.httpPort }}"]
+      - job_name: worker
+        static_configs:
+          - targets: ["worker:{{ .Values.worker.service.opsPort }}"]
+      - job_name: broker
+        static_configs:
+          - targets: ["broker:{{ .Values.broker.service.opsPort }}"]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: prometheus
+  namespace: {{ include "raven.namespace" . }}
+  labels:
+    {{- include "raven.labels" (dict "ctx" . "component" "prometheus") | nindent 4 }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "raven.selectorLabels" "prometheus" | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "raven.labels" (dict "ctx" . "component" "prometheus") | nindent 8 }}
+    spec:
+      serviceAccountName: {{ include "raven.serviceAccountName" . }}
+      automountServiceAccountToken: false
+      securityContext:
+        # The prometheus image already runs as nobody (uid 65534).
+        runAsNonRoot: true
+        runAsUser: 65534
+        runAsGroup: 65534
+        fsGroup: 65534
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: prometheus
+          image: {{ include "raven.image" (dict "ctx" . "image" .Values.observability.prometheus.image) }}
+          imagePullPolicy: {{ include "raven.imagePullPolicy" (dict "ctx" . "image" .Values.observability.prometheus.image) }}
+          securityContext:
+            {{- include "raven.containerSecurityContext" . | nindent 12 }}
+          ports:
+            - containerPort: {{ .Values.observability.prometheus.service.port }}
+          # Dev only: no PVC. Losing metrics history on restart is fine
+          # on a laptop and keeps the setup simple.
+          readinessProbe:
+            httpGet:
+              path: /-/ready
+              port: {{ .Values.observability.prometheus.service.port }}
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /-/healthy
+              port: {{ .Values.observability.prometheus.service.port }}
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          resources:
+            {{- toYaml .Values.observability.prometheus.resources | nindent 12 }}
+          volumeMounts:
+            - name: config
+              mountPath: /etc/prometheus/prometheus.yml
+              subPath: prometheus.yml
+            - name: tsdb
+              mountPath: /prometheus
+      volumes:
+        - name: config
+          configMap:
+            name: prometheus-config
+        - name: tsdb
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: prometheus
+  namespace: {{ include "raven.namespace" . }}
+  labels:
+    {{- include "raven.labels" (dict "ctx" . "component" "prometheus") | nindent 4 }}
+spec:
+  # DEV: LoadBalancer binds the UI to localhost. In production expose it
+  # (if at all) behind an authenticated Ingress — the UI has no login.
+  type: {{ .Values.observability.prometheus.service.type }}
+  selector:
+    {{- include "raven.selectorLabels" "prometheus" | nindent 4 }}
+  ports:
+    - name: http
+      port: {{ .Values.observability.prometheus.service.port }}
+      targetPort: {{ .Values.observability.prometheus.service.port }}
+{{- end }}

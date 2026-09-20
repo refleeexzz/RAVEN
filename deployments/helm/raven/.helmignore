@@ -1,0 +1,6 @@
+# Helm packaging ignores. Keep it simple: no negation patterns — helm's
+# .helmignore does not support '!' and a bad rule makes the loader ignore
+# Chart.yaml itself ("Chart.yaml file is missing").
+.git/
+.gitignore
+.DS_Store

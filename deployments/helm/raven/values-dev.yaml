@@ -1,0 +1,39 @@
+# values-dev.yaml — local Docker Desktop profile.
+#
+# One-command local install (images built per deployments/kubernetes/namespace.yaml):
+#   helm install raven deployments/helm/raven -n raven --create-namespace -f deployments/helm/raven/values-dev.yaml
+#
+# Differences from the defaults: the chart creates the Secret itself with the
+# documented DEV credentials (the same ones in secrets.example.yaml), so a
+# fresh laptop needs zero manual steps. Never reuse these values anywhere real.
+
+secrets:
+  create: true
+  # Documented DEV defaults — public knowledge, fine for Docker Desktop only.
+  jwtSecret: "dev-only-secret-change-me"
+  databaseUrl: "postgres://raven:raven@postgres:5432/raven?sslmode=disable"
+
+config:
+  logLevel: debug
+  wsAllowAnonymous: true
+
+# Docker Desktop binds LoadBalancer services to localhost — that is the dev UX.
+gateway:
+  service:
+    type: LoadBalancer
+websocket:
+  service:
+    type: LoadBalancer
+console:
+  service:
+    type: LoadBalancer
+
+networkPolicy:
+  enabled: true
+  externalAccess: true # LoadBalancer traffic arrives from the host (cluster-external)
+
+observability:
+  enabled: true # UIs on localhost:3000 / :16686 / :9090
+
+autoscaling:
+  enabled: false # metrics-server is not installed by default on Docker Desktop

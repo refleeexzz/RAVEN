@@ -1,0 +1,48 @@
+{{- if .Values.autoscaling.enabled -}}
+# HPAs for the two services that flex with load: gateway (traffic-facing)
+# and worker (job muscle). Needs metrics-server — without it the HPAs just
+# sit there harmlessly.
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: gateway
+  namespace: {{ include "raven.namespace" . }}
+  labels:
+    {{- include "raven.labels" (dict "ctx" . "component" "gateway") | nindent 4 }}
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: gateway
+  minReplicas: {{ .Values.autoscaling.gateway.minReplicas }}
+  maxReplicas: {{ .Values.autoscaling.gateway.maxReplicas }}
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: {{ .Values.autoscaling.gateway.cpuUtilization }}
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: worker
+  namespace: {{ include "raven.namespace" . }}
+  labels:
+    {{- include "raven.labels" (dict "ctx" . "component" "worker") | nindent 4 }}
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: worker
+  minReplicas: {{ .Values.autoscaling.worker.minReplicas }}
+  maxReplicas: {{ .Values.autoscaling.worker.maxReplicas }}
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: {{ .Values.autoscaling.worker.cpuUtilization }}
+{{- end }}

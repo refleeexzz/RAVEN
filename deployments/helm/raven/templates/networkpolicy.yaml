@@ -1,0 +1,738 @@
+{{- if .Values.networkPolicy.enabled -}}
+{{- $ext := .Values.networkPolicy.externalAccess -}}
+# NetworkPolicies: default-deny EVERYTHING (ingress + egress), then each
+# workload gets exactly the flows it needs. The headline win: the broker's
+# raw TCP port (9100) has no application-level auth, so ONLY jobs and
+# worker pods may reach it — the network is the control.
+#
+# externalAccess=false drops every 0.0.0.0/0 ingress rule (prod posture:
+# nothing is reachable straight from outside the cluster; front the
+# gateway with your own Ingress and extend these policies accordingly).
+---
+# Deny all ingress and egress for every pod in the namespace.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-all
+  namespace: {{ include "raven.namespace" . }}
+  labels:
+    {{- include "raven.labels" (dict "ctx" . "component" "networkpolicy") | nindent 4 }}
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+    - Egress
+---
+# The one universal allowance: DNS.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-dns-egress
+  namespace: {{ include "raven.namespace" . }}
+  labels:
+    {{- include "raven.labels" (dict "ctx" . "component" "networkpolicy") | nindent 4 }}
+spec:
+  podSelector: {}
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+---
+# gateway — the public entrypoint. Egress only to its upstreams. It can
+# reach the broker's OPS port (9101, health aggregation) but NOT the data
+# port (9100).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: gateway
+  namespace: {{ include "raven.namespace" . }}
+  labels:
+    {{- include "raven.labels" (dict "ctx" . "component" "gateway") | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app: gateway
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    {{- if $ext }}
+    - from:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+      ports:
+        - protocol: TCP
+          port: {{ .Values.gateway.service.httpPort }}
+    {{- end }}
+    - from:
+        - podSelector:
+            matchLabels:
+              app: prometheus
+      ports:
+        - protocol: TCP
+          port: {{ .Values.gateway.service.httpPort }}
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app: auth
+      ports:
+        - protocol: TCP
+          port: {{ .Values.auth.service.grpcPort }}
+    - to:
+        - podSelector:
+            matchLabels:
+              app: users
+      ports:
+        - protocol: TCP
+          port: {{ .Values.users.service.grpcPort }}
+    - to:
+        - podSelector:
+            matchLabels:
+              app: jobs
+      ports:
+        - protocol: TCP
+          port: {{ .Values.jobs.service.grpcPort }}
+    - to:
+        - podSelector:
+            matchLabels:
+              app: websocket
+      ports:
+        - protocol: TCP
+          port: {{ .Values.websocket.service.httpPort }}
+    - to:
+        - podSelector:
+            matchLabels:
+              app: redis
+      ports:
+        - protocol: TCP
+          port: {{ .Values.redis.service.port }}
+    - to:
+        - podSelector:
+            matchLabels:
+              app: broker
+      ports:
+        - protocol: TCP
+          port: {{ .Values.broker.service.opsPort }}
+    {{- if .Values.observability.enabled }}
+    - to:
+        - podSelector:
+            matchLabels:
+              app: jaeger
+      ports:
+        - protocol: TCP
+          port: {{ .Values.observability.jaeger.service.otlpGrpcPort }}
+    {{- end }}
+---
+# auth — called by the gateway over gRPC, scraped by Prometheus.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: auth
+  namespace: {{ include "raven.namespace" . }}
+  labels:
+    {{- include "raven.labels" (dict "ctx" . "component" "auth") | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app: auth
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: gateway
+      ports:
+        - protocol: TCP
+          port: {{ .Values.auth.service.grpcPort }}
+    - from:
+        - podSelector:
+            matchLabels:
+              app: prometheus
+      ports:
+        - protocol: TCP
+          port: {{ .Values.auth.service.opsPort }}
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app: postgres
+      ports:
+        - protocol: TCP
+          port: {{ .Values.postgres.service.port }}
+    - to:
+        - podSelector:
+            matchLabels:
+              app: redis
+      ports:
+        - protocol: TCP
+          port: {{ .Values.redis.service.port }}
+    {{- if .Values.observability.enabled }}
+    - to:
+        - podSelector:
+            matchLabels:
+              app: jaeger
+      ports:
+        - protocol: TCP
+          port: {{ .Values.observability.jaeger.service.otlpGrpcPort }}
+    {{- end }}
+---
+# users — called by the gateway over gRPC, scraped by Prometheus.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: users
+  namespace: {{ include "raven.namespace" . }}
+  labels:
+    {{- include "raven.labels" (dict "ctx" . "component" "users") | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app: users
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: gateway
+      ports:
+        - protocol: TCP
+          port: {{ .Values.users.service.grpcPort }}
+    - from:
+        - podSelector:
+            matchLabels:
+              app: prometheus
+      ports:
+        - protocol: TCP
+          port: {{ .Values.users.service.opsPort }}
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app: postgres
+      ports:
+        - protocol: TCP
+          port: {{ .Values.postgres.service.port }}
+    {{- if .Values.observability.enabled }}
+    - to:
+        - podSelector:
+            matchLabels:
+              app: jaeger
+      ports:
+        - protocol: TCP
+          port: {{ .Values.observability.jaeger.service.otlpGrpcPort }}
+    {{- end }}
+---
+# jobs — called by the gateway over gRPC, scraped by Prometheus. One of
+# only two workloads allowed to touch the broker data port.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: jobs
+  namespace: {{ include "raven.namespace" . }}
+  labels:
+    {{- include "raven.labels" (dict "ctx" . "component" "jobs") | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app: jobs
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: gateway
+      ports:
+        - protocol: TCP
+          port: {{ .Values.jobs.service.grpcPort }}
+    - from:
+        - podSelector:
+            matchLabels:
+              app: prometheus
+      ports:
+        - protocol: TCP
+          port: {{ .Values.jobs.service.opsPort }}
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app: postgres
+      ports:
+        - protocol: TCP
+          port: {{ .Values.postgres.service.port }}
+    - to:
+        - podSelector:
+            matchLabels:
+              app: broker
+      ports:
+        - protocol: TCP
+          port: {{ .Values.broker.service.tcpPort }}
+    - to:
+        - podSelector:
+            matchLabels:
+              app: redis
+      ports:
+        - protocol: TCP
+          port: {{ .Values.redis.service.port }}
+    {{- if .Values.observability.enabled }}
+    - to:
+        - podSelector:
+            matchLabels:
+              app: jaeger
+      ports:
+        - protocol: TCP
+          port: {{ .Values.observability.jaeger.service.otlpGrpcPort }}
+    {{- end }}
+---
+# worker — nobody calls it (it pulls work), only Prometheus scrapes it.
+# The other workload allowed to touch the broker data port.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: worker
+  namespace: {{ include "raven.namespace" . }}
+  labels:
+    {{- include "raven.labels" (dict "ctx" . "component" "worker") | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app: worker
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: prometheus
+      ports:
+        - protocol: TCP
+          port: {{ .Values.worker.service.opsPort }}
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app: postgres
+      ports:
+        - protocol: TCP
+          port: {{ .Values.postgres.service.port }}
+    - to:
+        - podSelector:
+            matchLabels:
+              app: redis
+      ports:
+        - protocol: TCP
+          port: {{ .Values.redis.service.port }}
+    - to:
+        - podSelector:
+            matchLabels:
+              app: broker
+      ports:
+        - protocol: TCP
+          port: {{ .Values.broker.service.tcpPort }}
+    {{- if .Values.observability.enabled }}
+    - to:
+        - podSelector:
+            matchLabels:
+              app: jaeger
+      ports:
+        - protocol: TCP
+          port: {{ .Values.observability.jaeger.service.otlpGrpcPort }}
+    {{- end }}
+---
+# websocket — reached by the gateway (/ws proxy + /debug/stats), by the
+# console browser directly (dev), and by Prometheus.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: websocket
+  namespace: {{ include "raven.namespace" . }}
+  labels:
+    {{- include "raven.labels" (dict "ctx" . "component" "websocket") | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app: websocket
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    {{- if $ext }}
+    - from:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+      ports:
+        - protocol: TCP
+          port: {{ .Values.websocket.service.httpPort }}
+    {{- end }}
+    - from:
+        - podSelector:
+            matchLabels:
+              app: gateway
+      ports:
+        - protocol: TCP
+          port: {{ .Values.websocket.service.httpPort }}
+    - from:
+        - podSelector:
+            matchLabels:
+              app: prometheus
+      ports:
+        - protocol: TCP
+          port: {{ .Values.websocket.service.httpPort }}
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app: redis
+      ports:
+        - protocol: TCP
+          port: {{ .Values.redis.service.port }}
+    {{- if .Values.observability.enabled }}
+    - to:
+        - podSelector:
+            matchLabels:
+              app: jaeger
+      ports:
+        - protocol: TCP
+          port: {{ .Values.observability.jaeger.service.otlpGrpcPort }}
+    {{- end }}
+---
+# broker — THE lockdown. The raw TCP data port (9100) has no
+# application-level authentication: jobs and worker pods only. The ops
+# port (9101) is open to the gateway and Prometheus. Any other pod —
+# including a compromised one — cannot reach the message log.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: broker
+  namespace: {{ include "raven.namespace" . }}
+  labels:
+    {{- include "raven.labels" (dict "ctx" . "component" "broker") | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app: broker
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: jobs
+        - podSelector:
+            matchLabels:
+              app: worker
+      ports:
+        - protocol: TCP
+          port: {{ .Values.broker.service.tcpPort }}
+    - from:
+        - podSelector:
+            matchLabels:
+              app: gateway
+      ports:
+        - protocol: TCP
+          port: {{ .Values.broker.service.opsPort }}
+    - from:
+        - podSelector:
+            matchLabels:
+              app: prometheus
+      ports:
+        - protocol: TCP
+          port: {{ .Values.broker.service.opsPort }}
+  {{- if .Values.observability.enabled }}
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app: jaeger
+      ports:
+        - protocol: TCP
+          port: {{ .Values.observability.jaeger.service.otlpGrpcPort }}
+  {{- end }}
+---
+# console — static files served by nginx. The browser calls the gateway
+# and websocket directly, so the pod itself needs NO egress at all.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: console
+  namespace: {{ include "raven.namespace" . }}
+  labels:
+    {{- include "raven.labels" (dict "ctx" . "component" "console") | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app: console
+  policyTypes:
+    - Ingress
+  ingress:
+    {{- if $ext }}
+    - from:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+      ports:
+        - protocol: TCP
+          port: 8080
+    {{- else }}
+    []
+    {{- end }}
+---
+# postgres — accepts connections only from the services that hold a
+# DATABASE_URL, plus the migrate Job. No egress at all.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: postgres
+  namespace: {{ include "raven.namespace" . }}
+  labels:
+    {{- include "raven.labels" (dict "ctx" . "component" "postgres") | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app: postgres
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: auth
+        - podSelector:
+            matchLabels:
+              app: users
+        - podSelector:
+            matchLabels:
+              app: jobs
+        - podSelector:
+            matchLabels:
+              app: worker
+        - podSelector:
+            matchLabels:
+              app: migrate
+      ports:
+        - protocol: TCP
+          port: {{ .Values.postgres.service.port }}
+---
+# redis — registry + pub/sub for the services that use it. No egress.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: redis
+  namespace: {{ include "raven.namespace" . }}
+  labels:
+    {{- include "raven.labels" (dict "ctx" . "component" "redis") | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app: redis
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: gateway
+        - podSelector:
+            matchLabels:
+              app: auth
+        - podSelector:
+            matchLabels:
+              app: jobs
+        - podSelector:
+            matchLabels:
+              app: worker
+        - podSelector:
+            matchLabels:
+              app: websocket
+      ports:
+        - protocol: TCP
+          port: {{ .Values.redis.service.port }}
+{{- if .Values.observability.enabled }}
+---
+# prometheus — scraped UIs from the host (dev), queries from Grafana,
+# egress to every ops port it scrapes.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: prometheus
+  namespace: {{ include "raven.namespace" . }}
+  labels:
+    {{- include "raven.labels" (dict "ctx" . "component" "prometheus") | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app: prometheus
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    {{- if $ext }}
+    - from:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+      ports:
+        - protocol: TCP
+          port: {{ .Values.observability.prometheus.service.port }}
+    {{- end }}
+    - from:
+        - podSelector:
+            matchLabels:
+              app: grafana
+      ports:
+        - protocol: TCP
+          port: {{ .Values.observability.prometheus.service.port }}
+  egress:
+    # Scrape targets: every RAVEN ops port in this namespace.
+    - to:
+        - podSelector: {}
+      ports:
+        - protocol: TCP
+          port: {{ .Values.gateway.service.httpPort }}
+        - protocol: TCP
+          port: {{ .Values.auth.service.opsPort }}
+        - protocol: TCP
+          port: {{ .Values.users.service.opsPort }}
+        - protocol: TCP
+          port: {{ .Values.jobs.service.opsPort }}
+        - protocol: TCP
+          port: {{ .Values.websocket.service.httpPort }}
+        - protocol: TCP
+          port: {{ .Values.worker.service.opsPort }}
+        - protocol: TCP
+          port: {{ .Values.broker.service.opsPort }}
+---
+# grafana — UI from the host (dev); egress only to its two datasources.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: grafana
+  namespace: {{ include "raven.namespace" . }}
+  labels:
+    {{- include "raven.labels" (dict "ctx" . "component" "grafana") | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app: grafana
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    {{- if $ext }}
+    - from:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+      ports:
+        - protocol: TCP
+          port: {{ .Values.observability.grafana.service.port }}
+    {{- else }}
+    []
+    {{- end }}
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app: prometheus
+      ports:
+        - protocol: TCP
+          port: {{ .Values.observability.prometheus.service.port }}
+    - to:
+        - podSelector:
+            matchLabels:
+              app: jaeger
+      ports:
+        - protocol: TCP
+          port: {{ .Values.observability.jaeger.service.uiPort }}
+---
+# jaeger — UI from the host (dev); OTLP gRPC ingest from every
+# instrumented RAVEN service. No egress (in-memory store).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: jaeger
+  namespace: {{ include "raven.namespace" . }}
+  labels:
+    {{- include "raven.labels" (dict "ctx" . "component" "jaeger") | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app: jaeger
+  policyTypes:
+    - Ingress
+  ingress:
+    {{- if $ext }}
+    - from:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+      ports:
+        - protocol: TCP
+          port: {{ .Values.observability.jaeger.service.uiPort }}
+    {{- end }}
+    - from:
+        - podSelector:
+            matchLabels:
+              app: gateway
+        - podSelector:
+            matchLabels:
+              app: auth
+        - podSelector:
+            matchLabels:
+              app: users
+        - podSelector:
+            matchLabels:
+              app: jobs
+        - podSelector:
+            matchLabels:
+              app: websocket
+        - podSelector:
+            matchLabels:
+              app: worker
+        - podSelector:
+            matchLabels:
+              app: broker
+      ports:
+        - protocol: TCP
+          port: {{ .Values.observability.jaeger.service.otlpGrpcPort }}
+{{- end }}
+---
+# migrate — one-shot Job. Nothing ever connects TO it; it only needs
+# postgres.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: migrate
+  namespace: {{ include "raven.namespace" . }}
+  labels:
+    {{- include "raven.labels" (dict "ctx" . "component" "migrate") | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app: migrate
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app: postgres
+      ports:
+        - protocol: TCP
+          port: {{ .Values.postgres.service.port }}
+{{- end }}

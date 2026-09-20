@@ -1,0 +1,23 @@
+# Non-secret configuration shared by every RAVEN service.
+# Hosts are Service DNS names inside the release namespace — they are a
+# contract with the Go services, change them only together with the code.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: raven-config
+  namespace: {{ include "raven.namespace" . }}
+  labels:
+    {{- include "raven.labels" (dict "ctx" . "component" "config") | nindent 4 }}
+data:
+  LOG_LEVEL: {{ .Values.config.logLevel | quote }}
+  REDIS_ADDR: "redis:{{ .Values.redis.service.port }}"
+  BROKER_ADDR: "broker:{{ .Values.broker.service.tcpPort }}"
+  OTEL_ENABLED: {{ .Values.config.otel.enabled | quote }}
+  OTEL_ENDPOINT: {{ .Values.config.otel.endpoint | quote }}
+  AUTH_GRPC_ADDR: "auth:{{ .Values.auth.service.grpcPort }}"
+  USERS_GRPC_ADDR: "users:{{ .Values.users.service.grpcPort }}"
+  JOBS_GRPC_ADDR: "jobs:{{ .Values.jobs.service.grpcPort }}"
+  WEBSOCKET_ADDR: "websocket:{{ .Values.websocket.service.httpPort }}"
+  WS_ADDR: "http://websocket:{{ .Values.websocket.service.httpPort }}"
+  BROKER_OPS_ADDR: "http://broker:{{ .Values.broker.service.opsPort }}"
+  WS_ALLOW_ANONYMOUS: {{ .Values.config.wsAllowAnonymous | quote }}

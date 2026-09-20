@@ -1,0 +1,108 @@
+{{- if .Values.gateway.enabled -}}
+# RAVEN gateway — the public entrypoint.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gateway
+  namespace: {{ include "raven.namespace" . }}
+  labels:
+    {{- include "raven.labels" (dict "ctx" . "component" "gateway") | nindent 4 }}
+spec:
+  replicas: {{ .Values.gateway.replicas }}
+  selector:
+    matchLabels:
+      {{- include "raven.selectorLabels" "gateway" | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "raven.labels" (dict "ctx" . "component" "gateway") | nindent 8 }}
+    spec:
+      serviceAccountName: {{ include "raven.serviceAccountName" . }}
+      automountServiceAccountToken: false
+      securityContext:
+        {{- include "raven.podSecurityContext" . | nindent 8 }}
+      containers:
+        - name: gateway
+          image: {{ include "raven.image" (dict "ctx" . "image" .Values.gateway.image) }}
+          imagePullPolicy: {{ include "raven.imagePullPolicy" (dict "ctx" . "image" .Values.gateway.image) }}
+          securityContext:
+            {{- include "raven.containerSecurityContext" . | nindent 12 }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.gateway.service.httpPort }}
+          env:
+            - name: HTTP_ADDR
+              value: ":{{ .Values.gateway.service.httpPort }}"
+          envFrom:
+            - configMapRef:
+                name: raven-config
+            - secretRef:
+                name: {{ .Values.secrets.name }}
+                optional: true
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: http
+            initialDelaySeconds: 3
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 15
+          resources:
+            {{- toYaml .Values.gateway.resources | nindent 12 }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: gateway
+  namespace: {{ include "raven.namespace" . }}
+  labels:
+    {{- include "raven.labels" (dict "ctx" . "component" "gateway") | nindent 4 }}
+spec:
+  # LoadBalancer: Docker Desktop binds it to localhost — that is how the
+  # console reaches the cluster. For prod prefer ClusterIP + the Ingress.
+  type: {{ .Values.gateway.service.type }}
+  selector:
+    {{- include "raven.selectorLabels" "gateway" | nindent 4 }}
+  ports:
+    - name: http
+      port: {{ .Values.gateway.service.httpPort }}
+      targetPort: http
+{{- if .Values.gateway.ingress.enabled }}
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: gateway
+  namespace: {{ include "raven.namespace" . }}
+  labels:
+    {{- include "raven.labels" (dict "ctx" . "component" "gateway") | nindent 4 }}
+  {{- with .Values.gateway.ingress.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  {{- if .Values.gateway.ingress.className }}
+  ingressClassName: {{ .Values.gateway.ingress.className }}
+  {{- end }}
+  {{- if .Values.gateway.ingress.tls.enabled }}
+  tls:
+    - hosts: [{{ .Values.gateway.ingress.host | quote }}]
+      secretName: {{ .Values.gateway.ingress.tls.secretName }}
+  {{- end }}
+  rules:
+    - host: {{ .Values.gateway.ingress.host | quote }}
+      http:
+        paths:
+          - path: {{ .Values.gateway.ingress.path }}
+            pathType: {{ .Values.gateway.ingress.pathType }}
+            backend:
+              service:
+                name: gateway
+                port:
+                  name: http
+{{- end }}
+{{- end }}

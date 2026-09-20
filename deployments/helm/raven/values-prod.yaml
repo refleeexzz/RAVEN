@@ -1,0 +1,93 @@
+# values-prod.yaml — hardened EXAMPLE profile. Not a turnkey prod setup:
+# review every section against your cluster, registry and threat model.
+#
+#   helm upgrade --install raven deployments/helm/raven -n raven \
+#     -f deployments/helm/raven/values-prod.yaml \
+#     --set secrets.jwtSecret="$JWT_SECRET" \
+#     --set secrets.databaseUrl="$DATABASE_URL" \
+#     --set global.imageRegistry=registry.example.com
+
+global:
+  imageRegistry: ""     # e.g. registry.example.com — mirror + scan every image
+  imagePullPolicy: IfNotPresent # tags are pinned and immutable; keep it
+
+config:
+  logLevel: info
+  wsAllowAnonymous: false # no anonymous websocket reads anywhere real
+
+secrets:
+  create: true
+  # INJECT, never commit:
+  #   --set secrets.jwtSecret=... (min 32 random chars)
+  #   --set secrets.databaseUrl=postgres://...
+  jwtSecret: ""
+  databaseUrl: ""
+
+# More replicas, bigger budgets for the traffic path.
+gateway:
+  replicas: 4
+  resources:
+    requests: { cpu: 250m, memory: 256Mi }
+    limits: { cpu: "1", memory: 1Gi }
+  service:
+    type: ClusterIP # fronted by the Ingress below, not a raw LB
+  ingress:
+    enabled: true
+    className: nginx
+    host: raven.example.com
+    tls:
+      enabled: true
+      secretName: raven-gateway-tls
+    annotations:
+      cert-manager.io/cluster-issuer: letsencrypt-prod
+
+auth:    { replicas: 3 }
+users:   { replicas: 3 }
+jobs:    { replicas: 4 }
+worker:
+  replicas: 8
+  resources:
+    requests: { cpu: 250m, memory: 256Mi }
+    limits: { cpu: "1", memory: 1Gi }
+
+websocket:
+  replicas: 4
+  service:
+    type: ClusterIP # browsers reach /ws through the gateway Ingress
+
+console:
+  service:
+    type: ClusterIP # serve through your own authenticated frontend path
+
+broker:
+  persistence:
+    size: 50Gi
+    storageClass: "" # pick a fast, replicated class (e.g. premium-ssd)
+
+postgres:
+  password: "" # inject; the env only applies at FIRST PVC init anyway
+  persistence:
+    size: 50Gi
+    storageClass: ""
+  # Consider instead: postgres.enabled=false + external HA database and
+  # point secrets.databaseUrl at it. One pod + one PVC is not prod HA.
+
+networkPolicy:
+  enabled: true
+  externalAccess: false # NOTHING reachable straight from outside the cluster
+
+autoscaling:
+  enabled: true
+  gateway: { minReplicas: 4, maxReplicas: 12, cpuUtilization: 70 }
+  worker:  { minReplicas: 4, maxReplicas: 20, cpuUtilization: 70 }
+
+observability:
+  enabled: true
+  prometheus:
+    service: { type: ClusterIP } # behind an authenticated proxy/Ingress
+  grafana:
+    adminUser: admin
+    adminPassword: "" # inject, or better: wire SSO and disable local login
+    service: { type: ClusterIP }
+  jaeger:
+    service: { type: ClusterIP }

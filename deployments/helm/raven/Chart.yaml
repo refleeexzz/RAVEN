@@ -1,0 +1,22 @@
+apiVersion: v2
+name: raven
+description: |
+  RAVEN — a distributed job platform. One chart installs the whole stack:
+  gateway, auth, users, jobs, worker, websocket, console, broker
+  (StatefulSet with a PVC), Postgres, Redis, the migrate Job, lockdown
+  NetworkPolicies and the observability trio (Prometheus, Grafana, Jaeger).
+type: application
+version: 0.1.0
+# appVersion matches the pinned image tag of the platform build this chart
+# ships by default (see values.yaml -> *.image.tag).
+appVersion: "sec-20260913"
+keywords:
+  - jobs
+  - distributed-systems
+  - grpc
+  - message-broker
+home: https://github.com/refleeexzz/RAVEN
+sources:
+  - https://github.com/refleeexzz/RAVEN
+maintainers:
+  - name: RAVEN ops

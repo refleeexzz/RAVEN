@@ -1,0 +1,341 @@
+# RAVEN chart — default values.
+#
+# These defaults reproduce the flat manifests in deployments/kubernetes/
+# as closely as possible: same images, same replica counts, same resource
+# budgets, same security posture. Override per environment with
+# values-dev.yaml (local Docker Desktop) or values-prod.yaml (hardened
+# example) — or your own -f file / --set flags.
+
+# ---------------------------------------------------------------------------
+# Global image knobs. global.imageRegistry is prepended to every image
+# (useful for a private registry mirror); per-component pullPolicy wins
+# over the global one when set.
+# ---------------------------------------------------------------------------
+global:
+  imageRegistry: ""
+  imagePullPolicy: IfNotPresent # local builds, never pushed
+
+# Override the namespace objects land in. Empty = the release namespace.
+# You normally install with: helm install raven . -n raven --create-namespace
+namespaceOverride: ""
+
+nameOverride: ""
+fullnameOverride: ""
+
+# ---------------------------------------------------------------------------
+# ServiceAccount. No RAVEN pod calls the k8s API, so the account gets ZERO
+# Roles/Bindings and the token is never mounted. Keep it that way.
+# ---------------------------------------------------------------------------
+serviceAccount:
+  create: true
+  name: raven
+  automountServiceAccountToken: false
+
+# ---------------------------------------------------------------------------
+# Shared non-secret config (the raven-config ConfigMap). Anything here must
+# be safe to print in a `kubectl describe`.
+# ---------------------------------------------------------------------------
+config:
+  logLevel: info
+  otel:
+    enabled: true
+    # Every service ships spans to the jaeger Service via OTLP gRPC.
+    endpoint: "jaeger:4317"
+  # Dev clusters: let the console watch public job rooms without a login.
+  # Set false anywhere real.
+  wsAllowAnonymous: true
+
+# ---------------------------------------------------------------------------
+# Secrets. Two modes:
+#   create=false (default): the chart expects an EXISTING Secret (same
+#     workflow as deployments/kubernetes/secrets.example.yaml).
+#   create=true: the chart renders the Secret from the values below.
+#     Never commit real values; inject with --set or a gitignored -f file.
+# ---------------------------------------------------------------------------
+secrets:
+  create: false
+  name: raven-secrets
+  jwtSecret: ""         # REQUIRED when create=true. Min 32 random chars for prod.
+  jwtSecretPrevious: "" # set ONLY during a rotation window (docs/security/rotation.md)
+  databaseUrl: ""       # postgres://user:pass@host:5432/db?sslmode=...
+
+# ---------------------------------------------------------------------------
+# RAVEN services. Each: enabled, replicas, image, resources, service ports.
+# ---------------------------------------------------------------------------
+auth:
+  enabled: true
+  replicas: 2
+  image:
+    repository: raven/auth
+    tag: sec-20260913
+    pullPolicy: ""
+  resources:
+    requests: { cpu: 100m, memory: 128Mi }
+    limits: { cpu: 500m, memory: 512Mi }
+  service:
+    type: ClusterIP
+    opsPort: 8081
+    grpcPort: 9081
+
+users:
+  enabled: true
+  replicas: 2
+  image:
+    repository: raven/users
+    tag: sec-20260913
+    pullPolicy: ""
+  resources:
+    requests: { cpu: 100m, memory: 128Mi }
+    limits: { cpu: 500m, memory: 512Mi }
+  service:
+    type: ClusterIP
+    opsPort: 8082
+    grpcPort: 9082
+
+jobs:
+  enabled: true
+  replicas: 3
+  image:
+    repository: raven/jobs
+    tag: sec-20260913
+    pullPolicy: ""
+  resources:
+    requests: { cpu: 100m, memory: 128Mi }
+    limits: { cpu: 500m, memory: 512Mi }
+  service:
+    type: ClusterIP
+    opsPort: 8083
+    grpcPort: 9083
+
+worker:
+  enabled: true
+  replicas: 5
+  image:
+    repository: raven/worker
+    tag: sec-20260913
+    pullPolicy: ""
+  resources:
+    requests: { cpu: 100m, memory: 128Mi }
+    limits: { cpu: 500m, memory: 512Mi }
+  service:
+    type: ClusterIP
+    opsPort: 8085
+
+# The public entrypoint. Dev: LoadBalancer on localhost:8080. Prod: keep
+# ClusterIP and front it with the optional Ingress below.
+gateway:
+  enabled: true
+  replicas: 3
+  image:
+    repository: raven/gateway
+    tag: sec-20260913
+    pullPolicy: ""
+  resources:
+    requests: { cpu: 100m, memory: 128Mi }
+    limits: { cpu: 500m, memory: 512Mi }
+  service:
+    type: LoadBalancer
+    httpPort: 8080
+  ingress:
+    enabled: false
+    className: ""     # e.g. nginx, traefik
+    host: raven.local
+    path: /
+    pathType: Prefix
+    tls:
+      enabled: false
+      secretName: raven-gateway-tls
+    annotations: {}
+
+websocket:
+  enabled: true
+  replicas: 3
+  image:
+    repository: raven/websocket
+    tag: sec-20260913
+    pullPolicy: ""
+  resources:
+    requests: { cpu: 100m, memory: 128Mi }
+    limits: { cpu: 500m, memory: 512Mi }
+  service:
+    type: LoadBalancer # console browser connects directly in dev
+    httpPort: 8084
+
+# Static operations dashboard served by the unprivileged nginx build.
+console:
+  enabled: true
+  replicas: 2
+  image:
+    repository: raven/console
+    tag: unpriv-nginx-20260914
+    pullPolicy: ""
+  resources:
+    requests: { cpu: 25m, memory: 32Mi }
+    limits: { cpu: 100m, memory: 128Mi }
+  service:
+    type: LoadBalancer
+    httpPort: 7100
+
+# ---------------------------------------------------------------------------
+# Broker — StatefulSet: it owns on-disk commit logs. Exactly ONE replica
+# (no clustering yet); changing replicas is not supported.
+# ---------------------------------------------------------------------------
+broker:
+  enabled: true
+  replicas: 1
+  image:
+    repository: raven/broker
+    tag: sec-20260913
+    pullPolicy: ""
+  # New topics get this many partitions: consumer-group parallelism is
+  # capped by partition count.
+  defaultPartitions: 12
+  resources:
+    requests: { cpu: 200m, memory: 256Mi }
+    limits: { cpu: "1", memory: 1Gi }
+  persistence:
+    enabled: true
+    size: 5Gi
+    storageClass: "" # empty = cluster default
+  service:
+    type: ClusterIP
+    tcpPort: 9100
+    opsPort: 9101
+
+# ---------------------------------------------------------------------------
+# Postgres — one replica + one PVC. Good enough for dev; for real HA point
+# DATABASE_URL at an external database and set postgres.enabled=false.
+# ---------------------------------------------------------------------------
+postgres:
+  enabled: true
+  image:
+    repository: postgres
+    tag: 17-alpine
+    pullPolicy: ""
+  # Dev-only defaults, matching the flat manifests. Never reuse outside
+  # Docker Desktop — they apply only at FIRST init of the PVC anyway.
+  user: raven
+  password: raven
+  db: raven
+  resources:
+    requests: { cpu: 100m, memory: 128Mi }
+    limits: { cpu: 500m, memory: 512Mi }
+  persistence:
+    enabled: true
+    size: 5Gi
+    storageClass: ""
+  service:
+    type: ClusterIP
+    port: 5432
+
+# Redis — worker registry + job events pub/sub. Stateless (emptyDir):
+# losing the registry on restart is harmless, workers re-register fast.
+redis:
+  enabled: true
+  image:
+    repository: redis
+    tag: 8-alpine
+    pullPolicy: ""
+  resources:
+    requests: { cpu: 100m, memory: 128Mi }
+    limits: { cpu: 500m, memory: 512Mi }
+  service:
+    type: ClusterIP
+    port: 6379
+
+# ---------------------------------------------------------------------------
+# migrate — one-shot Job applying SQL migrations. Idempotent.
+# hook=true runs it as a Helm post-install/post-upgrade hook (post-, not
+# pre-: the Job waits for postgres, which this same chart deploys — a
+# pre-install hook would deadlock the first install). hook=false renders a
+# plain Job (runs once; delete it before re-running manually).
+# ---------------------------------------------------------------------------
+migrate:
+  enabled: true
+  hook: true
+  image:
+    repository: raven/migrate
+    tag: v2
+    pullPolicy: ""
+  resources:
+    requests: { cpu: 50m, memory: 64Mi }
+    limits: { cpu: 250m, memory: 256Mi }
+
+# ---------------------------------------------------------------------------
+# NetworkPolicies: default-deny everything, then least-privilege flows.
+# externalAccess=false drops the 0.0.0.0/0 ingress rules — use it in prod
+# where nothing should be reached straight from outside the cluster mesh
+# except through your own Ingress (adjust to your topology first!).
+# ---------------------------------------------------------------------------
+networkPolicy:
+  enabled: true
+  externalAccess: true
+
+# ---------------------------------------------------------------------------
+# HPAs for the two services that flex with load. Needs metrics-server,
+# which Docker Desktop does NOT ship — without it the HPAs sit harmless.
+# ---------------------------------------------------------------------------
+autoscaling:
+  enabled: false
+  gateway:
+    minReplicas: 2
+    maxReplicas: 8
+    cpuUtilization: 70
+  worker:
+    minReplicas: 2
+    maxReplicas: 8
+    cpuUtilization: 70
+
+# ---------------------------------------------------------------------------
+# Observability: Prometheus + Grafana + Jaeger. The LoadBalancer service
+# types are DEV conveniences (Docker Desktop binds them to localhost);
+# switch to ClusterIP + authenticated Ingress anywhere real.
+# ---------------------------------------------------------------------------
+observability:
+  enabled: true
+
+  prometheus:
+    enabled: true
+    image:
+      repository: prom/prometheus
+      tag: v3.4.1
+      pullPolicy: ""
+    resources:
+      requests: { cpu: 100m, memory: 128Mi }
+      limits: { cpu: 500m, memory: 512Mi }
+    service:
+      type: LoadBalancer
+      port: 9090
+    # Scrape interval for every target.
+    scrapeInterval: 15s
+
+  grafana:
+    enabled: true
+    image:
+      repository: grafana/grafana
+      tag: 11.6.0
+      pullPolicy: ""
+    # Dev-only login. Change it if you expose this beyond localhost.
+    adminUser: admin
+    adminPassword: admin
+    resources:
+      requests: { cpu: 100m, memory: 128Mi }
+      limits: { cpu: 500m, memory: 512Mi }
+    service:
+      type: LoadBalancer
+      port: 3000
+
+  jaeger:
+    enabled: true
+    image:
+      repository: jaegertracing/all-in-one
+      tag: 1.67.0
+      pullPolicy: ""
+    resources:
+      requests: { cpu: 100m, memory: 128Mi }
+      # Jaeger keeps spans in memory: a load test OOM-killed it at 512Mi.
+      limits: { cpu: 500m, memory: 1Gi }
+    service:
+      type: LoadBalancer
+      uiPort: 16686
+      otlpGrpcPort: 4317

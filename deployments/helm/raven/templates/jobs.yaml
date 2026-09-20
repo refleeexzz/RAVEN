@@ -1,0 +1,80 @@
+{{- if .Values.jobs.enabled -}}
+# RAVEN jobs — gRPC for the gateway, ops HTTP. Publishes job messages onto
+# the broker and owns the job state machine.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: jobs
+  namespace: {{ include "raven.namespace" . }}
+  labels:
+    {{- include "raven.labels" (dict "ctx" . "component" "jobs") | nindent 4 }}
+spec:
+  replicas: {{ .Values.jobs.replicas }}
+  selector:
+    matchLabels:
+      {{- include "raven.selectorLabels" "jobs" | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "raven.labels" (dict "ctx" . "component" "jobs") | nindent 8 }}
+    spec:
+      serviceAccountName: {{ include "raven.serviceAccountName" . }}
+      automountServiceAccountToken: false
+      securityContext:
+        {{- include "raven.podSecurityContext" . | nindent 8 }}
+      containers:
+        - name: jobs
+          image: {{ include "raven.image" (dict "ctx" . "image" .Values.jobs.image) }}
+          imagePullPolicy: {{ include "raven.imagePullPolicy" (dict "ctx" . "image" .Values.jobs.image) }}
+          securityContext:
+            {{- include "raven.containerSecurityContext" . | nindent 12 }}
+          ports:
+            - name: ops
+              containerPort: {{ .Values.jobs.service.opsPort }}
+            - name: grpc
+              containerPort: {{ .Values.jobs.service.grpcPort }}
+          env:
+            - name: HTTP_ADDR
+              value: ":{{ .Values.jobs.service.opsPort }}"
+            - name: GRPC_ADDR
+              value: ":{{ .Values.jobs.service.grpcPort }}"
+          envFrom:
+            - configMapRef:
+                name: raven-config
+            - secretRef:
+                name: {{ .Values.secrets.name }}
+                optional: true
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: ops
+            initialDelaySeconds: 3
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: ops
+            initialDelaySeconds: 10
+            periodSeconds: 15
+          resources:
+            {{- toYaml .Values.jobs.resources | nindent 12 }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: jobs
+  namespace: {{ include "raven.namespace" . }}
+  labels:
+    {{- include "raven.labels" (dict "ctx" . "component" "jobs") | nindent 4 }}
+spec:
+  type: {{ .Values.jobs.service.type }}
+  selector:
+    {{- include "raven.selectorLabels" "jobs" | nindent 4 }}
+  ports:
+    - name: ops
+      port: {{ .Values.jobs.service.opsPort }}
+      targetPort: ops
+    - name: grpc
+      port: {{ .Values.jobs.service.grpcPort }}
+      targetPort: grpc
+{{- end }}

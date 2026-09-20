@@ -1,0 +1,40 @@
+RAVEN {{ .Chart.AppVersion }} installed into namespace {{ include "raven.namespace" . }}.
+
+What just landed:
+  gateway x{{ .Values.gateway.replicas }} · auth x{{ .Values.auth.replicas }} · users x{{ .Values.users.replicas }} · jobs x{{ .Values.jobs.replicas }}
+  worker x{{ .Values.worker.replicas }} · websocket x{{ .Values.websocket.replicas }} · console x{{ .Values.console.replicas }}
+  broker (StatefulSet, PVC {{ .Values.broker.persistence.size }}) · postgres (PVC {{ .Values.postgres.persistence.size }}) · redis
+  networkPolicies: {{ .Values.networkPolicy.enabled }} · observability: {{ .Values.observability.enabled }} · HPA: {{ .Values.autoscaling.enabled }}
+
+Watch everything come up:
+  kubectl -n {{ include "raven.namespace" . }} get pods -w
+
+Reach the platform (Docker Desktop / dev defaults):
+{{- if eq .Values.gateway.service.type "LoadBalancer" }}
+  gateway   http://localhost:{{ .Values.gateway.service.httpPort }}   (health: /health)
+{{- else }}
+  kubectl -n {{ include "raven.namespace" . }} port-forward svc/gateway {{ .Values.gateway.service.httpPort }}:{{ .Values.gateway.service.httpPort }}
+{{- end }}
+{{- if eq .Values.console.service.type "LoadBalancer" }}
+  console   http://localhost:{{ .Values.console.service.httpPort }}
+{{- end }}
+{{- if and .Values.observability.enabled .Values.observability.grafana.enabled }}
+  grafana   http://localhost:{{ .Values.observability.grafana.service.port }}   ({{ .Values.observability.grafana.adminUser }}/**** — dev only, change it)
+{{- end }}
+{{- if and .Values.observability.enabled .Values.observability.jaeger.enabled }}
+  jaeger    http://localhost:{{ .Values.observability.jaeger.service.uiPort }}
+{{- end }}
+{{- if and .Values.observability.enabled .Values.observability.prometheus.enabled }}
+  prometheus http://localhost:{{ .Values.observability.prometheus.service.port }}
+{{- end }}
+
+{{- if not .Values.secrets.create }}
+Secrets: this release expects an EXISTING Secret named '{{ .Values.secrets.name }}'.
+Pods start with dev defaults without it, but for anything real create it from
+deployments/kubernetes/secrets.example.yaml (or set secrets.create=true and
+inject values with --set).
+{{- end }}
+
+Backups: scripts/backup.sh snapshots Postgres, the broker PVC, Redis and the
+namespace Secrets/ConfigMaps. Restore path: scripts/restore.sh. Runbooks live
+in docs/disaster-recovery.md and docs/backup-restore.md.

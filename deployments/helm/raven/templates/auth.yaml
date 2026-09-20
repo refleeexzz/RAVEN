@@ -1,0 +1,81 @@
+{{- if .Values.auth.enabled -}}
+# RAVEN auth — gRPC for other services, ops HTTP for health/metrics.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: auth
+  namespace: {{ include "raven.namespace" . }}
+  labels:
+    {{- include "raven.labels" (dict "ctx" . "component" "auth") | nindent 4 }}
+spec:
+  replicas: {{ .Values.auth.replicas }}
+  selector:
+    matchLabels:
+      {{- include "raven.selectorLabels" "auth" | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "raven.labels" (dict "ctx" . "component" "auth") | nindent 8 }}
+    spec:
+      serviceAccountName: {{ include "raven.serviceAccountName" . }}
+      automountServiceAccountToken: false
+      securityContext:
+        {{- include "raven.podSecurityContext" . | nindent 8 }}
+      containers:
+        - name: auth
+          image: {{ include "raven.image" (dict "ctx" . "image" .Values.auth.image) }}
+          imagePullPolicy: {{ include "raven.imagePullPolicy" (dict "ctx" . "image" .Values.auth.image) }}
+          securityContext:
+            {{- include "raven.containerSecurityContext" . | nindent 12 }}
+          ports:
+            - name: ops
+              containerPort: {{ .Values.auth.service.opsPort }}
+            - name: grpc
+              containerPort: {{ .Values.auth.service.grpcPort }}
+          env:
+            - name: HTTP_ADDR
+              value: ":{{ .Values.auth.service.opsPort }}"
+            - name: GRPC_ADDR
+              value: ":{{ .Values.auth.service.grpcPort }}"
+          envFrom:
+            - configMapRef:
+                name: raven-config
+            # optional: pods still start (with dev defaults) if the Secret
+            # has not been created yet.
+            - secretRef:
+                name: {{ .Values.secrets.name }}
+                optional: true
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: ops
+            initialDelaySeconds: 3
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: ops
+            initialDelaySeconds: 10
+            periodSeconds: 15
+          resources:
+            {{- toYaml .Values.auth.resources | nindent 12 }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: auth
+  namespace: {{ include "raven.namespace" . }}
+  labels:
+    {{- include "raven.labels" (dict "ctx" . "component" "auth") | nindent 4 }}
+spec:
+  type: {{ .Values.auth.service.type }}
+  selector:
+    {{- include "raven.selectorLabels" "auth" | nindent 4 }}
+  ports:
+    - name: ops
+      port: {{ .Values.auth.service.opsPort }}
+      targetPort: ops
+    - name: grpc
+      port: {{ .Values.auth.service.grpcPort }}
+      targetPort: grpc
+{{- end }}

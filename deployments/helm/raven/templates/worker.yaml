@@ -1,0 +1,76 @@
+{{- if .Values.worker.enabled -}}
+# RAVEN worker — pulls jobs from the broker, executes them, heartbeats into
+# Redis. Ops HTTP only; nothing routes inbound traffic here. Workers are the
+# horizontal scaling muscle of the platform (see hpa.yaml).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: worker
+  namespace: {{ include "raven.namespace" . }}
+  labels:
+    {{- include "raven.labels" (dict "ctx" . "component" "worker") | nindent 4 }}
+spec:
+  replicas: {{ .Values.worker.replicas }}
+  selector:
+    matchLabels:
+      {{- include "raven.selectorLabels" "worker" | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "raven.labels" (dict "ctx" . "component" "worker") | nindent 8 }}
+    spec:
+      serviceAccountName: {{ include "raven.serviceAccountName" . }}
+      automountServiceAccountToken: false
+      securityContext:
+        {{- include "raven.podSecurityContext" . | nindent 8 }}
+      containers:
+        - name: worker
+          image: {{ include "raven.image" (dict "ctx" . "image" .Values.worker.image) }}
+          imagePullPolicy: {{ include "raven.imagePullPolicy" (dict "ctx" . "image" .Values.worker.image) }}
+          securityContext:
+            {{- include "raven.containerSecurityContext" . | nindent 12 }}
+          ports:
+            - name: ops
+              containerPort: {{ .Values.worker.service.opsPort }}
+          env:
+            - name: HTTP_ADDR
+              value: ":{{ .Values.worker.service.opsPort }}"
+          envFrom:
+            - configMapRef:
+                name: raven-config
+            - secretRef:
+                name: {{ .Values.secrets.name }}
+                optional: true
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: ops
+            initialDelaySeconds: 3
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: ops
+            initialDelaySeconds: 10
+            periodSeconds: 15
+          resources:
+            {{- toYaml .Values.worker.resources | nindent 12 }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: worker
+  namespace: {{ include "raven.namespace" . }}
+  labels:
+    {{- include "raven.labels" (dict "ctx" . "component" "worker") | nindent 4 }}
+spec:
+  # No inbound traffic besides ops (metrics/health), but a Service keeps
+  # Prometheus target DNS simple and uniform with the other services.
+  type: {{ .Values.worker.service.type }}
+  selector:
+    {{- include "raven.selectorLabels" "worker" | nindent 4 }}
+  ports:
+    - name: ops
+      port: {{ .Values.worker.service.opsPort }}
+      targetPort: ops
+{{- end }}

@@ -1,0 +1,73 @@
+{{- if .Values.migrate.enabled -}}
+# RAVEN migrate — one-shot Job that applies SQL migrations. Idempotent.
+#
+# Why POST-install and not pre-install: the Job's initContainer waits for
+# postgres, and postgres is deployed by this same chart. As a pre-install
+# hook the chart deadlocks on first install (helm waits for the hook, the
+# hook waits for postgres, postgres is never created). Post-install the
+# whole stack exists; app pods crash-loop a couple of times until the
+# schema lands — exactly like the flat manifests behave today.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: migrate
+  namespace: {{ include "raven.namespace" . }}
+  labels:
+    {{- include "raven.labels" (dict "ctx" . "component" "migrate") | nindent 4 }}
+  {{- if .Values.migrate.hook }}
+  annotations:
+    # Re-run on every install/upgrade; before-hook-creation removes the
+    # previous (immutable) Job so the hook can fire again.
+    "helm.sh/hook": post-install,post-upgrade
+    "helm.sh/hook-weight": "5"
+    "helm.sh/hook-delete-policy": before-hook-creation
+  {{- end }}
+spec:
+  backoffLimit: 10
+  template:
+    metadata:
+      labels:
+        {{- include "raven.labels" (dict "ctx" . "component" "migrate") | nindent 8 }}
+    spec:
+      restartPolicy: OnFailure
+      serviceAccountName: {{ include "raven.serviceAccountName" . }}
+      automountServiceAccountToken: false
+      securityContext:
+        {{- include "raven.podSecurityContext" . | nindent 8 }}
+      initContainers:
+        # Wait for postgres to accept connections before running migrations.
+        - name: wait-for-postgres
+          image: busybox:1.37
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 65534
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests: { cpu: 10m, memory: 16Mi }
+            limits: { cpu: 50m, memory: 32Mi }
+          command:
+            - sh
+            - -c
+            - |
+              until nc -z postgres {{ .Values.postgres.service.port }}; do
+                echo "waiting for postgres..."; sleep 2;
+              done
+      containers:
+        - name: migrate
+          image: {{ include "raven.image" (dict "ctx" . "image" .Values.migrate.image) }}
+          imagePullPolicy: {{ include "raven.imagePullPolicy" (dict "ctx" . "image" .Values.migrate.image) }}
+          securityContext:
+            {{- include "raven.containerSecurityContext" . | nindent 12 }}
+          args: ["up"]
+          envFrom:
+            - configMapRef:
+                name: raven-config
+            - secretRef:
+                name: {{ .Values.secrets.name }}
+                optional: true
+          resources:
+            {{- toYaml .Values.migrate.resources | nindent 12 }}
+{{- end }}

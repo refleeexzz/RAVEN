@@ -1,0 +1,109 @@
+{{- if .Values.broker.enabled -}}
+# RAVEN broker — StatefulSet because it owns on-disk commit logs: stable
+# identity + its own PVC. Exactly one replica (no clustering yet); backing
+# up and restoring /data is covered by scripts/backup.sh + restore.sh.
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: broker
+  namespace: {{ include "raven.namespace" . }}
+  labels:
+    {{- include "raven.labels" (dict "ctx" . "component" "broker") | nindent 4 }}
+spec:
+  serviceName: broker
+  replicas: {{ .Values.broker.replicas }}
+  selector:
+    matchLabels:
+      {{- include "raven.selectorLabels" "broker" | nindent 6 }}
+  {{- if .Values.broker.persistence.enabled }}
+  volumeClaimTemplates:
+    - metadata:
+        name: brokerdata
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        {{- if .Values.broker.persistence.storageClass }}
+        storageClassName: {{ .Values.broker.persistence.storageClass }}
+        {{- end }}
+        resources:
+          requests:
+            storage: {{ .Values.broker.persistence.size }}
+  {{- end }}
+  template:
+    metadata:
+      labels:
+        {{- include "raven.labels" (dict "ctx" . "component" "broker") | nindent 8 }}
+    spec:
+      serviceAccountName: {{ include "raven.serviceAccountName" . }}
+      automountServiceAccountToken: false
+      securityContext:
+        {{- include "raven.podSecurityContext" . | nindent 8 }}
+      containers:
+        - name: broker
+          image: {{ include "raven.image" (dict "ctx" . "image" .Values.broker.image) }}
+          imagePullPolicy: {{ include "raven.imagePullPolicy" (dict "ctx" . "image" .Values.broker.image) }}
+          securityContext:
+            {{- include "raven.containerSecurityContext" . | nindent 12 }}
+          ports:
+            - name: tcp
+              containerPort: {{ .Values.broker.service.tcpPort }}
+            - name: ops
+              containerPort: {{ .Values.broker.service.opsPort }}
+          env:
+            - name: BROKER_TCP_ADDR
+              value: ":{{ .Values.broker.service.tcpPort }}"
+            - name: HTTP_ADDR
+              value: ":{{ .Values.broker.service.opsPort }}"
+            # /data is the volume mount below — commit logs survive restarts.
+            - name: BROKER_DATA_DIR
+              value: /data
+            - name: BROKER_DEFAULT_PARTITIONS
+              value: {{ .Values.broker.defaultPartitions | quote }}
+          envFrom:
+            - configMapRef:
+                name: raven-config
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: ops
+            initialDelaySeconds: 3
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: ops
+            initialDelaySeconds: 10
+            periodSeconds: 15
+          # Bigger slice than the other services: the broker does disk I/O
+          # and fsync on the hot path.
+          resources:
+            {{- toYaml .Values.broker.resources | nindent 12 }}
+          volumeMounts:
+            - name: brokerdata
+              mountPath: /data
+      {{- if not .Values.broker.persistence.enabled }}
+      # persistence.enabled=false: dev-only volatile mode, commit logs die
+      # with the pod.
+      volumes:
+        - name: brokerdata
+          emptyDir: {}
+      {{- end }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: broker
+  namespace: {{ include "raven.namespace" . }}
+  labels:
+    {{- include "raven.labels" (dict "ctx" . "component" "broker") | nindent 4 }}
+spec:
+  type: {{ .Values.broker.service.type }}
+  selector:
+    {{- include "raven.selectorLabels" "broker" | nindent 4 }}
+  ports:
+    - name: tcp
+      port: {{ .Values.broker.service.tcpPort }}
+      targetPort: tcp
+    - name: ops
+      port: {{ .Values.broker.service.opsPort }}
+      targetPort: ops
+{{- end }}
