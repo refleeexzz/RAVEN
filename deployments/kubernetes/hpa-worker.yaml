@@ -1,0 +1,101 @@
+# Worker HPA driven by broker consumer lag, with CPU as a safe fallback.
+#
+# WHY LAG: worker CPU only rises AFTER jobs are already being executed.
+# Consumer lag (raven_broker_consumer_lag, group="workers") rises the
+# moment producers outpace consumers — it is the leading indicator of a
+# queue forming. Scaling on lag means new pods arrive before clients
+# notice delay, not after.
+#
+# PREREQUISITE — prometheus-adapter (NOT included in this repo):
+#   HPA "External" metrics need a metrics API server that translates
+#   Prometheus series into the k8s external.metrics.k8s.io API. Install
+#   https://github.com/kubernetes-sigs/prometheus-adapter with a rule that
+#   exposes the workers' summed lag; docs/autoscaling.md has a complete,
+#   tested-in-spirit adapter config. Without the adapter the External
+#   metric below is simply unavailable and the HPA scales on the CPU
+#   fallback alone (details in the FALLBACK note below).
+#
+# FALLBACK BEHAVIOR: with both metrics listed, the HPA computes a desired
+# replica count for each metric it CAN read and scales to the largest.
+# If the External metric is unavailable the HPA reports
+# ScalingActive=False/UnableToComputeReplicas for that metric but still
+# honors the CPU metric — so this file is safe to apply before the
+# adapter exists.
+#
+# CONFLICT WARNING: deployments/kubernetes/hpa.yaml already ships a
+# CPU-only HPA named "worker" targeting the same Deployment. Two HPAs on
+# one target fight each other. Pick ONE:
+#   kubectl -n raven delete hpa worker   # then apply this file
+# or skip this file and keep the simple CPU one.
+#
+# REPLICA MATH (AverageValue): desiredReplicas = ceil(totalLag / averageValue)
+#   totalLag = sum of raven_broker_consumer_lag{group="workers"} over all
+#   topics/partitions the workers consume. averageValue=2000 means we aim
+#   for ~2k queued messages per pod: 10k lag -> 5 pods, 25k lag -> 13 pods
+#   (capped at maxReplicas).
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: worker-lag
+  namespace: raven
+  labels:
+    app.kubernetes.io/part-of: raven
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: worker
+  # Floor: 2 pods so one dying worker never stalls the queue.
+  minReplicas: 2
+  # Ceiling: 12 — each pod consumes broker connections and DB pool slots;
+  # beyond ~12 on a single-broker setup the broker, not the workers,
+  # becomes the bottleneck. Raise deliberately, not by default.
+  maxReplicas: 12
+  metrics:
+    # Primary: consumer lag of the "workers" group (needs prometheus-adapter).
+    - type: External
+      external:
+        metric:
+          name: raven_broker_consumer_lag
+          selector:
+            matchLabels:
+              group: workers
+        target:
+          # AverageValue: total lag is divided by current replica count
+          # before comparison, so the HPA converges on
+          # replicas = totalLag / 2000.
+          type: AverageValue
+          averageValue: "2000"
+    # Fallback: plain CPU utilization (needs only metrics-server).
+    # Set high (80%) on purpose: lag should win the scaling decision;
+    # CPU is the seatbelt for CPU-bound job types with a shallow queue.
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 80
+  behavior:
+    # Conservative on the way down, deliberate on the way up:
+    # a queue that took minutes to build does not drain in seconds, and
+    # flapping workers thrash leases + the Redis registry for nothing.
+    scaleUp:
+      stabilizationWindowSeconds: 60   # react to sustained lag, not a 15s spike
+      policies:
+        - type: Pods
+          value: 2        # at most +2 pods per minute...
+          periodSeconds: 60
+        - type: Percent
+          value: 100      # ...or double, whichever is larger
+          periodSeconds: 60
+      selectPolicy: Max
+    scaleDown:
+      stabilizationWindowSeconds: 300  # 5 min of calm before releasing pods
+      policies:
+        - type: Pods
+          value: 1        # release one pod at a time...
+          periodSeconds: 60
+        - type: Percent
+          value: 25       # ...never more than a quarter of the fleet per minute
+          periodSeconds: 60
+      selectPolicy: Min
