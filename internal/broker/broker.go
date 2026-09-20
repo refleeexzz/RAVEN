@@ -486,6 +486,17 @@ func (b *Broker) Produce(ctx context.Context, req *protocol.ProduceRequest) (*pr
 	}
 
 	resp := &protocol.ProduceResponse{Results: make([]protocol.ProduceResult, len(req.Records))}
+	// acks is validated once up front. v1.2: AcksLeader (default) and
+	// AcksAll (quorum commit before confirming). Standalone ignores
+	// acks entirely: the single node is the whole quorum.
+	acks := req.Acks
+	if acks == 0 {
+		acks = protocol.AcksLeader
+	}
+	if acks != protocol.AcksLeader && acks != protocol.AcksAll {
+		return nil, protocol.NewError(protocol.CodeBadRequest,
+			fmt.Sprintf("unknown acks mode %d (want 1 or 2)", req.Acks))
+	}
 	for _, p := range order {
 		batch := batches[p]
 		w := b.writerFor(req.Topic, p)
@@ -513,6 +524,22 @@ func (b *Broker) Produce(ctx context.Context, req *protocol.ProduceRequest) (*pr
 			}
 			for j, ir := range batch {
 				resp.Results[ir.idx] = protocol.ProduceResult{Partition: p, Offset: res.base + uint64(j)}
+			}
+			if b.repl != nil {
+				// The leader's own hwm moved; single-replica partitions
+				// (R=1) commit immediately, multi-replica partitions may
+				// already have every follower in place.
+				b.repl.maybeAdvanceCommit(req.Topic, p)
+				if acks == protocol.AcksAll {
+					// Quorum durability: confirm only once the batch is
+					// committed, i.e. replicated to a majority of the
+					// replica set. A timeout means NOT_ENOUGH_REPLICAS —
+					// the batch is on the leader and commits later.
+					end := res.base + uint64(len(recs))
+					if err := b.repl.waitCommitted(ctx, req.Topic, p, end); err != nil {
+						return nil, err
+					}
+				}
 			}
 		case <-ctx.Done():
 			return nil, ctx.Err()

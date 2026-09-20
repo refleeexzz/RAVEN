@@ -68,7 +68,25 @@ type ProduceRequest struct {
 	Topic     string
 	Partition int32
 	Records   []Message
+	// Acks selects the durability level (v1.2): AcksLeader (1, the
+	// default) confirms after the leader WAL append; AcksAll (2)
+	// confirms once a quorum of the ISR has replicated. Encoded as an
+	// optional trailing byte: v1/v1.1 clients send nothing and get
+	// AcksLeader; v1/v1.1 servers ignore the byte (downgrade to
+	// AcksLeader, documented).
+	Acks byte
 }
+
+// Produce acks modes (v1.2), the trailing u8 of the PRODUCE payload.
+const (
+	// AcksLeader: confirm after the leader's WAL append. This is also
+	// the meaning of a missing acks byte (v1/v1.1 clients).
+	AcksLeader byte = 1
+	// AcksAll: confirm once a quorum of the partition's ISR has
+	// replicated the batch (the record is then committed and can never
+	// be rolled back by a leader change).
+	AcksAll byte = 2
+)
 
 // ProduceResult is the assigned partition and offset of one record.
 type ProduceResult struct {
@@ -228,6 +246,12 @@ func EncodeProduceRequest(req *ProduceRequest) []byte {
 		w.longBytes(rec.Value)
 		writeHeaders(w, rec.Headers)
 	}
+	// v1.2 trailing acks byte: written only when set, so v1/v1.1
+	// payloads stay byte-identical (and old decoders simply stop before
+	// it when a v1.2 client sets it).
+	if req.Acks != 0 {
+		w.buf = append(w.buf, req.Acks)
+	}
 	return w.buf
 }
 
@@ -253,6 +277,12 @@ func DecodeProduceRequest(payload []byte) (*ProduceRequest, error) {
 			return nil, r.err
 		}
 		req.Records = append(req.Records, m)
+	}
+	// v1.2 optional trailing acks byte. Absent means AcksLeader
+	// semantics; extra bytes beyond it are ignored like any trailing
+	// garbage (the decoder never validated leftovers).
+	if r.err == nil && len(r.buf) > r.off {
+		req.Acks = r.take(1)[0]
 	}
 	if req.Topic == "" {
 		return nil, fmt.Errorf("protocol: empty topic in produce request")

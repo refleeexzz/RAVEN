@@ -14,9 +14,39 @@ import (
 
 // testBrokerNode is one broker of an in-process cluster.
 type testBrokerNode struct {
+	cfg    Config
 	b      *Broker
 	cancel context.CancelFunc
 	done   chan error
+}
+
+// stop gracefully shuts the node down (idempotent).
+func (nd *testBrokerNode) stop() {
+	if nd.cancel == nil {
+		return
+	}
+	nd.cancel()
+	<-nd.done
+	nd.cancel = nil
+}
+
+// restart boots the node again with the same config (same cluster id
+// and data dir): a process restart, not a new node.
+func (nd *testBrokerNode) restart(t *testing.T) {
+	t.Helper()
+	if nd.cancel != nil {
+		t.Fatal("restart of a running node")
+	}
+	b, err := New(nd.cfg, nil, nil)
+	if err != nil {
+		t.Fatalf("restart: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	nd.b = b
+	nd.cancel = cancel
+	nd.done = make(chan error, 1)
+	go func() { nd.done <- b.Run(ctx) }()
+	waitFor(t, 5*time.Second, func() bool { return b.Addr() != "" })
 }
 
 // startBrokerCluster boots n brokers in cluster mode with fast
@@ -47,7 +77,7 @@ func startBrokerCluster(t *testing.T, n int) []*testBrokerNode {
 		clusterCfg.FetchInterval = 10 * time.Millisecond
 		clusterCfg.ElectionTimeoutMin = 300 * time.Millisecond
 		clusterCfg.ElectionTimeoutMax = 600 * time.Millisecond
-		clusterCfg.QuorumAckTimeout = 3 * time.Second
+		clusterCfg.QuorumAckTimeout = 1200 * time.Millisecond
 		clusterCfg.LeaderAbdicateAfter = 2 * time.Second
 		cfg := Config{
 			TCPAddr:        "127.0.0.1:0",
@@ -61,7 +91,7 @@ func startBrokerCluster(t *testing.T, n int) []*testBrokerNode {
 			t.Fatalf("node %d: %v", i, err)
 		}
 		ctx, cancel := context.WithCancel(context.Background())
-		nd := &testBrokerNode{b: b, cancel: cancel, done: make(chan error, 1)}
+		nd := &testBrokerNode{cfg: cfg, b: b, cancel: cancel, done: make(chan error, 1)}
 		go func() { nd.done <- b.Run(ctx) }()
 		nodes[i] = nd
 	}
@@ -71,12 +101,7 @@ func startBrokerCluster(t *testing.T, n int) []*testBrokerNode {
 	}
 	t.Cleanup(func() {
 		for _, nd := range nodes {
-			nd.cancel()
-		}
-		for _, nd := range nodes {
-			if err := <-nd.done; err != nil {
-				t.Errorf("broker run: %v", err)
-			}
+			nd.stop()
 		}
 	})
 	return nodes

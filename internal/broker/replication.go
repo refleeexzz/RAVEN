@@ -32,12 +32,18 @@ import (
 // node.
 type partitionRepl struct {
 	// committed is the stable high-water mark known by this node. On
-	// the leader it is quorum-driven (sub-feature "acks"); on a
-	// follower it is learned from the leader and never decreases.
+	// the leader it is quorum-driven: it advances only while a majority
+	// of the replica set (the ISR) confirms the offset. On a follower
+	// it is learned from the leader. It never decreases.
 	committed atomic.Uint64
 
+	// commitCh is a generation channel: closed and replaced on every
+	// committed raise, so acks=all waiters wake up. Guarded by mu.
+	commitCh chan struct{}
+
 	// Leader-side per-replica progress: the last fetch offset each
-	// replica reported. Drives lag metrics and the ISR set.
+	// replica reported. Drives lag metrics, the ISR set and the
+	// quorum-commit computation.
 	mu              sync.Mutex
 	followerOffsets map[cluster.NodeID]uint64
 }
@@ -130,25 +136,24 @@ func (m *replicationManager) part(topic string, partition int32) *partitionRepl 
 	defer m.mu.Unlock()
 	r, ok := m.parts[key]
 	if !ok {
-		r = &partitionRepl{followerOffsets: make(map[cluster.NodeID]uint64)}
+		r = &partitionRepl{
+			commitCh:        make(chan struct{}),
+			followerOffsets: make(map[cluster.NodeID]uint64),
+		}
 		m.parts[key] = r
 	}
 	return r
 }
 
 // committedFor returns the committed offset the Fetch path caps reads
-// at. On the leader the log end itself is committed until the acks
-// sub-feature lands quorum tracking; on a follower it is the value
-// learned from the leader (capped at the local log end).
+// at — the quorum-confirmed stable mark (leader) or the value learned
+// from the leader (follower), never above the local log end.
 func (m *replicationManager) committedFor(topic string, partition int32) uint64 {
 	t, err := m.b.store.Topic(topic)
 	if err != nil || partition >= int32(t.NumPartitions()) {
 		return 0
 	}
 	p := t.Partitions[partition]
-	if m.cl.IsLeaderFor(topic, partition) {
-		return p.HighWatermark()
-	}
 	c := m.part(topic, partition).committed.Load()
 	if hwm := p.HighWatermark(); c > hwm {
 		return hwm
@@ -156,8 +161,9 @@ func (m *replicationManager) committedFor(topic string, partition int32) uint64 
 	return c
 }
 
-// setCommitted raises the locally known committed offset (follower
-// side). It never decreases: committed is a stable mark.
+// setCommitted raises the locally known committed offset. It never
+// decreases: committed is a stable mark. Every raise wakes acks=all
+// waiters (leader) and updates the committed metric (both roles).
 func (m *replicationManager) setCommitted(topic string, partition int32, off uint64) {
 	r := m.part(topic, partition)
 	for {
@@ -166,10 +172,87 @@ func (m *replicationManager) setCommitted(topic string, partition int32, off uin
 			return
 		}
 		if r.committed.CompareAndSwap(cur, off) {
+			r.mu.Lock()
+			close(r.commitCh)
+			r.commitCh = make(chan struct{})
+			r.mu.Unlock()
 			m.cl.ObserveCommittedOffset(topic, partition, off)
 			return
 		}
 	}
+}
+
+// waitCommitted blocks until the partition's committed offset reaches
+// off, the quorum-ack deadline passes, or ctx ends. This is the
+// acks=all confirmation path: NOT_ENOUGH_REPLICAS means the batch is on
+// the leader's WAL but the ISR quorum could not confirm it in time —
+// it commits later, when the ISR recovers (same contract Kafka gives).
+func (m *replicationManager) waitCommitted(ctx context.Context, topic string, partition int32, off uint64) error {
+	timer := time.NewTimer(m.cfg.QuorumAckTimeout)
+	defer timer.Stop()
+	for {
+		if m.committedFor(topic, partition) >= off {
+			return nil
+		}
+		r := m.part(topic, partition)
+		r.mu.Lock()
+		ch := r.commitCh
+		r.mu.Unlock()
+		select {
+		case <-ch:
+			continue
+		case <-timer.C:
+			return protocol.NewError(protocol.CodeNotEnoughReplicas,
+				fmt.Sprintf("partition %s/%d: ISR quorum did not confirm offset %d within %s",
+					topic, partition, off, m.cfg.QuorumAckTimeout))
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+}
+
+// maybeAdvanceCommit recomputes the leader-side committed offset: the
+// minimum offset across the ISR, advanced only while the ISR holds a
+// majority of the replica set (quorum = floor(R/2)+1). A slow or dead
+// replica leaves the ISR (lag threshold / liveness) and the quorum
+// recomputes without it — that is what lets a 3-replica partition keep
+// committing with one replica down, and what freezes commits (never
+// rolls them back) when only a minority remains.
+func (m *replicationManager) maybeAdvanceCommit(topic string, partition int32) {
+	if !m.cl.IsLeaderFor(topic, partition) {
+		return
+	}
+	t, err := m.b.store.Topic(topic)
+	if err != nil || partition >= int32(t.NumPartitions()) {
+		return
+	}
+	p := t.Partitions[partition]
+	hwm := p.HighWatermark()
+	a := m.cl.AssignmentFor(topic, partition)
+	quorum := len(a.Replicas)/2 + 1
+	progress := m.followerProgressSnapshot(topic, partition)
+	isrMin := hwm // the leader's own offset
+	isrSize := 1
+	for _, id := range a.Replicas {
+		if id == m.cl.Self() {
+			continue
+		}
+		off, ok := progress[id]
+		if !ok || !m.cl.MemberState(id).Alive() {
+			continue // not in the ISR: absent, dead or leaving
+		}
+		if hwm-off > m.cfg.ReplicaLagMax {
+			continue // lagging beyond the ISR threshold
+		}
+		isrSize++
+		if off < isrMin {
+			isrMin = off
+		}
+	}
+	if isrSize < quorum {
+		return // frozen until the ISR recovers a majority
+	}
+	m.setCommitted(topic, partition, isrMin)
 }
 
 // ---- leader side: REPLICATE handler ----
@@ -258,6 +341,8 @@ func (m *replicationManager) noteFollowerProgress(topic string, partition int32,
 	}
 	m.cl.ObserveFollowerOffset(topic, partition, id, offset)
 	m.cl.ObserveReplicationLag(topic, partition, id, lag)
+	// Every follower progress report may move the quorum commit forward.
+	m.maybeAdvanceCommit(topic, partition)
 }
 
 // followerProgressSnapshot copies the leader-side progress table.

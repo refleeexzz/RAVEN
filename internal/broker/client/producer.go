@@ -18,6 +18,7 @@ type Producer struct {
 	tlsCfg             *tls.Config
 	authID, authSecret string
 
+	acks       byte
 	batch      bool
 	flushEvery time.Duration
 	flushCount int
@@ -77,6 +78,16 @@ func WithProducerAuth(id, secret string) ProducerOption {
 		p.authID = id
 		p.authSecret = secret
 	}
+}
+
+// WithAcks sets the produce durability mode (protocol v1.2):
+// protocol.AcksLeader (default — confirm after the leader's WAL append)
+// or protocol.AcksAll (confirm once a quorum of the ISR replicated; the
+// record is then committed and survives any single-replica failure).
+// Against a standalone broker acks is a no-op: one node is the whole
+// quorum.
+func WithAcks(acks byte) ProducerOption {
+	return func(p *Producer) { p.acks = acks }
 }
 
 // NewProducer creates a producer. It dials lazily on the first Produce
@@ -151,6 +162,7 @@ func (p *Producer) sendBatch(ctx context.Context, topic string, records []protoc
 		Topic:     topic,
 		Partition: -1, // broker picks per record (hash key / round-robin)
 		Records:   records,
+		Acks:      p.acks,
 	})
 	frame, err := p.t.call(ctx, protocol.OpProduce, payload)
 	if err != nil {
