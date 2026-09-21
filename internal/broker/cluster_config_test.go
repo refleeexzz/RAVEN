@@ -115,8 +115,8 @@ func TestBrokerClusterModeBoots(t *testing.T) {
 	// cluster listener to n1's address.
 	cleanup()
 	cfg := Config{
-		TCPAddr:   "127.0.0.1:0",
-		DataDir:   t.TempDir(),
+		TCPAddr:    "127.0.0.1:0",
+		DataDir:    t.TempDir(),
 		FsyncEvery: time.Second,
 	}
 	// Resolve the cluster part through the same parser env uses.
