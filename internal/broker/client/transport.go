@@ -217,8 +217,9 @@ func (t *transport) ensureConnected(ctx context.Context) (net.Conn, error) {
 // Any other error frame is returned as the typed *protocol.Error.
 func (t *transport) authHandshake(conn net.Conn) error {
 	payload, _ := json.Marshal(protocol.AuthRequest{ID: t.authID, Secret: t.authSecret})
-	_ = conn.SetDeadline(time.Now().Add(t.dialTimeout))
-	defer conn.SetDeadline(time.Time{})
+	if err := conn.SetDeadline(time.Now().Add(t.dialTimeout)); err != nil {
+		return fmt.Errorf("set auth deadline: %w", err)
+	}
 	if err := protocol.WriteFrame(conn, &protocol.Frame{Opcode: protocol.OpAuth, CorrelationID: 1, Payload: payload}); err != nil {
 		return fmt.Errorf("write AUTH: %w", err)
 	}
@@ -228,15 +229,16 @@ func (t *transport) authHandshake(conn net.Conn) error {
 	}
 	if f.Opcode == protocol.OpError {
 		e := protocol.DecodeErrorFrame(f.Payload)
-		if e.Code == protocol.CodeUnknownOpcode {
-			t.log.Debug("broker does not require authentication, proceeding in open mode",
-				slog.String("addr", t.addr))
-			return nil
+		if e.Code != protocol.CodeUnknownOpcode {
+			return e
 		}
-		return e
-	}
-	if f.Opcode != protocol.OpAuth {
+		t.log.Debug("broker does not require authentication, proceeding in open mode",
+			slog.String("addr", t.addr))
+	} else if f.Opcode != protocol.OpAuth {
 		return fmt.Errorf("unexpected AUTH response opcode %s", f.Opcode)
+	}
+	if err := conn.SetDeadline(time.Time{}); err != nil {
+		return fmt.Errorf("clear auth deadline: %w", err)
 	}
 	return nil
 }

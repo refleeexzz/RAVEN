@@ -6,6 +6,7 @@ package cli
 import (
 	"bytes"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -397,6 +398,28 @@ func TestHelpAndVersion(t *testing.T) {
 	var v map[string]string
 	if err := json.Unmarshal([]byte(out), &v); err != nil || v["version"] != "dev" {
 		t.Fatalf("version --json: %q, err %v", out, err)
+	}
+}
+
+func TestClosedOutputPipe(t *testing.T) {
+	srv, _ := newFakeGateway(t)
+	cfgPath := newTestEnv(t, srv.URL)
+	seedLoggedIn(t, cfgPath)
+	reader, writer := io.Pipe()
+	if err := reader.Close(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = writer.Close() })
+
+	for _, args := range [][]string{{"help"}, {"version"}, {"jobs", "list"}, {"jobs", "get", "job-9"}} {
+		var stderr bytes.Buffer
+		code := Run(args, strings.NewReader(""), writer, &stderr)
+		if code != ExitError || !strings.Contains(stderr.String(), io.ErrClosedPipe.Error()) {
+			t.Errorf("%v: exit = %d, stderr = %q", args, code, stderr.String())
+		}
+	}
+	if code := Run([]string{"unknown"}, strings.NewReader(""), io.Discard, writer); code != ExitUsage {
+		t.Errorf("unknown command with a closed diagnostic stream: exit = %d, want %d", code, ExitUsage)
 	}
 }
 
