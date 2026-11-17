@@ -112,10 +112,14 @@ func cmdJobsSubmit(e *env, args []string) error {
 	if g.json {
 		return printJSON(e.stdout, job)
 	}
-	fmt.Fprintf(e.stdout, "job %s submitted\n", job.ID)
-	printJobDetail(e.stdout, &job)
-	fmt.Fprintf(e.stdout, "idempotency-key: %s\n", key)
-	return nil
+	if _, err := fmt.Fprintf(e.stdout, "job %s submitted\n", job.ID); err != nil {
+		return err
+	}
+	if err := printJobDetail(e.stdout, &job); err != nil {
+		return err
+	}
+	_, err = fmt.Fprintf(e.stdout, "idempotency-key: %s\n", key)
+	return err
 }
 
 // cmdJobsList handles `raven jobs list [--status S] [--type T] [--page N]`.
@@ -166,9 +170,11 @@ func cmdJobsList(e *env, args []string) error {
 			fmtUnix(j.CreatedAt),
 		})
 	}
-	table(e.stdout, []string{"ID", "TYPE", "STATUS", "PRI", "TRIES", "CREATED"}, rows)
-	fmt.Fprintf(e.stdout, "page %d · %d/page · %d total\n", list.Page.Page, list.Page.PageSize, list.Page.Total)
-	return nil
+	if err := table(e.stdout, []string{"ID", "TYPE", "STATUS", "PRI", "TRIES", "CREATED"}, rows); err != nil {
+		return err
+	}
+	_, err = fmt.Fprintf(e.stdout, "page %d · %d/page · %d total\n", list.Page.Page, list.Page.PageSize, list.Page.Total)
+	return err
 }
 
 // cmdJobsGet handles `raven jobs get <id>`.
@@ -180,8 +186,7 @@ func cmdJobsGet(e *env, args []string) error {
 	if g.json {
 		return printJSON(e.stdout, job)
 	}
-	printJobDetail(e.stdout, job)
-	return nil
+	return printJobDetail(e.stdout, job)
 }
 
 // cmdJobsCancel handles `raven jobs cancel <id>`.
@@ -224,8 +229,8 @@ func (e *env) jobAction(name string, args []string, verb string) error {
 	if g.json {
 		return printJSON(e.stdout, job)
 	}
-	fmt.Fprintf(e.stdout, "job %s %s (status %s)\n", job.ID, verb, job.Status)
-	return nil
+	_, err = fmt.Fprintf(e.stdout, "job %s %s (status %s)\n", job.ID, verb, job.Status)
+	return err
 }
 
 // fetchJobByArgs parses "<id>" plus global flags and GETs the job.
@@ -310,7 +315,9 @@ func cmdJobsWatch(e *env, args []string) error {
 				raw, _ := json.Marshal(job)
 				line = string(raw)
 			}
-			fmt.Fprintln(e.stdout, line)
+			if _, err := fmt.Fprintln(e.stdout, line); err != nil {
+				return err
+			}
 			last = job.Status
 		}
 		if terminalJobStatuses[job.Status] {
@@ -334,7 +341,7 @@ func cmdJobsWatch(e *env, args []string) error {
 }
 
 // printJobDetail renders one job as an aligned key/value view.
-func printJobDetail(w io.Writer, j *jobJSON) {
+func printJobDetail(w io.Writer, j *jobJSON) error {
 	pairs := [][2]string{
 		{"id", j.ID},
 		{"type", j.Type},
@@ -347,13 +354,16 @@ func printJobDetail(w io.Writer, j *jobJSON) {
 		{"finished", fmtUnix(j.FinishedAt)},
 		{"error", dash(j.Error)},
 	}
-	kv(w, pairs)
+	if err := kv(w, pairs); err != nil {
+		return err
+	}
 	payload := j.Payload
 	var pretty bytes.Buffer
 	if json.Indent(&pretty, j.Payload, "", "  ") == nil {
 		payload = pretty.Bytes()
 	}
-	fmt.Fprintf(w, "payload: %s\n", string(payload))
+	_, err := fmt.Fprintf(w, "payload: %s\n", string(payload))
+	return err
 }
 
 // randomHex returns n random bytes hex-encoded (2n chars). Used for the

@@ -44,8 +44,8 @@ func cmdWorkers(e *env, args []string) error {
 		return printJSON(e.stdout, payload)
 	}
 	if len(payload.Workers) == 0 {
-		fmt.Fprintln(e.stdout, "no workers registered right now")
-		return nil
+		_, err := fmt.Fprintln(e.stdout, "no workers registered right now")
+		return err
 	}
 	sort.Slice(payload.Workers, func(i, j int) bool {
 		return payload.Workers[i]["id"] < payload.Workers[j]["id"]
@@ -60,8 +60,7 @@ func cmdWorkers(e *env, args []string) error {
 			dash(w["in_flight"]),
 		})
 	}
-	table(e.stdout, []string{"ID", "STARTED", "LAST HEARTBEAT", "PROCESSED", "IN FLIGHT"}, rows)
-	return nil
+	return table(e.stdout, []string{"ID", "STARTED", "LAST HEARTBEAT", "PROCESSED", "IN FLIGHT"}, rows)
 }
 
 // healthPayload mirrors GET /api/health/services.
@@ -117,9 +116,13 @@ func cmdHealth(e *env, args []string) error {
 			s.Name, s.Status, fmt.Sprintf("%dms", s.LatencyMs), dash(s.Detail),
 		})
 	}
-	table(e.stdout, []string{"SERVICE", "STATUS", "LATENCY", "DETAIL"}, rows)
-	fmt.Fprintf(e.stdout, "overall: %s (checked %s)\n", overall,
-		payload.CheckedAt.Local().Format("2006-01-02 15:04:05"))
+	if err := table(e.stdout, []string{"SERVICE", "STATUS", "LATENCY", "DETAIL"}, rows); err != nil {
+		return err
+	}
+	if _, err := fmt.Fprintf(e.stdout, "overall: %s (checked %s)\n", overall,
+		payload.CheckedAt.Local().Format("2006-01-02 15:04:05")); err != nil {
+		return err
+	}
 
 	if overall != "ok" {
 		return fmt.Errorf("some services are not healthy")
@@ -142,6 +145,6 @@ func cmdVersion(e *env, args []string) error {
 			"os_arch": runtime.GOOS + "/" + runtime.GOARCH,
 		})
 	}
-	fmt.Fprintf(e.stdout, "raven %s (%s, %s/%s)\n", Version, runtime.Version(), runtime.GOOS, runtime.GOARCH)
-	return nil
+	_, err := fmt.Fprintf(e.stdout, "raven %s (%s, %s/%s)\n", Version, runtime.Version(), runtime.GOOS, runtime.GOARCH)
+	return err
 }
