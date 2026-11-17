@@ -40,12 +40,14 @@ token on every execution write.**
 
 2. **Sweeper** (`services/jobs/sweeper.go`): every `JOBS_SWEEP_INTERVAL`
    (default 15 s) it finds `PROCESSING`/`RETRYING` rows with
-   `lease_until < now()` and, per job in one transaction: bumps
-   `execution_generation`, moves the job to `RETRYING` (or `DEAD` when
-   attempts are exhausted), clears `worker_id`/lease, writes a
-   `job_attempts` row with `error = 'lease expired (worker lost)'`, commits,
-   and republishes to the `jobs` topic with the new generation. Attempts stay
-   — the interrupted try is audited but not burned.
+   `lease_until < now()`. For each row the sweeper locks and rechecks the
+   lease, increments `execution_generation` and clears the worker assignment.
+   For an interrupted `PROCESSING` claim it also charges one attempt and
+   records its number, worker and interruption reason in `job_attempts`.
+   Expiry in `RETRYING` preserves the count, history and previous error.
+   These changes commit together. If the budget is exhausted, the job
+   becomes `DEAD`. Otherwise it gets a fresh retry lease and the sweeper
+   republishes its new generation to the execution topics.
 
    Singleton across replicas with a Postgres advisory lock
    (`pg_try_advisory_lock`) on a fixed key: each pass, one replica wins, does
@@ -120,19 +122,17 @@ Negative (being straight about it):
   app-server clock skew cannot break it — but it also means the sweeper and
   the workers must talk to the *same* Postgres. True today, worth
   remembering.
-- **Crash-loop blind spot**: the sweeper preserves `attempts`, so a worker
-  that gets SIGKILLed mid-job every single time never burns attempts and the
-  job loops forever instead of going DEAD. Deliberate (a kill is not a
-  failure of the job), but an operator watching a job with many
-  `lease expired` rows should kill the worker *image*, not the worker.
+- A worker lost after committing its claim consumes one attempt, including
+  when the process dies before the handler's first external side effect.
+  Repeated infrastructure failures can exhaust a healthy job's budget.
 - **Singleton sweeper, single point of patience**: only one replica sweeps
   per pass, and a pass recovers at most 100 jobs, so a mass casualty
   (every worker dies at once) drains in batches over several intervals.
   Fine for a demo fleet; revisit the batch size before it matters.
-- The sweeper publishes after committing, not inside the transaction. If the
-  publish fails, the recovered row keeps a short fresh lease and the next
-  pass retries the publish — eventually consistent on purpose, at the cost of
-  one extra interval of delay in that failure mode.
+- The sweeper publishes after committing. A recovered `RETRYING` row keeps
+  a short lease so a later pass can retry a failed publication. A `DEAD`
+  row is terminal in PostgreSQL. If publishing its dead-letter copy fails,
+  the sweeper logs the error and the job remains available for manual requeue.
 
 What production would do on top of this, in order: (1) alerts on
 `raven_jobs_sweeper_recovered_total` growing without a matching deploy or

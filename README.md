@@ -270,11 +270,10 @@ Being honest about what this is:
 4. **The token revocation denylist fails open.** If Redis is down, auth
    accepts any cryptographically valid token. Exposure is bounded by the
    15-minute access token TTL, but it is a real trade-off.
-5. **Crash-loop blind spot.** A job that keeps crashing workers (think OOM
-   on a poison payload) never burns attempts — the worker dies before it can
-   record a failure, the sweeper requeues the job, and the loop repeats.
-   The reasoning and the candidate fixes are in
-   [docs/adr/009-job-leases.md](docs/adr/009-job-leases.md).
+5. **Worker loss counts toward the attempt limit.** Once a worker claims a
+   job, losing the process can consume an attempt even before the handler
+   produces a side effect. At the limit, operators can inspect the dead job
+   and requeue it. [Job leases](docs/adr/009-job-leases.md)
 6. **No auth or encryption on the broker port** (`:9100`). It never leaves
    the cluster network (P3 covers TLS).
 7. **Delivery is at-least-once end to end.** Consumers see duplicates
