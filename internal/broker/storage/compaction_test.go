@@ -2,6 +2,7 @@ package storage
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -608,7 +609,12 @@ func TestCompactConcurrentWithAppendAndRead(t *testing.T) {
 	go func() {
 		defer wg.Done()
 		for ctx.Err() == nil {
-			if _, err := p.Read(p.FirstOffset(), 100, 1<<20); err != nil {
+			offset := p.FirstOffset()
+			if _, err := p.Read(offset, 100, 1<<20); err != nil {
+				// compaction can remove the first segment between the two calls.
+				if errors.Is(err, ErrOffsetOutOfRange) && offset < p.FirstOffset() {
+					continue
+				}
 				select {
 				case errCh <- fmt.Errorf("read: %w", err):
 				default:

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 )
 
@@ -412,7 +413,8 @@ func TestCrashScenariosMidAppend(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if base, err := p.Append(recs); err != nil || base != 0 {
+			// append assigns offsets and timestamps to the caller's records.
+			if base, err := p.Append(slices.Clone(recs)); err != nil || base != 0 {
 				t.Fatalf("append: base=%d err=%v", base, err)
 			}
 			if err := p.Close(); err != nil { // clean close = data flushed; corruption below is the crash
