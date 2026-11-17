@@ -110,4 +110,8 @@ jobs:
         # the loopback httptest servers used by the webhook suites.
         env:
           WORKER_WEBHOOK_ALLOW_PRIVATE: "true"
-        run: go test -tags=integration ./tests/integration/... ./tests/security/... -timeout 10m
+        shell: bash
+        run: |
+          set -o pipefail
+          go test -json -count=1 -tags=integration -timeout 10m ./tests/integration/... ./tests/security/... |
+            python3 -u scripts/check_integration_results.py
