@@ -95,10 +95,9 @@ func cmdLogin(e *env, args []string) error {
 			"api_url": cfg.APIURL,
 		})
 	}
-	fmt.Fprintf(e.stdout, "logged in as %s\n", cfg.Email)
-	fmt.Fprintf(e.stdout, "api url: %s\n", cfg.APIURL)
-	fmt.Fprintf(e.stdout, "token saved (access expires %s)\n", fmtUnix(pair.AccessExpiresAt))
-	return nil
+	_, err = fmt.Fprintf(e.stdout, "logged in as %s\napi url: %s\ntoken saved (access expires %s)\n",
+		cfg.Email, cfg.APIURL, fmtUnix(pair.AccessExpiresAt))
+	return err
 }
 
 // cmdLogout handles `raven logout`. It revokes the refresh token remotely
@@ -136,18 +135,20 @@ func cmdLogout(e *env, args []string) error {
 	}
 
 	if remoteErr != nil {
-		fmt.Fprintf(e.stderr, "raven: warning: remote logout failed (%v); local token removed anyway\n", remoteErr)
+		_, _ = fmt.Fprintf(e.stderr, "raven: warning: remote logout failed (%v); local token removed anyway\n", remoteErr)
 	}
 	if g.json {
 		return printJSON(e.stdout, map[string]any{"ok": true})
 	}
-	fmt.Fprintln(e.stdout, "logged out")
-	return nil
+	_, err = fmt.Fprintln(e.stdout, "logged out")
+	return err
 }
 
 // promptLine reads one echoed line (used for the email prompt).
 func promptLine(e *env, label string) (string, error) {
-	fmt.Fprint(e.stderr, label)
+	if _, err := fmt.Fprint(e.stderr, label); err != nil {
+		return "", err
+	}
 	line, err := bufio.NewReader(e.stdin).ReadString('\n')
 	if err != nil && line == "" {
 		return "", fmt.Errorf("cannot read input: %w", err)
@@ -163,11 +164,13 @@ func promptPassword(e *env, label string) (string, error) {
 	if !ok {
 		return "", fmt.Errorf("cannot prompt for a password on this stdin — use --password or RAVEN_PASSWORD")
 	}
-	fmt.Fprint(e.stderr, label)
+	if _, err := fmt.Fprint(e.stderr, label); err != nil {
+		return "", err
+	}
 	pw, err := readNoEcho(f)
-	fmt.Fprintln(e.stderr) // echo was off; move to the next line ourselves
+	_, newlineErr := fmt.Fprintln(e.stderr)
 	if err != nil {
 		return "", err
 	}
-	return pw, nil
+	return pw, newlineErr
 }

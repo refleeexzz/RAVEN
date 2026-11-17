@@ -9,6 +9,7 @@ package cli
 
 import (
 	"bufio"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -16,15 +17,21 @@ import (
 )
 
 // readNoEcho reads one password line from f with terminal echo disabled.
-func readNoEcho(f *os.File) (string, error) {
+func readNoEcho(f *os.File) (password string, readErr error) {
 	off := exec.Command("stty", "-echo")
 	off.Stdin = f
 	if err := off.Run(); err != nil {
-		fmt.Fprintf(os.Stderr, "raven: warning: cannot disable echo (%v) — password will be visible\n", err)
+		if _, err := fmt.Fprintf(os.Stderr, "raven: warning: cannot disable echo (%v) — password will be visible\n", err); err != nil {
+			return "", err
+		}
 	} else {
 		on := exec.Command("stty", "echo")
 		on.Stdin = f
-		defer func() { _ = on.Run() }()
+		defer func() {
+			if err := on.Run(); err != nil {
+				readErr = errors.Join(readErr, fmt.Errorf("cannot restore terminal echo: %w", err))
+			}
+		}()
 	}
 	line, err := bufio.NewReader(f).ReadString('\n')
 	if err != nil && line == "" {

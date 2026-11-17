@@ -24,22 +24,28 @@ func printJSON(w io.Writer, v any) error {
 
 // table renders headers plus rows aligned with tabs. Empty cells should be
 // passed as "-" by callers so the grid reads well.
-func table(w io.Writer, headers []string, rows [][]string) {
+func table(w io.Writer, headers []string, rows [][]string) error {
 	tw := tabwriter.NewWriter(w, 0, 4, 2, ' ', 0)
-	fmt.Fprintln(tw, strings.Join(headers, "\t"))
-	for _, row := range rows {
-		fmt.Fprintln(tw, strings.Join(row, "\t"))
+	if _, err := fmt.Fprintln(tw, strings.Join(headers, "\t")); err != nil {
+		return err
 	}
-	_ = tw.Flush()
+	for _, row := range rows {
+		if _, err := fmt.Fprintln(tw, strings.Join(row, "\t")); err != nil {
+			return err
+		}
+	}
+	return tw.Flush()
 }
 
 // kv renders a "key: value" detail view, aligned on the colon.
-func kv(w io.Writer, pairs [][2]string) {
+func kv(w io.Writer, pairs [][2]string) error {
 	tw := tabwriter.NewWriter(w, 0, 4, 2, ' ', 0)
 	for _, p := range pairs {
-		fmt.Fprintf(tw, "%s\t%s\n", p[0]+":", p[1])
+		if _, err := fmt.Fprintf(tw, "%s\t%s\n", p[0]+":", p[1]); err != nil {
+			return err
+		}
 	}
-	_ = tw.Flush()
+	return tw.Flush()
 }
 
 // dash maps empty strings to "-" so table cells never collapse.

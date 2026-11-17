@@ -90,12 +90,19 @@ func StartBroker(dir string, mode FsyncMode) (addr string, stop func(), err erro
 	for br.Addr() == "" {
 		if time.Now().After(deadline) {
 			cancel()
-			<-done
+			if err := <-done; err != nil {
+				return "", nil, fmt.Errorf("start benchmark broker: %w", err)
+			}
 			return "", nil, fmt.Errorf("broker did not start")
 		}
 		time.Sleep(5 * time.Millisecond)
 	}
-	return br.Addr(), func() { cancel(); <-done }, nil
+	return br.Addr(), func() {
+		cancel()
+		if err := <-done; err != nil {
+			slog.Error("benchmark broker stopped with an error", "err", err)
+		}
+	}, nil
 }
 
 // CreateTopic is a small helper shared by scenarios.
