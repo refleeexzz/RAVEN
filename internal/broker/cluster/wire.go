@@ -27,26 +27,6 @@ type NodePingResponse struct {
 	ID NodeID `json:"id"`
 }
 
-// ---- shared request envelope ----
-
-// requestEnvelope is embedded (as a named field) in every node-to-node
-// request so the receiver can mark the sender seen without parsing the
-// whole payload first.
-type requestEnvelope struct {
-	From NodeID `json:"from"`
-}
-
-// fromOf extracts the sender id from a decoded cluster request. The
-// switch grows as the data plane lands (replicate, vote, reassign).
-func fromOf(v any) NodeID {
-	switch r := v.(type) {
-	case *NodePingRequest:
-		return r.ID
-	default:
-		return ""
-	}
-}
-
 // errFrame builds an OpError response frame with a stable code.
 func errFrame(correlationID uint64, code, msg string) *protocol.Frame {
 	return protocol.ErrorFrame(correlationID, protocol.NewError(code, msg))

@@ -33,7 +33,6 @@ type Cluster struct {
 	log    *slog.Logger
 	dialer Dialer
 
-	mu      sync.RWMutex
 	ln      Listener
 	srv     *nodeServer
 	peers   map[NodeID]*peer

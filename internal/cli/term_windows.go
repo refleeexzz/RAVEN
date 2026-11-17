@@ -9,6 +9,7 @@ package cli
 
 import (
 	"bufio"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -25,19 +26,27 @@ var (
 )
 
 // readNoEcho reads one password line from f with console echo disabled.
-func readNoEcho(f *os.File) (string, error) {
+func readNoEcho(f *os.File) (password string, readErr error) {
 	h := syscall.Handle(f.Fd())
 	var mode uint32
 	r, _, err := procGetConsoleMode.Call(uintptr(h), uintptr(unsafe.Pointer(&mode)))
 	if r == 0 {
-		fmt.Fprintf(os.Stderr, "raven: warning: cannot disable echo (%v) — password will be visible\n", err)
+		if _, err := fmt.Fprintf(os.Stderr, "raven: warning: cannot disable echo (%v) — password will be visible\n", err); err != nil {
+			return "", err
+		}
 		return readLine(f)
 	}
 	if r, _, err := procSetConsoleMode.Call(uintptr(h), uintptr(mode&^enableEchoInput)); r == 0 {
-		fmt.Fprintf(os.Stderr, "raven: warning: cannot disable echo (%v) — password will be visible\n", err)
+		if _, err := fmt.Fprintf(os.Stderr, "raven: warning: cannot disable echo (%v) — password will be visible\n", err); err != nil {
+			return "", err
+		}
 		return readLine(f)
 	}
-	defer procSetConsoleMode.Call(uintptr(h), uintptr(mode))
+	defer func() {
+		if r, _, err := procSetConsoleMode.Call(uintptr(h), uintptr(mode)); r == 0 {
+			readErr = errors.Join(readErr, fmt.Errorf("cannot restore console mode: %w", err))
+		}
+	}()
 	return readLine(f)
 }
 

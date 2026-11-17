@@ -55,16 +55,3 @@ func (c *Cluster) clearAssignmentOverlay(topic string, partition int32) {
 	delete(c.overlay.m, overlayKey{topic, partition})
 	c.overlay.mu.Unlock()
 }
-
-// overlaySnapshot copies every overlay assignment (ops + persistence).
-func (c *Cluster) overlaySnapshot() []Assignment {
-	c.overlay.mu.RLock()
-	defer c.overlay.mu.RUnlock()
-	out := make([]Assignment, 0, len(c.overlay.m))
-	for _, a := range c.overlay.m {
-		cp := Assignment{Topic: a.Topic, Partition: a.Partition, Leader: a.Leader}
-		cp.Replicas = append(cp.Replicas, a.Replicas...)
-		out = append(out, cp)
-	}
-	return out
-}
