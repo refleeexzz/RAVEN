@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -331,8 +332,8 @@ func TestJobRecoveryAfterWorkerKill(t *testing.T) {
 	waitJobRow(t, pool, job.GetId(), "RETRYING", 2, lease+2*sweepInterval+3*time.Second)
 	recoveredIn := time.Since(killTime)
 	t.Logf("sweeper recovered the job %v after the kill", recoveredIn)
-	if _, wid, _, attempts := jobRow(t, pool, job.GetId()); wid != "" || attempts != 0 {
-		t.Errorf("recovered row: worker_id %q (want cleared), attempts %d (want preserved 0)", wid, attempts)
+	if _, wid, _, attempts := jobRow(t, pool, job.GetId()); wid != "" || attempts != 1 {
+		t.Errorf("recovered row: worker_id %q (want cleared), attempts %d (want 1)", wid, attempts)
 	}
 
 	// The replacement worker joins the (empty) group, gets the partitions
@@ -353,19 +354,16 @@ func TestJobRecoveryAfterWorkerKill(t *testing.T) {
 	waitWorkerIdle(t, wA, 10*time.Second)
 
 	st, wid, gen, attempts := jobRow(t, pool, job.GetId())
-	if st != "SUCCESS" || wid != "worker-B" || gen != 2 || attempts != 1 {
-		t.Errorf("final row: got (%s, %s, gen %d, attempts %d), want (SUCCESS, worker-B, gen 2, attempts 1)",
+	if st != "SUCCESS" || wid != "worker-B" || gen != 2 || attempts != 2 {
+		t.Errorf("final row: got (%s, %s, gen %d, attempts %d), want (SUCCESS, worker-B, gen 2, attempts 2)",
 			st, wid, gen, attempts)
 	}
 	if got := wA.Processed(); got != 0 {
 		t.Errorf("dead worker processed count: got %d, want 0 (its write was fenced)", got)
 	}
 
-	// Attempts preserved + audited. Three rows: the sweeper's
-	// interrupted-attempt row (attempt 1, worker A, "lease expired"), B's
-	// winning success (attempt 1), and A's late fenced finish — the attempt
-	// row stays because the attempt really ran; only its job-row write was
-	// rejected.
+	// the interrupted worker used attempt one. the replacement succeeded
+	// on attempt two. the late finish leaves a separate audit entry.
 	var attemptRows, expiredRows, successRows int
 	if err := pool.QueryRow(ctx,
 		`SELECT count(*) FROM job_attempts WHERE job_id = $1`, job.GetId()).Scan(&attemptRows); err != nil {
@@ -376,7 +374,7 @@ func TestJobRecoveryAfterWorkerKill(t *testing.T) {
 	}
 	if err := pool.QueryRow(ctx, `
 		SELECT count(*) FROM job_attempts
-		WHERE job_id = $1 AND error = 'lease expired (worker lost)' AND worker_id = 'worker-A'`,
+		WHERE job_id = $1 AND attempt = 1 AND error = 'lease expired (worker lost)' AND worker_id = 'worker-A'`,
 		job.GetId()).Scan(&expiredRows); err != nil {
 		t.Fatalf("count expired rows: %v", err)
 	}
@@ -385,7 +383,7 @@ func TestJobRecoveryAfterWorkerKill(t *testing.T) {
 	}
 	if err := pool.QueryRow(ctx, `
 		SELECT count(*) FROM job_attempts
-		WHERE job_id = $1 AND error = '' AND worker_id = 'worker-B'`,
+		WHERE job_id = $1 AND attempt = 2 AND error = '' AND worker_id = 'worker-B'`,
 		job.GetId()).Scan(&successRows); err != nil {
 		t.Fatalf("count success rows: %v", err)
 	}
@@ -404,7 +402,7 @@ func TestJobRecoveryAfterWorkerKill(t *testing.T) {
 		t.Error("stale-generation FinishJobSuccess must return nil (fenced)")
 	}
 	st, wid, gen, attempts = jobRow(t, pool, job.GetId())
-	if st != "SUCCESS" || wid != "worker-B" || gen != 2 || attempts != 1 {
+	if st != "SUCCESS" || wid != "worker-B" || gen != 2 || attempts != 2 {
 		t.Errorf("after late write: got (%s, %s, gen %d, attempts %d) — the fence let it through",
 			st, wid, gen, attempts)
 	}
@@ -430,8 +428,7 @@ func TestJobRecoveryAfterWorkerKill(t *testing.T) {
 	}
 	waitJobRow(t, pool, job2.GetId(), "PROCESSING", 1, 15*time.Second)
 
-	// Simulate the sweeper taking over — this UPDATE is exactly what
-	// recoverJob does (bump generation, back to RETRYING).
+	// revoke the claim directly to isolate the lease renewer's response.
 	if _, err := pool.Exec(ctx, `
 		UPDATE jobs
 		SET execution_generation = execution_generation + 1,
@@ -499,10 +496,9 @@ func TestSweeperSelectsOnlyExpiredLeases(t *testing.T) {
 		t.Fatalf("recovered %d jobs, want 3 (job_s1, job_s4, job_s7)", n)
 	}
 
-	// Recovered jobs: generation bumped, attempts preserved, worker cleared,
-	// error recorded, fresh lease set so the republish has time to land.
+	// an expired execution consumes an attempt and gets a fresh lease.
 	st, wid, gen, attempts := jobRow(t, pool, "job_s1")
-	if st != "RETRYING" || gen != 2 || attempts != 0 || wid != "" {
+	if st != "RETRYING" || gen != 2 || attempts != 1 || wid != "" {
 		t.Errorf("job_s1: got (%s, gen %d, attempts %d, worker %q)", st, gen, attempts, wid)
 	}
 	var errMsg string
@@ -524,9 +520,9 @@ func TestSweeperSelectsOnlyExpiredLeases(t *testing.T) {
 	}
 
 	// Attempts exhausted -> DEAD, terminal, lease cleared, DLQ copy.
-	st, _, gen, _ = jobRow(t, pool, "job_s7")
-	if st != "DEAD" || gen != 2 {
-		t.Errorf("job_s7: got (%s, gen %d), want (DEAD, 2)", st, gen)
+	st, _, gen, attempts = jobRow(t, pool, "job_s7")
+	if st != "DEAD" || gen != 2 || attempts != 4 {
+		t.Errorf("job_s7: got (%s, gen %d, attempts %d), want (DEAD, 2, 4)", st, gen, attempts)
 	}
 	var finishedAt *time.Time
 	var deadLease *time.Time
@@ -549,16 +545,17 @@ func TestSweeperSelectsOnlyExpiredLeases(t *testing.T) {
 		}
 	}
 
-	// One interrupted-attempt audit row per recovered job, none elsewhere.
-	for _, id := range []string{"job_s1", "job_s4", "job_s7"} {
-		var c int
+	// interrupted executions leave a numbered audit row. an expired retry
+	// wait leaves none. the legacy row already at its limit stays capped.
+	for id, want := range map[string][]int32{"job_s1": {1}, "job_s4": nil, "job_s7": {4}} {
+		var numbers []int32
 		if err := pool.QueryRow(ctx, `
-			SELECT count(*) FROM job_attempts
-			WHERE job_id = $1 AND error = 'lease expired (worker lost)'`, id).Scan(&c); err != nil {
-			t.Fatalf("count attempts %s: %v", id, err)
+			SELECT array_agg(attempt ORDER BY attempt) FROM job_attempts
+			WHERE job_id = $1 AND error = 'lease expired (worker lost)'`, id).Scan(&numbers); err != nil {
+			t.Fatalf("read attempts %s: %v", id, err)
 		}
-		if c != 1 {
-			t.Errorf("%s: got %d lease-expired attempt rows, want 1", id, c)
+		if !slices.Equal(numbers, want) {
+			t.Errorf("%s: got lease-expired attempts %v, want %v", id, numbers, want)
 		}
 	}
 

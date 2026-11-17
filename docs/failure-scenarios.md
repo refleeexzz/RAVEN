@@ -45,15 +45,15 @@ That gap is now closed by **job leases** (migration 000003, ADR 009):
 - Every claim stamps `heartbeat_at` and `lease_until = now() + lease`
   (`WORKER_JOB_LEASE_MS`, default 30 s). While the handler runs, the worker
   renews the lease every `lease/3`.
-- A killed worker stops renewing. Once `lease_until` passes, the **sweeper**
-  in the jobs service (every `JOBS_SWEEP_INTERVAL`, default 15 s; exactly one
-  replica sweeps per pass via a Postgres advisory lock) takes the job over in
-  one transaction: `execution_generation++`, status back to `RETRYING` (or
-  `DEAD` when attempts are gone), `worker_id`/lease cleared, a
-  `job_attempts` row written with `error = 'lease expired (worker lost)'`,
-  and a fresh message republished to the `jobs` topic with the new
-  generation. Attempts are preserved — the interrupted try does not burn
-  one.
+- A killed worker stops renewing. After `lease_until` passes, the jobs
+  sweeper advances the generation and clears the worker assignment. If the
+  job was `PROCESSING`, it charges one attempt and records the worker ID and
+  `lease expired (worker lost)` in the history. At the limit it commits
+  `DEAD` and tries to publish a dead-letter copy. With attempts remaining,
+  it commits `RETRYING` with a fresh lease and republishes the job.
+- If the worker died while waiting for its retry timer, the previous
+  execution already has an outcome. Each expired `RETRYING` lease preserves
+  the attempt count and that outcome until a worker claims the next execution.
 - If the "dead" worker was actually just stuck (GC pause, network partition)
   and comes back to finish the job, its write carries the old generation and
   matches zero rows: **fenced**, logged, counted in
@@ -96,10 +96,12 @@ docker compose logs jobs --tail=20 | grep "sweeper recovered"
 # worker finishes it, and job_attempts shows the 'lease expired' audit row
 ```
 
-The end-to-end version of this scenario is an integration test:
-`tests/integration/job_recovery_test.go` kills a worker mid-job (hard stop,
-no drain), watches the sweeper requeue it within ~2 intervals, has a second
-worker finish it, and proves the dead worker's late write is fenced.
+`tests/integration/worker_crash_budget_test.go` kills three worker
+processes while the webhook receiver is handling their requests and checks
+the final state, attempt history and dead-letter publication. It also covers
+repeated lease expiry while a job waits for a retry.
+`tests/integration/job_recovery_test.go` covers a replacement finishing
+the job and the generation check rejecting a late result.
 
 ## Redis down
 
