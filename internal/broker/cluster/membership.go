@@ -155,7 +155,7 @@ func (m *Membership) Tick() {
 	var changed []Member
 	m.mu.Lock()
 	for _, mem := range m.members {
-		if mem.NodeInfo.ID == m.self {
+		if mem.ID == m.self {
 			continue
 		}
 		switch mem.State {
