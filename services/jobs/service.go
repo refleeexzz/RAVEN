@@ -193,38 +193,9 @@ func Run(ctx context.Context, cfg Config) error {
 		return fmt.Errorf("jobs: listen %s: %w", cfg.GRPCAddr, err)
 	}
 
-	// Cancel the child context on any fatal server error so the other server
-	// stops too.
-	ctx, cancel2 := context.WithCancel(ctx)
-	defer cancel2()
-
-	errCh := make(chan error, 2)
-	go func() {
-		log.Info("grpc listening", slog.String("addr", lis.Addr().String()))
-		if err := grpcSrv.Serve(lis); err != nil {
-			errCh <- fmt.Errorf("jobs: grpc serve: %w", err)
-		}
-	}()
-	go func() {
-		log.Info("ops http listening", slog.String("addr", cfg.HTTPAddr))
-		errCh <- httpserver.ListenAndServe(ctx, cfg.HTTPAddr, opsHandler(healthReg, metr, log))
-	}()
-	// Graceful gRPC stop: drain in-flight RPCs for up to 10s, then force.
-	go func() {
-		<-ctx.Done()
-		timer := time.AfterFunc(10*time.Second, grpcSrv.Stop)
-		defer timer.Stop()
-		grpcSrv.GracefulStop()
-	}()
-
-	select {
-	case err := <-errCh:
-		cancel2()
-		<-errCh
-		return err
-	case <-ctx.Done():
-		return <-errCh
-	}
+	log.Info("grpc listening", slog.String("addr", lis.Addr().String()))
+	log.Info("ops http listening", slog.String("addr", cfg.HTTPAddr))
+	return httpserver.ServeWithGRPC(ctx, grpcSrv, lis, cfg.HTTPAddr, opsHandler(healthReg, metr, log))
 }
 
 // opsHandler serves /health, /ready and /metrics on the ops port.

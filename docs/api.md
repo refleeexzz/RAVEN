@@ -364,7 +364,10 @@ Rules:
   `send_email` needs `to`; `webhook` needs `url`; `resize_image` accepts any
   object.
 - `priority` 1–9, default 5 (1 = most urgent; it picks the broker topic
-  `jobs.p<priority>`). `max_attempts` 1–25, default 4.
+  `jobs.p<priority>`).
+- `max_attempts` accepts 1–25 and defaults to 4. A worker lost after
+  claiming the job consumes one attempt when its execution lease expires.
+  Waiting for another worker in `RETRYING` preserves the remaining attempts.
 - `scheduled_at` optional, Unix seconds. `0` or absent runs now; a future
   time creates the job in `SCHEDULED` and it is published only when the
   time comes; more than a minute in the past is rejected

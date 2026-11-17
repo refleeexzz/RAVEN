@@ -18,10 +18,9 @@ import (
 // fakeAPIKeyStore is an in-memory apiKeyStore. It stores hashes only, like
 // the real one, so tests exercise the same resolve-by-hash contract.
 type fakeAPIKeyStore struct {
-	mu      sync.Mutex
-	byHash  map[string]*APIKey
-	byID    map[string]*APIKey
-	touched []string
+	mu     sync.Mutex
+	byHash map[string]*APIKey
+	byID   map[string]*APIKey
 
 	createErr  error
 	resolveErr error // injected infrastructure error (not "key invalid")
@@ -108,17 +107,8 @@ func apiKeyHashForTest(f *fakeAPIKeyStore, k *APIKey) string {
 	return ""
 }
 
-func (f *fakeAPIKeyStore) Touch(_ context.Context, id string) error {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.touched = append(f.touched, id)
+func (f *fakeAPIKeyStore) Touch(context.Context, string) error {
 	return nil
-}
-
-func (f *fakeAPIKeyStore) touchedIDs() []string {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	return append([]string(nil), f.touched...)
 }
 
 // ---------------------------------------------------------------------------

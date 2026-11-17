@@ -200,19 +200,6 @@ var (
 	sharedGateway string // base URL, e.g. http://127.0.0.1:PORT
 )
 
-func serveGRPC(t *testing.T, register func(s *grpc.Server)) string {
-	t.Helper()
-	lis, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("listen: %v", err)
-	}
-	s := grpc.NewServer()
-	register(s)
-	go func() { _ = s.Serve(lis) }()
-	t.Cleanup(func() { s.Stop() })
-	return lis.Addr().String()
-}
-
 func TestMain(m *testing.M) {
 	// TestMain cannot use t, so failures here panic — a broken harness is
 	// never silent.
@@ -1025,9 +1012,10 @@ func TestRateLimitConcurrentBurstExact(t *testing.T) {
 				return // a transport error is not a pass
 			}
 			_ = resp.Body.Close()
-			if resp.StatusCode == http.StatusOK {
+			switch resp.StatusCode {
+			case http.StatusOK:
 				okCount.Add(1)
-			} else if resp.StatusCode == http.StatusTooManyRequests {
+			case http.StatusTooManyRequests:
 				limitedCount.Add(1)
 			}
 		}()
