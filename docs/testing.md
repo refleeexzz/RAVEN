@@ -67,9 +67,20 @@ retention).
 go test -tags=integration ./tests/integration/... -timeout 10m
 ```
 
-These spin up **real Postgres and Redis in testcontainers**, apply the real
-migration files, and run the actual services in-process. Every test skips
-cleanly when Docker is unavailable. There are two suites:
+These suites start PostgreSQL and Redis via Testcontainers and apply the SQL migrations.
+
+To exercise worker loss during a webhook and lease expiry while waiting for
+a retry, run both worker recovery tests together.
+
+```bash
+go test -race -tags=integration -count=1 -v -run '^Test(WorkerCrashesExhaustAttemptBudget|RetryLeaseExpiryPreservesAttemptBudget)$' ./tests/integration
+```
+
+Local runs skip integration tests when Docker is unavailable. On pushes and
+pull requests to `main`, CI runs both the integration and security packages
+with the test cache disabled. It prints the number of top-level tests passed
+in each package and fails if any test is skipped, either package fails to
+complete, or either of the two worker recovery tests above is missing or fails.
 
 - **`auth_users_test.go`** — the auth + users services end to end against
   real Postgres (migration 000001 applied) and real Redis: registration,
@@ -80,8 +91,6 @@ cleanly when Docker is unavailable. There are two suites:
   through `services/worker.Run`. It creates jobs over gRPC and watches them
   go `QUEUED → PROCESSING → SUCCESS` through the actual broker, including
   failure/retry/DLQ paths.
-
-The same suites run in CI on every push and PR to `main`.
 
 ## Benchmarks
 

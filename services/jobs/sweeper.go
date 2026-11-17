@@ -43,9 +43,7 @@ const (
 // finished it in between. Normal race, not a failure.
 var errSweepRaceLost = stderrors.New("jobs: job no longer sweepable")
 
-// Sweeper finds jobs stuck in PROCESSING/RETRYING past their lease (a worker
-// died mid-flight or before its retry timer fired) and gives them a new
-// generation, a RETRYING status and a fresh broker message. See ADR 009.
+// the sweeper recovers expired execution and retry leases and enforces the attempt limit.
 type Sweeper struct {
 	pool     *pgxpool.Pool
 	producer *Producer
@@ -186,14 +184,17 @@ func (s *Sweeper) recoverJob(ctx context.Context, conn *pgxpool.Conn, id string)
 	var j *Job
 	err := withTx(ctx, conn, func(tx pgx.Tx) error {
 		var (
-			prevWorkerID string
-			prevStarted  *time.Time
-			interruptAtt int
+			status                 Status
+			workerID               string
+			startedAt, recoveredAt time.Time
+			attempts, maxAttempts  int
 		)
 		err := tx.QueryRow(ctx, `
-			SELECT worker_id, started_at, attempts + 1 FROM jobs WHERE id = $1
-			FOR UPDATE`, id).
-			Scan(&prevWorkerID, &prevStarted, &interruptAtt)
+			SELECT status, worker_id, COALESCE(started_at, now()), now(), attempts, max_attempts
+			FROM jobs
+			WHERE id = $1 AND status IN ('PROCESSING', 'RETRYING') AND lease_until < now()
+			FOR NO KEY UPDATE`, id).
+			Scan(&status, &workerID, &startedAt, &recoveredAt, &attempts, &maxAttempts)
 		if err != nil {
 			if stderrors.Is(err, pgx.ErrNoRows) {
 				return errSweepRaceLost
@@ -202,37 +203,35 @@ func (s *Sweeper) recoverJob(ctx context.Context, conn *pgxpool.Conn, id string)
 				"could not lock the stranded job", err)
 		}
 
+		// only a claimed execution consumes an attempt. a lost retry timer can
+		// expire repeatedly while the broker or workers are unavailable.
+		if status == StatusProcessing && attempts < maxAttempts {
+			attempts++
+		}
+		next := StatusRetrying
+		if attempts >= maxAttempts {
+			next = StatusDead
+		}
 		j, err = scanJob(tx.QueryRow(ctx, `
 			UPDATE jobs
 			SET execution_generation = execution_generation + 1,
-			    status     = CASE WHEN attempts >= max_attempts THEN 'DEAD' ELSE 'RETRYING' END,
-			    error      = $2,
+			    attempts   = $2,
+			    status     = $3,
+			    error      = CASE WHEN status = 'PROCESSING' THEN $4 ELSE error END,
 			    worker_id  = '',
 			    heartbeat_at = NULL,
-			    lease_until = CASE WHEN attempts >= max_attempts THEN NULL
-			                       ELSE now() + make_interval(secs => $3) END,
-			    finished_at = CASE WHEN attempts >= max_attempts THEN now() ELSE finished_at END
-			WHERE id = $1 AND status IN ('PROCESSING', 'RETRYING') AND lease_until < now()
-			RETURNING `+jobColumns, id, leaseExpiredError, sweeperRecoverLease.Seconds()))
+			    lease_until = CASE WHEN $3 = 'DEAD' THEN NULL
+			                       ELSE now() + make_interval(secs => $5) END,
+			    finished_at = CASE WHEN $3 = 'DEAD' THEN now() ELSE NULL END
+			WHERE id = $1
+			RETURNING `+jobColumns, id, attempts, next, leaseExpiredError, sweeperRecoverLease.Seconds()))
 		if err != nil {
-			if stderrors.Is(err, pgx.ErrNoRows) {
-				return errSweepRaceLost
-			}
 			return errors.E(errors.KindUnknown, "sweeper_recover_failed",
 				"could not take over the stranded job", err)
 		}
-
-		// Audit the interrupted attempt. started_at falls back to now: a
-		// RETRYING job stranded before its retry timer fired never started
-		// this attempt at all. finished_at is the sweep moment.
-		startedAt := time.Now().UTC()
-		if prevStarted != nil {
-			startedAt = *prevStarted
-		}
-		finishedAt := time.Now().UTC()
-		if err := insertAttempt(ctx, tx, id, interruptAtt, startedAt, &finishedAt,
-			leaseExpiredError, prevWorkerID); err != nil {
-			return err
+		if status == StatusProcessing {
+			return insertAttempt(ctx, tx, id, attempts, startedAt, &recoveredAt,
+				leaseExpiredError, workerID)
 		}
 		return nil
 	})

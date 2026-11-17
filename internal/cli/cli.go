@@ -50,13 +50,6 @@ type env struct {
 	getenv func(string) string
 }
 
-func (e *env) envOr(key, def string) string {
-	if v := e.getenv(key); v != "" {
-		return v
-	}
-	return def
-}
-
 // globals are the flags accepted by every command.
 type globals struct {
 	json   bool
@@ -126,14 +119,13 @@ func Run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	e := &env{stdin: stdin, stdout: stdout, stderr: stderr, getenv: getenvDefault}
 
 	if len(args) == 0 {
-		printRootUsage(stderr)
+		_ = printRootUsage(stderr)
 		return ExitUsage
 	}
 
 	// Help is accepted anywhere it makes sense.
 	if args[0] == "help" || args[0] == "-h" || args[0] == "--help" {
-		printRootUsage(stdout)
-		return ExitOK
+		return renderError(e, "help", printRootUsage(stdout))
 	}
 
 	// Commands have one or two words ("health", "jobs submit").
@@ -150,8 +142,8 @@ func Run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		}
 	}
 	if !found {
-		fmt.Fprintf(stderr, "raven: unknown command %q\n\n", strings.Join(args, " "))
-		printRootUsage(stderr)
+		_, _ = fmt.Fprintf(stderr, "raven: unknown command %q\n\n", strings.Join(args, " "))
+		_ = printRootUsage(stderr)
 		return ExitUsage
 	}
 
@@ -166,33 +158,35 @@ func renderError(e *env, cmdName string, err error) int {
 	}
 	var ue *usageError
 	if errors.As(err, &ue) {
-		fmt.Fprintf(e.stderr, "raven %s: %s\n", cmdName, ue.msg)
+		_, _ = fmt.Fprintf(e.stderr, "raven %s: %s\n", cmdName, ue.msg)
 		if u := commandUsage(cmdName); u != "" {
-			fmt.Fprintf(e.stderr, "usage: %s\n", u)
+			_, _ = fmt.Fprintf(e.stderr, "usage: %s\n", u)
 		}
 		return ExitUsage
 	}
 	if errors.Is(err, errNotLoggedIn) {
-		fmt.Fprintf(e.stderr, "raven: %v\n", err)
+		_, _ = fmt.Fprintf(e.stderr, "raven: %v\n", err)
 		return ExitAuth
 	}
 	var ae *apiError
 	if errors.As(err, &ae) && (ae.Status == 401 || ae.Status == 403) {
-		fmt.Fprintf(e.stderr, "raven: %v\n", err)
+		_, _ = fmt.Fprintf(e.stderr, "raven: %v\n", err)
 		return ExitAuth
 	}
-	fmt.Fprintf(e.stderr, "raven: %v\n", err)
+	_, _ = fmt.Fprintf(e.stderr, "raven: %v\n", err)
 	return ExitError
 }
 
 // printRootUsage renders the top-level help.
-func printRootUsage(w io.Writer) {
-	fmt.Fprintln(w, `raven — the official RAVEN CLI
+func printRootUsage(w io.Writer) error {
+	if _, err := fmt.Fprintln(w, `raven — the official RAVEN CLI
 
 usage:
   raven <command> [flags]
 
-commands:`)
+commands:`); err != nil {
+		return err
+	}
 	wid := 0
 	for _, c := range commands() {
 		if len(c.name) > wid {
@@ -200,9 +194,11 @@ commands:`)
 		}
 	}
 	for _, c := range commands() {
-		fmt.Fprintf(w, "  %-*s  %s\n", wid, c.name, c.short)
+		if _, err := fmt.Fprintf(w, "  %-*s  %s\n", wid, c.name, c.short); err != nil {
+			return err
+		}
 	}
-	fmt.Fprintln(w, `
+	_, err := fmt.Fprintln(w, `
 flags accepted by every command:
   --json          machine-readable JSON output
   --api-url URL   gateway API base URL (default http://localhost:8080/api)
@@ -214,6 +210,7 @@ environment:
 
 exit codes: 0 ok · 1 error · 2 usage · 3 auth
 more: docs/cli.md`)
+	return err
 }
 
 // commandUsage is the one-line usage hint shown after a usage error.

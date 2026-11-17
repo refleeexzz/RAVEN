@@ -4,6 +4,7 @@ package integration
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/url"
@@ -303,8 +304,11 @@ func TestSchedulingLifecycle(t *testing.T) {
 		Name: "bad-type", CronExpr: "* * * * *", Type: "mine_crypto", PayloadJson: `{}`, Enabled: true})
 	requireGRPCCode(t, err, codes.InvalidArgument)
 
+	// keep the next scheduled run well beyond the observation window.
+	// the test makes exactly one occurrence due by updating its deadline below.
+	dailyHour := time.Now().UTC().Add(12 * time.Hour).Hour()
 	cron, err := jobsClient.CreateCron(asUser(ctx, userA), &genjobs.CreateCronRequest{
-		Name: "ping-every-minute", CronExpr: "* * * * *", Type: "send_email",
+		Name: "daily-ping", CronExpr: fmt.Sprintf("0 %d * * *", dailyHour), Type: "send_email",
 		PayloadJson: `{"to":"cron@example.com"}`, Priority: 7, Enabled: true})
 	if err != nil {
 		t.Fatalf("CreateCron: %v", err)

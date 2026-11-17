@@ -325,8 +325,10 @@ func (b *Broker) Run(ctx context.Context) error {
 		// The cluster data plane must stop touching storage before the
 		// writers drain and the store closes. Run returned on ctx.Done;
 		// this wait covers the leaving-announce and listener teardown.
-		b.cluster.Close()
 		<-clusterDone
+		if err := b.cluster.Close(); err != nil {
+			b.log.Error("cluster close", slog.Any("err", err))
+		}
 		// Follower loops may be mid-append; they exit on ctx.Done, and
 		// this wait guarantees they are done before the store closes.
 		b.repl.wait()

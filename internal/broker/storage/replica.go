@@ -137,7 +137,7 @@ func (p *Partition) TruncateTo(offset uint64) error {
 		expected := s.baseOffset
 		var scanErr error
 		err := streamRecords(s.log, 0, s.size, true, func(r *Record, pos, size int64) bool {
-			if r.Offset != expected && !(p.gapsAllowed && r.Offset > expected) {
+			if r.Offset < expected || (r.Offset > expected && !p.gapsAllowed) {
 				scanErr = fmt.Errorf("offset gap at %d", r.Offset)
 				return false
 			}
