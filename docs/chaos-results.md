@@ -53,6 +53,9 @@ any job ran twice. Everything here is measured, not guessed.
 
 ### RestartBroker
 
+This run predates the transactional outbox for immediate jobs. The current
+submission and recovery contract is documented in [Broker down](failure-scenarios.md#broker-down).
+
 - **Failure:** Full broker restart: kubectl delete pod broker-0 while resize_image jobs are flowing.
 - **Expected behavior:** Creates fail loudly with 503 broker_produce_failed while the broker is down (rows marked FAILED, never silently lost); consumers reconnect with backoff; once broker-0 is back the queue resumes and every committed message survives — per-partition high watermarks never move backwards.
 - **Actual behavior:** broker-0 restarted cleanly. 3 creates were rejected with 503 during the outage (documented fail-loud path; those rows exist marked FAILED, keys released). All 13 accepted jobs reached SUCCESS after the restart and a fresh job flowed end to end.

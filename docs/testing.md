@@ -136,10 +136,18 @@ No chaos framework either — but `docker compose` plus the failure modes in
 docker kill raven-worker-1        # hard-kill one worker (stranding window)
 docker compose stop redis         # degraded mode across the platform
 docker compose stop postgres      # readiness 503s, gateway breakers open
-docker compose stop broker        # job creation 503s, workers reconnect-loop
+docker compose stop broker        # pending jobs wait in postgresql for the broker
 docker compose stop worker        # graceful drain, nothing strands
 ```
 
 Each of those has a "what you should observe" section in the failure doc.
 Run them while the console UI is open and watch the dashboard react — that
 is the fun version of this test plan.
+
+## Worker recovery after a jobs service crash
+
+This test kills the jobs service between the database commit and broker append. It starts a replacement with scheduling paused and checks creation, replay and manual requeue.
+
+```bash
+go test -race -tags=integration -count=1 -v -run '^TestImmediateDispatchSurvivesJobsProcessCrash$' ./tests/integration
+```

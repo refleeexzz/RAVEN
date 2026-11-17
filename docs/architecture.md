@@ -42,11 +42,11 @@ jobs service (gRPC :9083)
   │  4. validate: known type? payload valid JSON? priority 1-10? attempts 1-25?
   │  5. idempotency: claim idem:<key> in Redis (NX, 24h); taken → return
   │     the existing job. Postgres unique index is the backstop.
-  │  6. INSERT INTO jobs ... status QUEUED
-  │  7. produce the job message to broker topic "jobs" (key = job id, so
-  │     one job always lands on one partition)
-  │     → produce fails: row marked FAILED, client gets 503. No silent loss.
-  │  8. publish job_status event to Redis channel raven:events:jobs
+  │  6. commit the QUEUED job and its generation to the PostgreSQL outbox
+  │     in the same transaction
+  │  7. publish a best-effort job_status event to Redis
+  │  8. publish to the priority topic (and legacy topic if enabled)
+  │     → on failure, the pending generation is retried by a jobs replica
   ▼
 broker :9100
   │  9. append to the partition log, ack after append
@@ -194,11 +194,9 @@ What scales horizontally, and why it works:
 
 What does not scale:
 
-- **broker** — one node, one process, one disk. It is the honest bottleneck
-  of the platform. Throughput is bounded by the single writer goroutine per
-  partition and the disk's fsync rate. Replication is the roadmap item that
-  would change this; today, if the broker dies, job creation fails fast with
-  503 and workers reconnect when it comes back.
+- **Default standalone broker.** Throughput depends on the partition
+  writers and the disk's fsync rate. During an outage, dispatches accumulate
+  in PostgreSQL and workers reconnect when the broker comes back.
 - **Postgres and Redis** — single instances. Fine for a learning platform;
   a real system would add replicas/failover here before anywhere else.
 
@@ -209,8 +207,8 @@ on purpose.
 
 ## Failure handling, in one paragraph
 
-Retries where safe (idempotent gRPC reads), fail fast where not (job create
-fails loudly instead of pretending), circuit breakers to stop piling onto a
+Retries on idempotent gRPC reads, a transactional outbox for job dispatch,
+circuit breakers to stop piling onto a
 sick upstream, fences to absorb the duplicates that at-least-once delivery
 guarantees, and readiness probes so orchestrators stop sending traffic to
 pods that can't serve. The full tour of what breaks and what you see when it

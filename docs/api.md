@@ -394,9 +394,10 @@ Response `201`:
 ```
 
 Timestamps are Unix seconds; `0` means "not set". Replayed jobs also carry
-`replayed_from` with the source job id. If the broker is unreachable the
-row is still written but marked `FAILED`, and you get
-`503 broker_produce_failed` — the failure is loud, never silent.
+`replayed_from` with the source job id. A successful immediate create means
+PostgreSQL committed the job and its pending publication together. If the
+broker is unreachable after that commit, a running jobs instance retries
+delivery. Use the same `Idempotency-Key` if the create response is lost.
 
 ### `GET /api/jobs` — `jobs:read`
 
@@ -433,8 +434,9 @@ Response `200`: the updated job object.
 
 DLQ requeue: resurrects a `DEAD` job to `QUEUED`, resets attempts and
 timestamps, and republishes it. `job_attempts` history is kept. Any other
-status → `409 job_not_dead`. If the republish fails, the row is put back to
-`DEAD` and you get `503 broker_produce_failed`.
+status → `409 job_not_dead`. The transaction also records the new generation
+for publication. It can remain `QUEUED` during a broker outage and is
+dispatched when the broker becomes available.
 
 ### `POST /api/jobs/{id}/replay` — `jobs:create`
 

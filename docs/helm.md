@@ -46,7 +46,7 @@ kubectl delete pvc -n raven --all     # ONLY if you really want the data gone
 | broker | StatefulSet + Service + PVC | exactly 1 replica, commit logs on `brokerdata` |
 | postgres | Deployment + Service + PVC | `PGDATA` fix baked in (see gotchas) |
 | redis | Deployment + Service | stateless by design (emptyDir) |
-| migrate | Job (Helm hook) | runs post-install/post-upgrade, idempotent |
+| migrate | Job | applies the schema on install and before workload upgrades |
 | raven-config | ConfigMap | service DNS contract — same values as flat |
 | raven-secrets | Secret | created by the chart **or** expected to exist |
 | 16 NetworkPolicies | NetworkPolicy | default-deny + least privilege, can be switched off |
@@ -112,22 +112,24 @@ Everything is in `values.yaml` with comments. The knobs you will actually touch:
 
 ---
 
-## The migrate hook (and why it is post-, not pre-)
+## Database migrations
 
-`migrate` runs as a `post-install,post-upgrade` Helm hook. The obvious
-choice — pre-install — **deadlocks on first install**: the Job's
-initContainer waits for postgres, but postgres is deployed by the same
-chart and only exists after the hooks finish. We hit this for real while
-building the chart; that is why it is post-.
+On first install, Helm creates the migration Job alongside PostgreSQL. The
+Job waits for PostgreSQL and applies the schema while the other pods start.
+This works with Helm's readiness wait enabled. The jobs service checks for
+the dispatch outbox before opening its ports.
 
-Consequence: on a cold install the app pods crash-loop two or three times
-until the schema lands, then go Ready — same behavior as the flat
-manifests. This is normal. The hook re-runs on every upgrade
-(`before-hook-creation` deletes the old immutable Job first) and is
-idempotent. Set `migrate.hook: false` if you want a plain Job instead.
+On upgrades, the default `pre-upgrade` hook runs the new migration image
+against the installed database before Helm replaces the workloads. Publish
+the migrate image with the new SQL and use its tag in `migrate.image.tag`.
+The hook uses the installed PostgreSQL service, config map, service account
+and database credentials. Roll out changes to those dependencies separately
+if the hook needs their new names or values.
 
-After `helm uninstall`, hook Jobs are **not** removed by Helm — delete
-`job/migrate` manually (or delete the whole namespace).
+With `migrate.hook: false`, migration Jobs are ordinary chart resources on
+both install and upgrade. Operators then control the order of migration and
+workload changes. A completed hook Job can remain after uninstall and can be
+removed with `kubectl delete job/migrate -n raven`.
 
 ---
 

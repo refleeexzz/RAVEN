@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/redis/go-redis/v9"
@@ -78,6 +79,14 @@ func Run(ctx context.Context, cfg Config) error {
 	}
 	defer pool.Close()
 
+	var outboxReady bool
+	if err := pool.QueryRow(ctx, `SELECT to_regclass('scheduled_job_outbox') IS NOT NULL`).Scan(&outboxReady); err != nil {
+		return fmt.Errorf("jobs: check dispatch outbox: %w", err)
+	}
+	if !outboxReady {
+		return fmt.Errorf("jobs: dispatch requires migration 000008 (scheduled_dispatch)")
+	}
+
 	rdb := redis.NewClient(&redis.Options{Addr: cfg.RedisAddr})
 	defer func() { _ = rdb.Close() }()
 	if err := rdb.Ping(ctx).Err(); err != nil {
@@ -124,25 +133,33 @@ func Run(ctx context.Context, cfg Config) error {
 	healthReg.Register("redis", redisChecker(rdb))
 	healthReg.Register("broker", BrokerCheckerWithSecurity(cfg.BrokerAddr, bsec))
 
+	var loops sync.WaitGroup
+	loopCtx, stopLoops := context.WithCancel(ctx)
+	defer func() {
+		stopLoops()
+		loops.Wait()
+	}()
+
 	// Stranded-job sweeper: one goroutine per replica, exactly one active at
 	// a time across replicas via the advisory lock inside SweepOnce.
 	if cfg.SweepInterval > 0 {
 		sweeper := NewSweeper(pool, producer, rdb, log, sm, cfg.SweepInterval)
-		go sweeper.Run(ctx)
+		loops.Go(func() { sweeper.Run(loopCtx) })
 	} else {
 		log.Warn("job sweeper disabled; kill -9 can strand jobs in PROCESSING/RETRYING")
 	}
 
 	srv := NewServer(pool, rdb, producer, log, sm)
+	loops.Go(func() { runDispatchRecovery(loopCtx, pool, producer, log) })
 
 	// Delayed-job dispatcher and cron scheduler: release SCHEDULED jobs when
 	// they come due and spawn cron instances. Both need migration 000004
 	// (srv.sched); on an older schema there is nothing for them to release.
 	if cfg.SchedulerInterval > 0 && srv.sched {
 		dispatcher := NewDispatcher(pool, producer, rdb, log, sm, cfg.SchedulerInterval)
-		go dispatcher.Run(ctx)
+		loops.Go(func() { dispatcher.Run(loopCtx) })
 		crons := NewCronScheduler(pool, producer, rdb, log, sm, cfg.SchedulerInterval)
-		go crons.Run(ctx)
+		loops.Go(func() { crons.Run(loopCtx) })
 	} else if cfg.SchedulerInterval > 0 {
 		log.Warn("delayed-job dispatcher and cron scheduler disabled; migration 000004 (scheduling) is not applied")
 	}

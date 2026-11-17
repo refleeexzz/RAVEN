@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/redis/go-redis/v9"
 
@@ -142,7 +143,7 @@ func (s *Server) CreateJob(ctx context.Context, req *genjobs.CreateJobRequest) (
 		}
 	}
 
-	if err := insertJob(ctx, s.pool, j, s.sched); err != nil {
+	if err := s.storeNewJob(ctx, j); err != nil {
 		if errors.KindOf(err) == errors.KindConflict && idemKey != "" {
 			// Database backstop: the key is taken even though Redis let us
 			// through (TTL expired, eviction, Redis was down). Return the
@@ -175,34 +176,37 @@ func (s *Server) CreateJob(ctx context.Context, req *genjobs.CreateJobRequest) (
 		return j.toProto(), nil
 	}
 
-	// Publish the work. Failure here must not lose the job silently: mark the
-	// row FAILED so the user sees what happened, and report Unavailable.
-	if s.producer == nil {
-		return nil, toStatus(errors.E(errors.KindUnavailable, "broker_unavailable",
-			"the job broker is not configured", nil))
-	}
-	if err := s.producer.PublishExecution(ctx, j); err != nil {
-		errMsg := "broker produce failed: " + err.Error()
-		if uerr := markQueuedFailed(ctx, s.pool, j.ID, errMsg); uerr != nil {
-			s.log.ErrorContext(ctx, "could not mark job failed after produce error",
-				slog.String("job_id", j.ID), slog.Any("error", uerr))
-		}
-		if idemKey != "" && s.rdb != nil {
-			releaseIdempotencyKey(ctx, s.rdb, s.log, idemKey)
-		}
-		j.Status = StatusFailed
-		j.Error = errMsg
-		PublishJobEvent(ctx, s.rdb, s.log, j)
-		s.metricTransition(j, StatusFailed)
-		return nil, toStatus(errors.E(errors.KindUnavailable, "broker_produce_failed",
-			"could not queue the job, it was marked FAILED", err))
-	}
-
-	PublishJobEvent(ctx, s.rdb, s.log, j)
-	s.metricTransition(j, StatusQueued)
+	s.dispatchAccepted(ctx, j)
 	s.log.InfoContext(ctx, "job created",
 		slog.String("job_id", j.ID), slog.String("type", j.Type))
 	return j.toProto(), nil
+}
+
+func (s *Server) storeNewJob(ctx context.Context, j *Job) error {
+	if j.Status == StatusScheduled {
+		return insertJob(ctx, s.pool, j, s.sched)
+	}
+	return withTx(ctx, s.pool, func(tx pgx.Tx) error {
+		if err := insertJob(ctx, tx, j, s.sched); err != nil {
+			return err
+		}
+		return queueImmediateDispatch(ctx, tx, j)
+	})
+}
+
+// try to publish the committed job before the request returns. the relay
+// retries the pending dispatch if this attempt fails.
+func (s *Server) dispatchAccepted(ctx context.Context, j *Job) {
+	PublishJobEvent(ctx, s.rdb, s.log, j)
+	s.metricTransition(j, StatusQueued)
+	if s.producer != nil {
+		fastCtx, cancel := context.WithTimeout(ctx, time.Second)
+		defer cancel()
+		if _, err := dispatchOne(fastCtx, s.pool, s.producer, j); err != nil {
+			s.log.WarnContext(ctx, "job accepted; dispatch pending recovery",
+				slog.String("job_id", j.ID), slog.Any("error", err))
+		}
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -318,38 +322,22 @@ func (s *Server) RequeueJob(ctx context.Context, req *genjobs.RequeueJobRequest)
 	if err := caller.AuthorizeJob(cur); err != nil {
 		return nil, toStatus(err)
 	}
-	j, err := requeueJob(ctx, s.pool, req.GetId())
+	var j *Job
+	err = withTx(ctx, s.pool, func(tx pgx.Tx) error {
+		var err error
+		j, err = requeueJob(ctx, tx, req.GetId())
+		if err != nil {
+			return err
+		}
+		return queueImmediateDispatch(ctx, tx, j)
+	})
 	if err != nil {
 		return nil, toStatus(err)
 	}
 
-	if s.producer == nil {
-		return nil, toStatus(errors.E(errors.KindUnavailable, "broker_unavailable",
-			"the job broker is not configured", nil))
-	}
-	if err := s.producer.PublishExecution(ctx, j); err != nil {
-		// Best-effort revert so the job does not sit QUEUED with no message
-		// on the broker.
-		if _, rerr := requeueRevert(ctx, s.pool, j.ID); rerr != nil {
-			s.log.ErrorContext(ctx, "requeue revert failed after produce error",
-				slog.String("job_id", j.ID), slog.Any("error", rerr))
-		}
-		return nil, toStatus(errors.E(errors.KindUnavailable, "broker_produce_failed",
-			"could not requeue the job, it was left DEAD", err))
-	}
-
-	PublishJobEvent(ctx, s.rdb, s.log, j)
-	s.metricTransition(j, StatusQueued)
+	s.dispatchAccepted(ctx, j)
 	s.log.InfoContext(ctx, "job requeued", slog.String("job_id", j.ID))
 	return j.toProto(), nil
-}
-
-// requeueRevert puts a job back to DEAD when the requeue produce failed.
-func requeueRevert(ctx context.Context, q querier, id string) (*Job, error) {
-	return scanJob(q.QueryRow(ctx, `
-		UPDATE jobs SET status = $2
-		WHERE id = $1 AND status = 'QUEUED'
-		RETURNING `+jobColumns, id, StatusDead))
 }
 
 // ---------------------------------------------------------------------------

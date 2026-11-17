@@ -14,19 +14,8 @@ import (
 // SCHEDULED jobs — flip to QUEUED plus a broker publish — so they reach
 // workers at their scheduled_at time instead of at create time.
 //
-// Correctness notes:
-//   - The claim (SELECT ... FOR UPDATE SKIP LOCKED), the status flip and the
-//     broker publish commit in ONE transaction: a job only becomes QUEUED
-//     when its message is already on the broker. If the publish fails the
-//     whole batch rolls back and is retried on the next pass.
-//   - SKIP LOCKED lets several replicas run the loop concurrently: each
-//     pass grabs a disjoint set of rows.
-//   - A crash between the publishes and the commit can republish a message
-//     on the next pass; the worker claim fence ignores the duplicate
-//     (at-least-once is the platform semantic).
-//
-// Lateness bound: a due job is released at most interval after its
-// scheduled_at (plus one publish round-trip), assuming the broker is up.
+// the status change and the pending dispatch commit together. the broker
+// can then deliver the message to a worker that sees the committed row.
 type Dispatcher struct {
 	pool     *pgxpool.Pool
 	producer *Producer
@@ -81,29 +70,17 @@ func (d *Dispatcher) dispatchQuiet(ctx context.Context) {
 	}
 }
 
-// DispatchOnce runs one pass: claim the due batch under SKIP LOCKED,
-// publish each job inside the transaction and commit. Returns the number of
-// jobs released.
+// release due jobs and drain pending dispatches, including work from earlier
+// passes. the count includes jobs released even if a later publish fails.
 func (d *Dispatcher) DispatchOnce(ctx context.Context) (int, error) {
 	var released []*Job
 	err := withTx(ctx, d.pool, func(tx pgx.Tx) error {
-		due, err := claimDueScheduled(ctx, tx)
+		var err error
+		released, err = claimDueScheduled(ctx, tx)
 		if err != nil {
 			return err
 		}
-		for _, j := range due {
-			// Bounded publish: one slow broker must not hold the row locks
-			// (and the transaction) open for long. A failure aborts the
-			// batch; the rows stay SCHEDULED for the next pass.
-			pubCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-			err := d.producer.PublishExecution(pubCtx, j)
-			cancel()
-			if err != nil {
-				return err
-			}
-			released = append(released, j)
-		}
-		return nil
+		return queueScheduledDispatch(ctx, tx, released)
 	})
 	if err != nil {
 		return 0, err
@@ -111,7 +88,7 @@ func (d *Dispatcher) DispatchOnce(ctx context.Context) (int, error) {
 
 	// Committed: side effects that may not roll the work back.
 	for _, j := range released {
-		PublishJobEvent(context.Background(), d.rdb, d.log, j)
+		PublishJobEvent(ctx, d.rdb, d.log, j)
 		if d.metrics != nil {
 			d.metrics.dispatched.Inc()
 			d.metrics.observeTransition(j.Type, StatusQueued)
@@ -120,5 +97,5 @@ func (d *Dispatcher) DispatchOnce(ctx context.Context) (int, error) {
 			slog.String("job_id", j.ID), slog.String("type", j.Type),
 			slog.Int("priority", j.Priority))
 	}
-	return len(released), nil
+	return len(released), drainDispatch(ctx, d.pool, d.producer)
 }

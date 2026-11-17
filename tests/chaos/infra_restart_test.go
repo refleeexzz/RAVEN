@@ -19,9 +19,8 @@ func TestRestartBroker(t *testing.T) {
 	res := scenarioResult{
 		Name:    "RestartBroker",
 		Failure: "Full broker restart: kubectl delete pod broker-0 while resize_image jobs are flowing.",
-		Expected: "Creates fail loudly with 503 broker_produce_failed while the broker is down (rows marked FAILED, never " +
-			"silently lost); consumers reconnect with backoff; once broker-0 is back the queue resumes and every " +
-			"committed message survives — per-partition high watermarks never move backwards.",
+		Expected: "Accepted jobs survive broker downtime in PostgreSQL. After restart the outbox drains, " +
+			"consumers reconnect and per-partition high watermarks never move backwards.",
 	}
 	defer func() { results.add(res) }()
 
@@ -97,7 +96,7 @@ func TestRestartBroker(t *testing.T) {
 	ids, failures := b.snapshot()
 	t.Logf("burst: %d created, %d rejected during outage", len(ids), len(failures))
 
-	// Everything that WAS accepted (produce succeeded) must eventually run.
+	// every accepted job must eventually run, including jobs awaiting publication.
 	final := k.waitTerminal(ids, 4*time.Minute)
 	settledIn := time.Since(killAt)
 	stats := analyze(ids, final)
@@ -146,8 +145,7 @@ func TestRestartBroker(t *testing.T) {
 		res.Verdict = "PASS"
 		res.DataLoss = fmt.Sprintf("no — 0 lost; high watermarks only moved forward (pre sum=%d, post sum=%d)",
 			sumMap(preHW), sumMap(postHW))
-		res.Actual = fmt.Sprintf("broker-0 restarted cleanly. %d creates were rejected with 503 during the outage "+
-			"(documented fail-loud path; those rows exist marked FAILED, keys released). All %d accepted jobs reached "+
+		res.Actual = fmt.Sprintf("broker-0 restarted cleanly. %d creates returned errors during the outage. All %d accepted jobs reached "+
 			"SUCCESS after the restart and a fresh job flowed end to end.",
 			len(failures), len(ids))
 		res.FinalState = "broker statefulset 1/1 Ready; queue flowing; watermarks intact"

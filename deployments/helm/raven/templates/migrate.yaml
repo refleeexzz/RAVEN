@@ -1,12 +1,6 @@
 {{- if .Values.migrate.enabled -}}
-# RAVEN migrate — one-shot Job that applies SQL migrations. Idempotent.
-#
-# Why POST-install and not pre-install: the Job's initContainer waits for
-# postgres, and postgres is deployed by this same chart. As a pre-install
-# hook the chart deadlocks on first install (helm waits for the hook, the
-# hook waits for postgres, postgres is never created). Post-install the
-# whole stack exists; app pods crash-loop a couple of times until the
-# schema lands — exactly like the flat manifests behave today.
+# on a fresh install, the migration job starts alongside the database.
+# upgrades apply the new schema before replacing application pods.
 apiVersion: batch/v1
 kind: Job
 metadata:
@@ -14,11 +8,11 @@ metadata:
   namespace: {{ include "raven.namespace" . }}
   labels:
     {{- include "raven.labels" (dict "ctx" . "component" "migrate") | nindent 4 }}
-  {{- if .Values.migrate.hook }}
+  {{- if and .Values.migrate.hook .Release.IsUpgrade }}
   annotations:
     # Re-run on every install/upgrade; before-hook-creation removes the
     # previous (immutable) Job so the hook can fire again.
-    "helm.sh/hook": post-install,post-upgrade
+    "helm.sh/hook": pre-upgrade
     "helm.sh/hook-weight": "5"
     "helm.sh/hook-delete-policy": before-hook-creation
   {{- end }}

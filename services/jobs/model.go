@@ -193,7 +193,7 @@ func legalTransition(from, to Status) bool {
 	switch from {
 	case StatusQueued:
 		// PROCESSING: worker fence. CANCELLED: user cancel.
-		// FAILED: broker unreachable right after create.
+		// older producers marked the job as failed when the initial publish failed.
 		return to == StatusProcessing || to == StatusCancelled || to == StatusFailed
 	case StatusProcessing:
 		return to == StatusSuccess || to == StatusRetrying || to == StatusDead

@@ -59,7 +59,7 @@ prometheus 9090, grafana 3000, jaeger 16686 (UI) / 4317 (OTLP gRPC).
 | `WORKER_JOB_TIMEOUT` | worker         | `30s` (keep below the lease)                      |
 | `WORKER_JOB_LEASE_MS` | worker        | `30000` (milliseconds; lease claimed with each job, renewed every lease/3) |
 | `JOBS_SWEEP_INTERVAL` | jobs          | `15s` (`0` disables the stranded-job sweeper — do not disable in prod) |
-| `JOBS_SCHEDULER_INTERVAL` | jobs      | `1s` (delayed-job dispatcher + cron scheduler tick; `0` disables both) |
+| `JOBS_SCHEDULER_INTERVAL` | jobs      | `1s` for delayed jobs and cron. `0` pauses scheduling. Recovery of committed outbox entries runs independently every second. |
 | `JOBS_LEGACY_TOPIC_FANOUT` | jobs      | `true` (mirror execution publishes onto the legacy `jobs` topic until workers subscribe to `jobs.p1..p9`) |
 | `API_KEYS_DATABASE_URL` | gateway          | falls back to `DATABASE_URL`; unset disables /api/keys + the `ApiKey` scheme (503) |
 | `RATE_LIMIT_STORE` | gateway                 | `redis` (default — buckets shared across replicas, fail-open to memory) or `memory` (per-process) |

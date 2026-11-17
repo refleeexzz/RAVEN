@@ -9,6 +9,12 @@ SECURITY = "github.com/refleeexzz/RAVEN/tests/security"
 REQUIRED_REGRESSIONS = (
     "TestWorkerCrashesExhaustAttemptBudget",
     "TestRetryLeaseExpiryPreservesAttemptBudget",
+    "TestImmediateDispatchSurvivesJobsProcessCrash",
+    "TestImmediateDispatchAcceptanceAndRollback",
+    "TestImmediateDispatchMigration",
+    "TestScheduledDispatchRecoversAfterBrokerFailure",
+    "TestScheduledDispatchDoesNotPublishBeforeCommit",
+    "TestScheduledDispatchRetriesAfterAck",
 )
 
 

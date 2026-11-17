@@ -12,15 +12,8 @@ import (
 
 // CronScheduler fires due cron_schedules: every interval it locks the due
 // rows (FOR UPDATE SKIP LOCKED), spawns one QUEUED job per schedule,
-// advances next_run_at and publishes — all in ONE transaction. That is the
-// idempotency story:
-//
-//   - restart between fire and commit → the transaction rolls back, the
-//     schedule is still due, the next pass fires it once;
-//   - two replicas racing → SKIP LOCKED hands each row to exactly one
-//     pass;
-//   - broker down → the publish error rolls everything back, the run is
-//     retried next pass instead of being lost.
+// advances next_run_at and records each pending dispatch in one database
+// transaction. a broker outage leaves the committed occurrence pending.
 //
 // Missed runs do NOT catch up: after an outage the schedule fires once and
 // next_run_at is set to the next future match, never a storm of backfills.
@@ -95,7 +88,7 @@ func (s *CronScheduler) TickOnce(ctx context.Context) (int, error) {
 				spawned = append(spawned, job)
 			}
 		}
-		return nil
+		return queueScheduledDispatch(ctx, tx, spawned)
 	})
 	if err != nil {
 		return 0, err
@@ -103,7 +96,7 @@ func (s *CronScheduler) TickOnce(ctx context.Context) (int, error) {
 
 	// Committed: best-effort side effects only.
 	for _, j := range spawned {
-		PublishJobEvent(context.Background(), s.rdb, s.log, j)
+		PublishJobEvent(ctx, s.rdb, s.log, j)
 		if s.metrics != nil {
 			s.metrics.cronSpawned.Inc()
 			s.metrics.observeTransition(j.Type, StatusQueued)
@@ -112,7 +105,7 @@ func (s *CronScheduler) TickOnce(ctx context.Context) (int, error) {
 			slog.String("job_id", j.ID), slog.String("type", j.Type),
 			slog.Int("priority", j.Priority))
 	}
-	return len(spawned), nil
+	return len(spawned), drainDispatch(ctx, s.pool, s.producer)
 }
 
 // fireCron spawns the job instance for one locked, due schedule and
@@ -158,13 +151,5 @@ func (s *CronScheduler) fireCron(ctx context.Context, tx pgx.Tx, c *Cron) (*Job,
 		return nil, err
 	}
 
-	// Publish inside the transaction: a produce failure rolls back the job
-	// insert AND the next_run_at advance, so the run is retried next pass.
-	pubCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-	err = s.producer.PublishExecution(pubCtx, j)
-	cancel()
-	if err != nil {
-		return nil, err
-	}
 	return j, nil
 }

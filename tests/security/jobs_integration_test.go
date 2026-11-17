@@ -75,7 +75,7 @@ func jobsSecSetup() error {
 		return fmt.Errorf("postgres dsn: %w", err)
 	}
 	jobsSecDSN = dsn
-	for _, mig := range []string{"000002_jobs.up.sql", "000003_job_leases.up.sql"} {
+	for _, mig := range []string{"000002_jobs.up.sql", "000003_job_leases.up.sql", "000008_scheduled_dispatch.up.sql"} {
 		if err := jobsSecApplyMigration(ctx, dsn, mig); err != nil {
 			return err
 		}

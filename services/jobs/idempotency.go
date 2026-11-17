@@ -64,9 +64,7 @@ func claimIdempotencyKey(ctx context.Context, rdb redis.UniversalClient, key, jo
 	return "", true, nil
 }
 
-// releaseIdempotencyKey removes a claim. Used when the create flow fails
-// after claiming (broker down): the key must not point at a job that never
-// queued, or the client's retry would get a FAILED job back forever.
+// release a stale claim or one whose database write failed.
 func releaseIdempotencyKey(ctx context.Context, rdb redis.UniversalClient, log *slog.Logger, key string) {
 	ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
 	defer cancel()

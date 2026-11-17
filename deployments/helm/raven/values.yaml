@@ -244,11 +244,9 @@ redis:
     port: 6379
 
 # ---------------------------------------------------------------------------
-# migrate — one-shot Job applying SQL migrations. Idempotent.
-# hook=true runs it as a Helm post-install/post-upgrade hook (post-, not
-# pre-: the Job waits for postgres, which this same chart deploys — a
-# pre-install hook would deadlock the first install). hook=false renders a
-# plain Job (runs once; delete it before re-running manually).
+# the migration job starts with the database on install. upgrades run it
+# before replacing workloads when hooks are enabled. disable the hook to
+# manage the job manually.
 # ---------------------------------------------------------------------------
 migrate:
   enabled: true
