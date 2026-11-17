@@ -142,3 +142,15 @@ This test kills the jobs service between the database commit and broker append. 
 ```bash
 go test -race -tags=integration -count=1 -v -run '^TestImmediateDispatchSurvivesJobsProcessCrash$' ./tests/integration
 ```
+
+## Dead-letter recovery
+
+The outage test disconnects the broker during the final attempt, requeues
+one job, and replaces the jobs process. It checks the terminal messages
+and counts webhook executions. The acknowledgement test interrupts the
+database commit after a successful broker append and checks the identity
+of both copies. The migration test exercises rollback with pending messages.
+
+```bash
+go test -race -tags=integration -count=1 -v -run '^TestDeadLetter' ./tests/integration
+```

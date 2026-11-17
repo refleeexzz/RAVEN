@@ -140,7 +140,7 @@ func (s *Sweeper) SweepOnce(ctx context.Context) (int, error) {
 	}
 	recovered := 0
 	for _, id := range ids {
-		ok, err := s.recoverJob(ctx, id)
+		ok, err := s.recoverJob(ctx, conn, id)
 		if err != nil {
 			s.log.Error("sweeper could not recover job",
 				slog.String("job_id", id), slog.Any("error", err))
@@ -181,16 +181,10 @@ func (s *Sweeper) candidates(ctx context.Context, q querier) ([]string, error) {
 	return ids, nil
 }
 
-// recoverJob gives one stranded job a new generation and a RETRYING (or DEAD,
-// when attempts are already exhausted) status, writes the interrupted-attempt
-// audit row, and republishes the work. The update re-checks the expiry
-// predicate inside the transaction, so a worker that claimed or finished the
-// job between the scan and here wins and nothing changes.
-func (s *Sweeper) recoverJob(ctx context.Context, id string) (bool, error) {
+// recheck the lease under the row lock so a concurrent renewal or finish can win.
+func (s *Sweeper) recoverJob(ctx context.Context, conn *pgxpool.Conn, id string) (bool, error) {
 	var j *Job
-	err := withTx(ctx, s.pool, func(tx pgx.Tx) error {
-		// Lock the row and capture forensics for the interrupted attempt:
-		// the update below clears worker_id, so grab it first.
+	err := withTx(ctx, conn, func(tx pgx.Tx) error {
 		var (
 			prevWorkerID string
 			prevStarted  *time.Time
@@ -249,14 +243,12 @@ func (s *Sweeper) recoverJob(ctx context.Context, id string) (bool, error) {
 		return false, err
 	}
 
-	// The transaction committed: republish outside it. If the produce fails
-	// the row keeps its sweeperRecoverLease, so a later pass retries the
-	// publish instead of stranding the job a second time.
+	// a retry keeps a fresh lease for the next pass if publication fails.
 	pubCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	if j.Status == StatusDead {
-		if err := s.producer.PublishJob(pubCtx, TopicDLQ, j); err != nil {
-			s.log.Error("sweeper DLQ produce failed",
+		if _, err := DispatchDeadLetter(pubCtx, conn, s.producer, j); err != nil {
+			s.log.Warn("dead letter pending recovery",
 				slog.String("job_id", j.ID), slog.Any("error", err))
 		}
 	} else if err := s.producer.PublishExecution(pubCtx, j); err != nil {

@@ -434,6 +434,8 @@ timestamps, and republishes it. `job_attempts` history is kept. Any other
 status → `409 job_not_dead`. The transaction also records the new generation
 for publication. It can remain `QUEUED` during a broker outage and is
 dispatched when the broker becomes available.
+If the previous generation still has a pending dead letter, the service
+delivers that snapshot with its original generation and failure details.
 
 ### `POST /api/jobs/{id}/replay` — `jobs:create`
 

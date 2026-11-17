@@ -79,6 +79,9 @@ func recoveryDB(t *testing.T, name string) *pgxpool.Pool {
 	if err := applyMigrationFile(ctx, dsn, "000008_scheduled_dispatch.up.sql"); err != nil {
 		t.Fatalf("apply dispatch outbox: %v", err)
 	}
+	if err := applyMigrationFile(ctx, dsn, "000010_dead_letter_outbox.up.sql"); err != nil {
+		t.Fatalf("apply dead-letter outbox: %v", err)
+	}
 
 	pool, err := database.NewPool(ctx, dsn)
 	if err != nil {
