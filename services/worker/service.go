@@ -89,6 +89,9 @@ func Run(ctx context.Context, cfg Config) error {
 		return fmt.Errorf("worker: %w", err)
 	}
 	defer pool.Close()
+	if err := jobs.CheckDeadLetterOutbox(ctx, pool); err != nil {
+		return fmt.Errorf("worker: %w", err)
+	}
 
 	rdb := redis.NewClient(&redis.Options{Addr: cfg.RedisAddr})
 	defer func() { _ = rdb.Close() }()

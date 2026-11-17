@@ -139,3 +139,10 @@ What production would do on top of this, in order: (1) alerts on
 incident — recoveries should be rare and explained; (2) a per-type lease
 override for job types that legitimately run for minutes; (3) broker-side
 visibility timeouts so the sweeper becomes the backup, not the mechanism.
+
+### Amendment for terminal delivery
+
+Starting with migration `000010`, a sweep that ends in `DEAD` commits a
+snapshot for the dead-letter topic. If immediate publication fails, the jobs
+service retries that snapshot even after a manual requeue. The delivery and
+upgrade details are in [Scheduling](../scheduling.md#dead-letter-delivery).

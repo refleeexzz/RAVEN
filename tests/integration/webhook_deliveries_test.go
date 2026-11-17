@@ -62,6 +62,7 @@ func deliveriesDB(t *testing.T, name string) *pgxpool.Pool {
 		"000003_job_leases.up.sql",
 		"000005_webhook_deliveries.up.sql",
 		"000008_scheduled_dispatch.up.sql",
+		"000010_dead_letter_outbox.up.sql",
 	} {
 		if err := applyMigrationFile(ctx, dsn, m); err != nil {
 			t.Fatalf("apply %s: %v", m, err)

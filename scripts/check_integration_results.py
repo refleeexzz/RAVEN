@@ -15,6 +15,9 @@ REQUIRED_REGRESSIONS = (
     "TestScheduledDispatchRecoversAfterBrokerFailure",
     "TestScheduledDispatchDoesNotPublishBeforeCommit",
     "TestScheduledDispatchRetriesAfterAck",
+    "TestDeadLetterSurvivesBrokerOutage",
+    "TestDeadLetterRetriesAfterAck",
+    "TestDeadLetterOutboxMigration",
 )
 
 

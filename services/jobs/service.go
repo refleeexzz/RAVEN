@@ -86,6 +86,9 @@ func Run(ctx context.Context, cfg Config) error {
 	if !outboxReady {
 		return fmt.Errorf("jobs: dispatch requires migration 000008 (scheduled_dispatch)")
 	}
+	if err := CheckDeadLetterOutbox(ctx, pool); err != nil {
+		return fmt.Errorf("jobs: %w", err)
+	}
 
 	rdb := redis.NewClient(&redis.Options{Addr: cfg.RedisAddr})
 	defer func() { _ = rdb.Close() }()
@@ -150,7 +153,10 @@ func Run(ctx context.Context, cfg Config) error {
 	}
 
 	srv := NewServer(pool, rdb, producer, log, sm)
-	loops.Go(func() { runDispatchRecovery(loopCtx, pool, producer, log) })
+	loops.Go(func() { runDispatchRecovery(loopCtx, pool, producer, log.With("outbox", "execution"), dispatchOne) })
+	loops.Go(func() {
+		runDispatchRecovery(loopCtx, pool, producer, log.With("outbox", "dead_letter"), DispatchDeadLetter)
+	})
 
 	// Delayed-job dispatcher and cron scheduler: release SCHEDULED jobs when
 	// they come due and spawn cron instances. Both need migration 000004

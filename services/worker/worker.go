@@ -527,15 +527,12 @@ func (w *Worker) countFenced(job *jobs.Job, op string) {
 	w.countProcessed("fenced")
 }
 
-// sendToDLQ copies a dead job to jobs.dlq. Best effort: the Postgres row is
-// the real dead-letter record; the broker copy is for tooling and inspection.
-// The DLQ message re-uses the job message so PublishJob's span + header
-// injection keep the dead letter inside the original trace.
+// try the committed dead letter immediately while the execution trace is available.
 func (w *Worker) sendToDLQ(ctx context.Context, j *jobs.Job) {
 	publishCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
-	if err := w.producer.PublishJob(publishCtx, jobs.TopicDLQ, j); err != nil {
-		w.log.Error("DLQ produce failed",
+	if _, err := jobs.DispatchDeadLetter(publishCtx, w.pool, w.producer, j); err != nil {
+		w.log.Warn("dead letter pending recovery",
 			slog.String("job_id", j.ID), slog.Any("error", err))
 	}
 }

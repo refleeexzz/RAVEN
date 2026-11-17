@@ -246,8 +246,8 @@ func (s *Sweeper) recoverJob(ctx context.Context, conn *pgxpool.Conn, id string)
 	pubCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	if j.Status == StatusDead {
-		if err := s.producer.PublishJob(pubCtx, TopicDLQ, j); err != nil {
-			s.log.Error("sweeper DLQ produce failed",
+		if _, err := DispatchDeadLetter(pubCtx, conn, s.producer, j); err != nil {
+			s.log.Warn("dead letter pending recovery",
 				slog.String("job_id", j.ID), slog.Any("error", err))
 		}
 	} else if err := s.producer.PublishExecution(pubCtx, j); err != nil {

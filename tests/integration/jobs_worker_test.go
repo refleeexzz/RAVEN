@@ -57,6 +57,9 @@ func TestJobsWorkerLifecycle(t *testing.T) {
 	if err := applyMigrationFile(ctx, dsn, "000008_scheduled_dispatch.up.sql"); err != nil {
 		t.Fatalf("apply dispatch outbox: %v", err)
 	}
+	if err := applyMigrationFile(ctx, dsn, "000010_dead_letter_outbox.up.sql"); err != nil {
+		t.Fatalf("apply dead-letter outbox: %v", err)
+	}
 
 	redisURL, err := env.redisContainer.ConnectionString(ctx)
 	if err != nil {

@@ -150,6 +150,34 @@ the broker. To inspect the number of pending dispatches, run
 Worker retries after a handler failure use the retry and lease recovery
 mechanisms described in [ADR 009](adr/009-job-leases.md).
 
+### Dead-letter delivery
+
+When a job enters `DEAD`, PostgreSQL saves its terminal state in
+`job_dead_letter_outbox` in the same transaction. The worker or sweeper
+tries to send that snapshot to `jobs.dlq` after commit. If the broker is
+unavailable or the publishing process exits, a jobs replica can deliver
+it later. Recovery also runs when scheduled releases are paused. Pending
+deliveries can be counted with `SELECT count(*) FROM job_dead_letter_outbox`.
+
+A manual requeue starts a new generation. The pending dead letter still
+describes the earlier failure, including its payload, attempt count and error.
+The relay publishes only to `jobs.dlq`. If a publisher loses its connection
+after broker acknowledgement but before committing the outbox deletion, the
+same terminal generation can appear again. Consumers that need to deduplicate
+can use the pair `(id, execution_generation)`.
+
+Apply migration `000010_dead_letter_outbox` before upgrading jobs or worker
+replicas. It captures transitions committed after the migration. Earlier
+terminal jobs have no durable broker receipt, so the migration leaves their
+delivery history alone. During a rolling upgrade an older replica can publish
+directly in addition to the relay. Database roles that change job status to
+`DEAD` need `INSERT` on the new table. Workers and the jobs service use
+`SELECT`, `UPDATE` and `DELETE` to deliver pending messages.
+
+To roll back, stop new terminal transitions and let upgraded jobs replicas
+drain the outbox with a healthy broker. The down migration checks for pending
+rows and refuses to drop them.
+
 ---
 
 ## Replay
@@ -207,8 +235,8 @@ DLQ requeues and sweeper republishes.
 
 ## Schema notes
 
-Apply migrations through `000009_immediate_dispatch` before rolling out the
-jobs service. Migration `000009` locks the jobs table against writes while
+Apply migrations through `000010_dead_letter_outbox` before rolling out the
+jobs service and workers. Migration `000009` locks the jobs table against writes while
 it registers every existing `QUEUED` job in the outbox and installs a
 deferred trigger. Allow time for the queued backlog during this upgrade.
 The trigger records the current execution generation when older replicas

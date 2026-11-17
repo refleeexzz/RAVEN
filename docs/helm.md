@@ -116,8 +116,8 @@ Everything is in `values.yaml` with comments. The knobs you will actually touch:
 
 On first install, Helm creates the migration Job alongside PostgreSQL. The
 Job waits for PostgreSQL and applies the schema while the other pods start.
-This works with Helm's readiness wait enabled. The jobs service checks for
-the dispatch outbox before opening its ports.
+This works with Helm's readiness wait enabled. The jobs service and workers
+require the dead-letter outbox introduced in migration `000010` at startup.
 
 On upgrades, the default `pre-upgrade` hook runs the new migration image
 against the installed database before Helm replaces the workloads. Publish

@@ -56,6 +56,7 @@ func schedulingDB(t *testing.T, name string) *pgxpool.Pool {
 		"000004_scheduling.up.sql",
 		"000008_scheduled_dispatch.up.sql",
 		"000009_immediate_dispatch.up.sql",
+		"000010_dead_letter_outbox.up.sql",
 	} {
 		if err := applyMigrationFile(ctx, dsn, mig); err != nil {
 			t.Fatalf("apply %s: %v", mig, err)

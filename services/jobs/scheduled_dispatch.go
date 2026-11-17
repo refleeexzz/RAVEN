@@ -43,10 +43,10 @@ func queueImmediateDispatch(ctx context.Context, tx pgx.Tx, job *Job) error {
 // lock the outbox entry so the worker can claim the job as soon as the broker
 // delivers it. a request selects its generation, while recovery selects the
 // oldest available entry.
-func dispatchOne(ctx context.Context, pool *pgxpool.Pool, producer *Producer, target *Job) (bool, error) {
+func dispatchOne(ctx context.Context, q querier, producer *Producer, target *Job) (bool, error) {
 	var jobID string
 	var publishErr error
-	err := withTx(ctx, pool, func(tx pgx.Tx) error {
+	err := withTx(ctx, q, func(tx pgx.Tx) error {
 		const selectIntent = `SELECT job_id, execution_generation FROM scheduled_job_outbox `
 		var row pgx.Row
 		if target == nil {
@@ -88,9 +88,15 @@ func dispatchOne(ctx context.Context, pool *pgxpool.Pool, producer *Producer, ta
 	return jobID != "", nil
 }
 
+type dispatchRecord func(context.Context, querier, *Producer, *Job) (bool, error)
+
 func drainDispatch(ctx context.Context, pool *pgxpool.Pool, producer *Producer) error {
+	return drainOutbox(ctx, pool, producer, dispatchOne)
+}
+
+func drainOutbox(ctx context.Context, pool *pgxpool.Pool, producer *Producer, dispatch dispatchRecord) error {
 	for range dispatcherBatchSize {
-		worked, err := dispatchOne(ctx, pool, producer, nil)
+		worked, err := dispatch(ctx, pool, producer, nil)
 		if err != nil || !worked {
 			return err
 		}
@@ -99,11 +105,11 @@ func drainDispatch(ctx context.Context, pool *pgxpool.Pool, producer *Producer) 
 }
 
 // recover pending submissions even when future schedules are paused.
-func runDispatchRecovery(ctx context.Context, pool *pgxpool.Pool, producer *Producer, log *slog.Logger) {
+func runDispatchRecovery(ctx context.Context, pool *pgxpool.Pool, producer *Producer, log *slog.Logger, dispatch dispatchRecord) {
 	tick := time.NewTicker(time.Second)
 	defer tick.Stop()
 	for {
-		if err := drainDispatch(ctx, pool, producer); err != nil && ctx.Err() == nil {
+		if err := drainOutbox(ctx, pool, producer, dispatch); err != nil && ctx.Err() == nil {
 			log.Warn("dispatch recovery pass failed", slog.Any("error", err))
 		}
 		select {
