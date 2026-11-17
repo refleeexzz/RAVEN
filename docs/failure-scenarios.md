@@ -190,11 +190,10 @@ docker compose start postgres
 
 **What happens.**
 
-- **Job creation fails loudly.** The jobs service inserts the row, tries to
-  produce, fails, marks the row `FAILED` with the error, and returns
-  `503 broker_produce_failed`. No silent loss — you never get a `201` for a
-  job that is not actually queued. (Idempotency keys are released so a retry
-  with the same key can succeed later.)
+- A reachable jobs instance commits an immediate job and its dispatch
+  record together. A successful create can return `201` and `QUEUED`
+  while the broker is offline. A replacement process retries pending
+  publications even when delayed-job and cron scheduling are disabled.
 - The jobs service and worker **refuse to boot** without the broker:
   `EnsureTopics` is fatal at startup with a 30 s budget. Better to crash
   loop than to accept jobs that can never run.
@@ -206,11 +205,11 @@ docker compose start postgres
   back.
 - jobs and worker `/ready` report 503 (`broker` checker).
 
-**What you observe.** `curl http://localhost:8080/ready` stays green at the
-gateway (it checks its gRPC upstreams and Redis, not the broker), but
-`POST /api/jobs` 503s. jobs/worker logs show reconnect attempts. When the
-broker returns, consumers re-join the group and resume from committed
-offsets.
+**What you observe.** Jobs and worker readiness checks report the broker
+outage. An orchestrator may remove unready jobs instances from service, in
+which case the gateway can return an availability error. Pending work is
+visible with `SELECT count(*) FROM scheduled_job_outbox`. Once the broker
+returns, the relay drains it and consumers resume from committed offsets.
 
 **Reproduce.**
 
@@ -219,9 +218,13 @@ docker compose stop broker
 curl -X POST http://localhost:8080/api/jobs -H "Authorization: Bearer $TOKEN" \
   -H 'Content-Type: application/json' \
   -d '{"type":"send_email","payload":{"to":"a@b.c","subject":"s","body":"b"}}'
-# 503 broker_produce_failed; the row exists, marked FAILED
+# a reachable jobs instance returns the id of the durably queued job.
 docker compose start broker
 ```
+
+The [process-crash regression](../tests/integration/immediate_dispatch_test.go)
+also holds the broker before its first append, kills the jobs process after
+the SQL commits and starts a replacement against the same database.
 
 ## A gateway replica dies
 

@@ -1,7 +1,8 @@
 # Scheduling: delayed jobs, cron and replay
 
-This doc covers everything time-related in the jobs service, all built on
-migration `000004_scheduling`:
+The jobs service uses migration `000004_scheduling` for schedules,
+`000008_scheduled_dispatch` for the execution outbox and
+`000009_immediate_dispatch` to recover queued work across upgrades.
 
 - **Delayed jobs** — create now, run later (`scheduled_at`).
 - **Cron jobs** — recurring schedules that spawn jobs (`/api/crons`).
@@ -29,20 +30,15 @@ POST /api/jobs
 }
 ```
 
-When the time comes, the **dispatcher** loop inside the jobs service wakes
-up (every `JOBS_SCHEDULER_INTERVAL`, default **1s**), claims the due batch
-with `SELECT ... FOR UPDATE SKIP LOCKED`, flips each job to `QUEUED` and
-publishes it — **all in one transaction**. So:
+When the time comes, the dispatcher claims a batch of due jobs with
+`FOR UPDATE SKIP LOCKED`. In one PostgreSQL transaction it marks each
+job `QUEUED` and records its ID and execution generation in
+`scheduled_job_outbox`. Once the transaction commits, the job is visible
+to workers and its message is ready to publish. If the transaction rolls
+back, the job stays `SCHEDULED` for another pass.
 
-- A job is only visible as `QUEUED` when its message is already on the
-  broker. No "queued but unpublished" limbo.
-- If the broker is down, the batch rolls back and stays `SCHEDULED` for the
-  next pass. Nothing is lost.
-- Replicas can all run the loop; `SKIP LOCKED` hands each row to exactly
-  one of them.
-
-Lateness is bounded: a due job fires at most one interval late (plus one
-publish round-trip) when the broker is healthy.
+The interval controls how often the dispatcher looks for due jobs.
+A backlog or a slow publish can delay a job across multiple passes.
 
 ### Rules for `scheduled_at`
 
@@ -52,7 +48,7 @@ publish round-trip) when the broker is healthy.
 | negative                     | `400 scheduled_at_invalid`               |
 | more than 1 minute in past   | `400 scheduled_at_in_past`               |
 | inside the 1-minute skew     | run now (no schedule recorded)           |
-| future                       | `SCHEDULED`, fires at that time (UTC)    |
+| future                       | `SCHEDULED`, eligible for dispatch at that time (UTC) |
 
 The one-minute past tolerance exists because clocks skew — re-sending a
 just-due time should run the job, not error. There is no upper bound on how
@@ -108,18 +104,13 @@ otherwise both must match.
 Expressions that can never fire (like `0 0 31 2 *`) are rejected at create
 time instead of silently doing nothing forever.
 
-### Firing, exactly once
+### How a cron run is dispatched
 
-The cron scheduler loop (same `JOBS_SCHEDULER_INTERVAL`) locks due
-schedules `FOR UPDATE SKIP LOCKED`, then **in one transaction**: inserts
-the job, advances `next_run_at`, and publishes. That is the idempotency
-story:
-
-- Restart mid-fire → the transaction rolls back, the schedule is still
-  due, the next pass fires it **once**.
-- Multiple replicas → `SKIP LOCKED`, no duplicates.
-- Broker down → everything rolls back, the run is retried next pass, not
-  lost.
+The cron scheduler locks due schedules with `FOR UPDATE SKIP LOCKED`.
+It inserts a `QUEUED` job, advances `next_run_at`, and records the
+pending dispatch in one PostgreSQL transaction. A rollback leaves the
+schedule due for another pass. After commit, a broker outage leaves
+the same job pending for delivery.
 
 **Missed runs do not catch up.** If the service was down for three hours
 on a minutely schedule, it fires once when it comes back and
@@ -127,6 +118,37 @@ on a minutely schedule, it fires once when it comes back and
 
 Deleting a schedule is a hard delete: it stops firing immediately and the
 row is gone (job history it spawned stays, of course).
+
+---
+
+## Delivery and retries
+
+Immediate creation, replay and manual requeue commit the job's `QUEUED`
+state and its pending publication in a single PostgreSQL transaction.
+Requeue advances the existing job's execution generation. Replay creates a
+new job ID. A successful submission means PostgreSQL has accepted the work.
+The jobs service attempts publication after commit. If the broker is
+unavailable or the process dies at that boundary, another jobs replica can
+publish the pending execution when the broker is available.
+
+Every jobs replica scans pending publications on startup and then once a
+second, including when scheduled releases are paused. A replica locks one
+pending row at a time. If the job is
+still `QUEUED` in the recorded generation, it publishes to the configured
+execution topics and deletes the entry after broker acknowledgement. A
+publish error leaves the entry available for a later pass. Another replica
+can resume delivery after a restart. If the job has already been cancelled,
+claimed or moved to another generation, the replica discards the stale entry.
+
+Delivery is at least once. A crash after the broker accepts a message but
+before PostgreSQL commits the deletion can result in another publish with
+the same job ID and generation. The worker checks the job's current status
+and generation when claiming it. A `QUEUED` job can still be waiting for
+the broker. To inspect the number of pending dispatches, run
+`SELECT count(*) FROM scheduled_job_outbox`.
+
+Worker retries after a handler failure use the retry and lease recovery
+mechanisms described in [ADR 009](adr/009-job-leases.md).
 
 ---
 
@@ -171,7 +193,7 @@ DLQ requeues and sweeper republishes.
 
 | Env var                    | Default | What it does                                      |
 |----------------------------|---------|---------------------------------------------------|
-| `JOBS_SCHEDULER_INTERVAL`  | `1s`    | Dispatcher + cron tick. `0` disables both loops.  |
+| `JOBS_SCHEDULER_INTERVAL`  | `1s`    | Tick for due delayed and cron jobs. At `0` these releases pause, and recovery continues publishing already queued work. |
 | `JOBS_LEGACY_TOPIC_FANOUT` | `true`  | Also publish executions to the legacy `jobs` topic. |
 
 ## Metrics
@@ -185,10 +207,22 @@ DLQ requeues and sweeper republishes.
 
 ## Schema notes
 
-Migration `000004_scheduling` adds `jobs.scheduled_at`,
-`jobs.replayed_from`, the `SCHEDULED` status and the `cron_schedules`
-table; the down migration restores the exact previous shape. The jobs
-service **probes** for it at startup: against a pre-000004 schema the
-binary behaves exactly like the old one and scheduling endpoints answer
-`503 scheduling_unavailable` — rolling deploys stay safe in both
-directions.
+Apply migrations through `000009_immediate_dispatch` before rolling out the
+jobs service. Migration `000009` locks the jobs table against writes while
+it registers every existing `QUEUED` job in the outbox and installs a
+deferred trigger. Allow time for the queued backlog during this upgrade.
+The trigger records the current execution generation when older replicas
+commit newly queued work during the rollout. An old API replica that receives
+a broker error can still return a publish error and set the job to `FAILED`
+or revert a requeue to `DEAD`. Durable acceptance on broker errors takes
+effect on upgraded replicas. Existing scheduled jobs enter the outbox when
+released. A job queued before the migration may already have a broker
+message, so the worker's claim fence also applies during backfill.
+Custom PostgreSQL roles that queue jobs need `SELECT`, `INSERT` and
+`UPDATE` on `scheduled_job_outbox`. The dispatcher's role also needs `DELETE`.
+
+Rolling back `000009` removes the trigger and leaves pending publications for a
+replica with outbox support to deliver. Before rolling back `000008`, pause
+submissions and new scheduled releases, then let an outbox-capable jobs replica
+drain the queue against a healthy broker. Migration `000008` refuses to drop
+the table while it contains pending work.

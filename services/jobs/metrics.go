@@ -77,7 +77,7 @@ func NewServiceMetrics(reg *metrics.Registry, countStatus func(Status) (int64, e
 			Namespace: "raven",
 			Subsystem: "jobs",
 			Name:      "scheduled_dispatched_total",
-			Help:      "Delayed jobs the dispatcher released to the broker (SCHEDULED -> QUEUED).",
+			Help:      "Delayed jobs committed as QUEUED with a pending broker dispatch.",
 		}),
 		cronCreated: prometheus.NewCounter(prometheus.CounterOpts{
 			Namespace: "raven",

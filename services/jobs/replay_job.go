@@ -50,31 +50,12 @@ func (s *Server) ReplayJob(ctx context.Context, req *genjobs.ReplayJobRequest) (
 		ExecutionGeneration: initialGeneration,
 		ReplayedFrom:        &src.ID,
 	}
-	if err := insertJob(ctx, s.pool, j, s.sched); err != nil {
+	if err := s.storeNewJob(ctx, j); err != nil {
 		return nil, toStatus(err)
 	}
 	s.metricCreated(j)
 
-	if s.producer == nil {
-		return nil, toStatus(errors.E(errors.KindUnavailable, "broker_unavailable",
-			"the job broker is not configured", nil))
-	}
-	if err := s.producer.PublishExecution(ctx, j); err != nil {
-		errMsg := "broker produce failed: " + err.Error()
-		if uerr := markQueuedFailed(ctx, s.pool, j.ID, errMsg); uerr != nil {
-			s.log.ErrorContext(ctx, "could not mark replayed job failed after produce error",
-				slog.String("job_id", j.ID), slog.Any("error", uerr))
-		}
-		j.Status = StatusFailed
-		j.Error = errMsg
-		PublishJobEvent(ctx, s.rdb, s.log, j)
-		s.metricTransition(j, StatusFailed)
-		return nil, toStatus(errors.E(errors.KindUnavailable, "broker_produce_failed",
-			"could not queue the replayed job, it was marked FAILED", err))
-	}
-
-	PublishJobEvent(ctx, s.rdb, s.log, j)
-	s.metricTransition(j, StatusQueued)
+	s.dispatchAccepted(ctx, j)
 	s.log.InfoContext(ctx, "job replayed",
 		slog.String("job_id", j.ID), slog.String("replayed_from", src.ID),
 		slog.String("type", j.Type))

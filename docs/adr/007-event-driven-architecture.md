@@ -11,10 +11,10 @@ events?
 
 ## Decision
 
-- **Jobs are events.** `POST /api/jobs` writes the row to Postgres and
-  publishes a message to the broker topic `jobs`. Workers consume that
-  topic in a consumer group. The API call returns as soon as the job is
-  durably queued; execution is fully asynchronous.
+- **Jobs are events.** `POST /api/jobs` commits the job and its pending
+  publication to Postgres together. A jobs replica publishes the recorded
+  generation to the broker, where a consumer group picks it up. If the
+  submitting replica stops, another replica resumes publication.
 - **Notifications ride a Redis channel.** Every status transition (create,
   fence, success, retry, dead, cancel, requeue) publishes a small JSON
   event to `raven:events:jobs`. The websocket service subscribes and fans

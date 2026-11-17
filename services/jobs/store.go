@@ -283,22 +283,6 @@ func requeueJob(ctx context.Context, q querier, id string) (*Job, error) {
 		"only DEAD jobs can be requeued (job is "+string(cur.Status)+")", nil)
 }
 
-// markQueuedFailed flips a freshly created job to FAILED. Used when the
-// broker produce fails right after insert: the row must not stay QUEUED or a
-// worker would never see it and the user would wait forever.
-func markQueuedFailed(ctx context.Context, q querier, id, errMsg string) error {
-	_, err := q.Exec(ctx, `
-		UPDATE jobs SET status = $2, error = $3, finished_at = now()
-		WHERE id = $1 AND status = 'QUEUED'`,
-		id, StatusFailed, errMsg,
-	)
-	if err != nil {
-		return errors.E(errors.KindUnknown, "job_update_failed",
-			"could not mark the job failed", err)
-	}
-	return nil
-}
-
 // ---------------------------------------------------------------------------
 // Worker-side writes. The worker service calls these; they live here because
 // the jobs table has exactly one owner.
@@ -473,9 +457,7 @@ const dispatcherBatchSize = 100
 // claimDueScheduled atomically moves up to dispatcherBatchSize due SCHEDULED
 // jobs to QUEUED and returns them. FOR UPDATE SKIP LOCKED lets several
 // jobs-service replicas run the dispatcher loop without ever grabbing the
-// same row twice; the rows stay locked until the caller commits (the
-// dispatcher publishes inside the same transaction, so a released job is
-// always already on the broker when it becomes visible as QUEUED).
+// same row twice. the caller records each pending dispatch before commit.
 func claimDueScheduled(ctx context.Context, tx pgx.Tx) ([]*Job, error) {
 	rows, err := tx.Query(ctx, `
 		WITH due AS (

@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/url"
 	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -24,10 +25,7 @@ import (
 	workersvc "github.com/refleeexzz/RAVEN/services/worker"
 )
 
-// schedulingDB creates a fresh database with migrations 000002 + 000003 +
-// 000004 applied — the full scheduling schema. Mirrors recoveryDB but adds
-// 000004; pre-000004 harnesses (jobs_worker, job_recovery) must keep
-// passing untouched, so this test gets its own database.
+// each scheduling test uses a fresh database with jobs, leases, schedules and the outbox.
 func schedulingDB(t *testing.T, name string) *pgxpool.Pool {
 	t.Helper()
 	ctx := context.Background()
@@ -55,6 +53,8 @@ func schedulingDB(t *testing.T, name string) *pgxpool.Pool {
 		"000002_jobs.up.sql",
 		"000003_job_leases.up.sql",
 		"000004_scheduling.up.sql",
+		"000008_scheduled_dispatch.up.sql",
+		"000009_immediate_dispatch.up.sql",
 	} {
 		if err := applyMigrationFile(ctx, dsn, mig); err != nil {
 			t.Fatalf("apply %s: %v", mig, err)
@@ -223,8 +223,25 @@ func TestSchedulingLifecycle(t *testing.T) {
 		t.Errorf("cancelled scheduled job moved: got %s, want CANCELLED", st)
 	}
 
-	// The due delayed job is released by the dispatcher.
-	waitPoolJobStatus(t, pool, delayed.GetId(), "QUEUED", 10*time.Second)
+	// the queued state is visible before publication. wait for the broker
+	// acknowledgement before taking the initial watermark readings.
+	dispatchDeadline := time.Now().Add(10 * time.Second)
+	for {
+		var published bool
+		if err := pool.QueryRow(ctx, `
+			SELECT status = 'QUEUED' AND NOT EXISTS
+				(SELECT 1 FROM scheduled_job_outbox WHERE job_id = jobs.id)
+			FROM jobs WHERE id = $1`, delayed.GetId()).Scan(&published); err != nil {
+			t.Fatal(err)
+		}
+		if published {
+			break
+		}
+		if time.Now().After(dispatchDeadline) {
+			t.Fatal("delayed job was not published")
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
 
 	// -----------------------------------------------------------------------
 	// Priority routing (contract: jobs.p<priority>, fanout to legacy "jobs").
@@ -488,32 +505,281 @@ func TestCronSchedulerNoCatchUp(t *testing.T) {
 	}
 }
 
-// TestSchedulerPublishKeepsScheduleSafe proves the atomicity story for a
-// down broker: nothing is lost and the schedule is retried.
-func TestDispatcherBrokerDownRollback(t *testing.T) {
+// the broker is offline when jobs become due. replacement schedulers
+// must find pending publications even when no new jobs are due.
+func TestScheduledDispatchRecoversAfterBrokerFailure(t *testing.T) {
 	check(t)
 	ctx := context.Background()
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 
-	pool := schedulingDB(t, "raven_dispatch_rollback")
-
-	// Seed one due SCHEDULED job directly.
+	pool := schedulingDB(t, "raven_dispatch_recovery")
 	if _, err := pool.Exec(ctx, `
 		INSERT INTO jobs (id, type, payload, status, priority, scheduled_at)
-		VALUES ('job_due_rollback', 'send_email', '{"to":"x@y.z"}'::jsonb,
-		        'SCHEDULED', 5, now() - interval '1 second')`); err != nil {
-		t.Fatalf("seed scheduled job: %v", err)
+		VALUES ('job_due', 'send_email', '{}', 'SCHEDULED', 3, now()),
+		       ('job_cancel', 'send_email', '{}', 'SCHEDULED', 6, now());
+		INSERT INTO cron_schedules (id, name, cron_expr, type, payload, priority, next_run_at)
+		VALUES ('cron_due', 'yearly', '0 0 1 1 *', 'send_email', '{}', 8, now())`); err != nil {
+		t.Fatal(err)
 	}
-
-	// Producer pointed at a dead broker: the pass must fail and the job
-	// must stay SCHEDULED (rollback), not strand in QUEUED unpublished.
 	deadProducer := jobs.NewProducer("127.0.0.1:1", log)
 	defer deadProducer.Close()
-	dispatcher := jobs.NewDispatcher(pool, deadProducer, nil, log, nil, time.Hour)
-	if _, err := dispatcher.DispatchOnce(ctx); err == nil {
-		t.Fatal("DispatchOnce against a dead broker must fail")
+	n, err := jobs.NewDispatcher(pool, deadProducer, nil, log, nil, time.Hour).DispatchOnce(ctx)
+	if n != 2 || err == nil {
+		t.Fatalf("dispatch with broker down: staged=%d, err=%v", n, err)
 	}
-	if st := poolJobStatus(t, pool, "job_due_rollback"); st != "SCHEDULED" {
-		t.Fatalf("after failed dispatch the job is %s, want SCHEDULED (rolled back)", st)
+	n, err = jobs.NewCronScheduler(pool, deadProducer, nil, log, nil, time.Hour).TickOnce(ctx)
+	if n != 1 || err == nil {
+		t.Fatalf("cron with broker down: spawned=%d, err=%v", n, err)
+	}
+	var pending int
+	if err := pool.QueryRow(ctx, `
+		SELECT count(*) FROM scheduled_job_outbox o JOIN jobs j ON j.id = o.job_id
+		WHERE j.status = 'QUEUED' AND j.execution_generation = o.execution_generation`).Scan(&pending); err != nil || pending != 3 {
+		t.Fatalf("expected all three jobs queued with pending publications: count=%d, err=%v", pending, err)
+	}
+	api := startJobsAPI(t, pool, deadProducer, log)
+	if _, err := api.CancelJob(ctx, &genjobs.CancelJobRequest{Id: "job_cancel"}); err != nil {
+		t.Fatalf("cancel pending job: %v", err)
+	}
+
+	addr, stopBroker := startTestBroker(t)
+	defer stopBroker()
+	if err := jobs.EnsureTopics(ctx, addr, log); err != nil {
+		t.Fatal(err)
+	}
+	producer := jobs.NewProducer(addr, log)
+	defer producer.Close()
+	dispatch := jobs.NewDispatcher(pool, producer, nil, log, nil, time.Hour).DispatchOnce
+	tick := jobs.NewCronScheduler(pool, producer, nil, log, nil, time.Hour).TickOnce
+	// start two replicas of each scheduler to exercise concurrent recovery.
+	type result struct {
+		count int
+		err   error
+	}
+	passes := []func(context.Context) (int, error){dispatch, tick, dispatch, tick}
+	done := make(chan result, len(passes))
+	for _, pass := range passes {
+		go func() {
+			n, err := pass(ctx)
+			done <- result{n, err}
+		}()
+	}
+	for range passes {
+		r := <-done
+		if r.count != 0 || r.err != nil {
+			t.Errorf("recovery should have no new work to stage: count=%d, err=%v", r.count, r.err)
+		}
+	}
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM scheduled_job_outbox`).Scan(&pending); err != nil || pending != 0 {
+		t.Fatalf("outbox after recovery: count=%d, err=%v", pending, err)
+	}
+	for topic, want := range map[string]uint64{"jobs.p3": 1, "jobs.p6": 0, "jobs.p8": 1, jobs.TopicJobs: 2} {
+		if got := topicHighWatermark(t, addr, topic); got != want {
+			t.Errorf("records on %s after recovery: got %d, want %d", topic, got, want)
+		}
+	}
+}
+
+func TestScheduledDispatchDoesNotPublishBeforeCommit(t *testing.T) {
+	check(t)
+	ctx := context.Background()
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	pool := schedulingDB(t, "raven_dispatch_commit")
+	addr, stopBroker := startTestBroker(t)
+	defer stopBroker()
+	if err := jobs.EnsureTopics(ctx, addr, log); err != nil {
+		t.Fatal(err)
+	}
+	producer := jobs.NewProducer(addr, log)
+	defer producer.Close()
+
+	// fail the commit after the writes have succeeded. a message sent
+	// inside the transaction would already be visible on the broker.
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO jobs (id, type, payload, status, priority, scheduled_at)
+		VALUES ('job_due', 'send_email', '{}', 'SCHEDULED', 4, now());
+		INSERT INTO cron_schedules (id, name, cron_expr, type, payload, priority, next_run_at)
+		VALUES ('cron_due', 'yearly', '0 0 1 1 *', 'send_email', '{}', 7, now());
+		CREATE FUNCTION reject_job_commit() RETURNS trigger LANGUAGE plpgsql AS $$
+		BEGIN
+			RAISE EXCEPTION 'test: job commit failed';
+		END $$;
+		CREATE CONSTRAINT TRIGGER reject_job_at_commit AFTER INSERT OR UPDATE ON jobs
+		DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION reject_job_commit()`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := jobs.NewDispatcher(pool, producer, nil, log, nil, time.Hour).DispatchOnce(ctx); err == nil {
+		t.Fatal("expected delayed job commit to fail")
+	}
+	if _, err := jobs.NewCronScheduler(pool, producer, nil, log, nil, time.Hour).TickOnce(ctx); err == nil {
+		t.Fatal("expected cron job commit to fail")
+	}
+	for _, topic := range []string{"jobs.p4", "jobs.p7", jobs.TopicJobs} {
+		if n := topicHighWatermark(t, addr, topic); n != 0 {
+			t.Errorf("published %d records on %s before commit", n, topic)
+		}
+	}
+	var dueJob, dueCron, emptyOutbox bool
+	if err := pool.QueryRow(ctx, `
+		SELECT EXISTS (SELECT 1 FROM jobs WHERE id = 'job_due' AND status = 'SCHEDULED'),
+		       EXISTS (SELECT 1 FROM cron_schedules WHERE id = 'cron_due' AND last_run_at IS NULL AND next_run_at <= now()),
+		       NOT EXISTS (SELECT 1 FROM scheduled_job_outbox)`).Scan(&dueJob, &dueCron, &emptyOutbox); err != nil {
+		t.Fatal(err)
+	}
+	if !dueJob || !dueCron || !emptyOutbox {
+		t.Fatalf("rollback left inconsistent state: due job=%t due cron=%t empty outbox=%t", dueJob, dueCron, emptyOutbox)
+	}
+}
+
+func TestScheduledDispatchRetriesAfterAck(t *testing.T) {
+	check(t)
+	ctx := context.Background()
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	pool := schedulingDB(t, "raven_dispatch_after_ack")
+	addr, stopBroker := startTestBroker(t)
+	defer stopBroker()
+	if err := jobs.EnsureTopics(ctx, addr, log); err != nil {
+		t.Fatal(err)
+	}
+	producer := jobs.NewProducer(addr, log)
+	defer producer.Close()
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO cron_schedules (id, name, cron_expr, type, payload, priority, next_run_at)
+		VALUES ('cron_due', 'yearly', '0 0 1 1 *', 'send_email', '{}', 3, now());
+		CREATE FUNCTION reject_outbox_delete() RETURNS trigger LANGUAGE plpgsql AS $$
+		BEGIN
+			RAISE EXCEPTION 'test: ACK could not be recorded';
+		END $$;
+		CREATE TRIGGER reject_ack BEFORE DELETE ON scheduled_job_outbox
+		FOR EACH ROW EXECUTE FUNCTION reject_outbox_delete()`); err != nil {
+		t.Fatal(err)
+	}
+	n, err := jobs.NewCronScheduler(pool, producer, nil, log, nil, time.Hour).TickOnce(ctx)
+	if n != 1 || err == nil {
+		t.Fatalf("expected one committed occurrence and cleanup failure: count=%d, err=%v", n, err)
+	}
+	if got := topicHighWatermark(t, addr, "jobs.p3"); got != 1 {
+		t.Fatalf("expected first message before outbox cleanup: got %d", got)
+	}
+	var jobID string
+	var generation int
+	if err := pool.QueryRow(ctx, `SELECT job_id, execution_generation FROM scheduled_job_outbox`).Scan(&jobID, &generation); err != nil {
+		t.Fatal(err)
+	}
+	// a migration rollback must preserve this unconfirmed delivery.
+	if err := applyMigrationFile(ctx, pool.Config().ConnString(), "000009_immediate_dispatch.down.sql"); err != nil {
+		t.Fatal(err)
+	}
+	down, err := os.ReadFile(filepath.Join("..", "..", "migrations", "000008_scheduled_dispatch.down.sql"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, string(down)); err == nil {
+		t.Fatal("down migration discarded a pending delivery")
+	}
+	if _, err := pool.Exec(ctx, `DROP TRIGGER reject_ack ON scheduled_job_outbox`); err != nil {
+		t.Fatal(err)
+	}
+	n, err = jobs.NewCronScheduler(pool, producer, nil, log, nil, time.Hour).TickOnce(ctx)
+	if n != 0 || err != nil {
+		t.Fatalf("retry should only publish the existing occurrence: count=%d, err=%v", n, err)
+	}
+
+	readCtx, stop := context.WithTimeout(ctx, 5*time.Second)
+	defer stop()
+	var copies []client.Message
+	consumer := client.NewConsumer(addr, "check-redelivery", []string{"jobs.p3"}, func(_ context.Context, msg client.Message) error {
+		copies = append(copies, msg)
+		if len(copies) == 2 {
+			stop()
+		}
+		return nil
+	}, client.WithConsumerLogger(log))
+	if err := consumer.Run(readCtx); err != nil || len(copies) != 2 {
+		t.Fatalf("expected two broker messages: count=%d, err=%v", len(copies), err)
+	}
+	for _, msg := range copies {
+		id, gen, err := jobs.ParseJobMessage(msg.Value)
+		if err != nil || id != jobID || gen != generation || string(msg.Key) != jobID {
+			t.Fatalf("redelivery identity: key=%q id=%q generation=%d err=%v", msg.Key, id, gen, err)
+		}
+	}
+	if _, err := pool.Exec(ctx, string(down)); err != nil {
+		t.Fatalf("down migration after outbox drained: %v", err)
+	}
+}
+
+func TestImmediateDispatchAcceptanceAndRollback(t *testing.T) {
+	check(t)
+	ctx := t.Context()
+	pool := schedulingDB(t, "raven_immediate_acceptance")
+	log := quietRecoveryLog()
+	addr, stopBroker := startTestBroker(t) // no execution topics yet
+	defer stopBroker()
+	producer := jobs.NewProducer(addr, log)
+	defer producer.Close()
+	api := startJobsAPI(t, pool, producer, log)
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO jobs (id, type, payload, status, priority) VALUES
+		   ('source','send_email','{}','SUCCESS',4), ('dead','send_email','{}','DEAD',4);
+		CREATE FUNCTION reject_pending() RETURNS trigger LANGUAGE plpgsql AS $$
+		BEGIN RAISE EXCEPTION 'test: cannot record pending dispatch'; END $$;
+		CREATE TRIGGER reject_pending BEFORE INSERT OR UPDATE ON scheduled_job_outbox
+		FOR EACH ROW EXECUTE FUNCTION reject_pending()`); err != nil {
+		t.Fatal(err)
+	}
+	create := &genjobs.CreateJobRequest{Type: "send_email", PayloadJson: "{}", Priority: 4, IdempotencyKey: "accept-once"}
+	replay := &genjobs.ReplayJobRequest{Id: "source"}
+	requeue := &genjobs.RequeueJobRequest{Id: "dead"}
+	_, err := api.CreateJob(ctx, create)
+	requireGRPCCode(t, err, codes.Unavailable)
+	_, err = api.ReplayJob(ctx, replay)
+	requireGRPCCode(t, err, codes.Unavailable)
+	_, err = api.RequeueJob(ctx, requeue)
+	requireGRPCCode(t, err, codes.Unavailable)
+
+	var unchanged bool
+	if err := pool.QueryRow(ctx, `SELECT (SELECT count(*) FROM jobs) = 2
+		AND EXISTS (SELECT 1 FROM jobs WHERE id='dead' AND status='DEAD' AND execution_generation=1)
+		AND NOT EXISTS (SELECT 1 FROM scheduled_job_outbox)`).Scan(&unchanged); err != nil || !unchanged {
+		t.Fatalf("failed dispatch writes must roll back the job changes: unchanged=%t err=%v", unchanged, err)
+	}
+	if _, err := pool.Exec(ctx, "DROP TRIGGER reject_pending ON scheduled_job_outbox"); err != nil {
+		t.Fatal(err)
+	}
+	// each operation returns its committed job while the broker is unavailable.
+	created, err := api.CreateJob(ctx, create)
+	if err != nil {
+		t.Fatal(err)
+	}
+	again, err := api.CreateJob(ctx, create)
+	if err != nil || again.GetId() != created.GetId() {
+		t.Fatalf("duplicate create during outage: id=%q err=%v", again.GetId(), err)
+	}
+	if _, err := api.ReplayJob(ctx, replay); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := api.RequeueJob(ctx, requeue); err != nil {
+		t.Fatal(err)
+	}
+	var pending int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM scheduled_job_outbox o JOIN jobs j
+		ON o.job_id=j.id AND o.execution_generation=j.execution_generation WHERE j.status='QUEUED'`).Scan(&pending); err != nil || pending != 3 {
+		t.Fatalf("pending current generations=%d want 3; err=%v", pending, err)
+	}
+	if _, err := api.CancelJob(ctx, &genjobs.CancelJobRequest{Id: created.GetId()}); err != nil {
+		t.Fatal(err)
+	}
+	if err := jobs.EnsureTopics(ctx, addr, log); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := jobs.NewDispatcher(pool, producer, nil, log, nil, time.Second).DispatchOnce(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if n := topicHighWatermark(t, addr, "jobs.p4"); n != 2 {
+		t.Fatalf("expected only the replay and requeue to be published, got %d", n)
+	}
+	if err := pool.QueryRow(ctx, "SELECT count(*) FROM scheduled_job_outbox").Scan(&pending); err != nil || pending != 0 {
+		t.Fatalf("outbox after recovery: pending=%d err=%v", pending, err)
 	}
 }

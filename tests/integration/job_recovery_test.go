@@ -43,8 +43,7 @@ import (
 // harness
 // ---------------------------------------------------------------------------
 
-// recoveryDB creates a fresh database, applies migrations 000002 + 000003
-// verbatim and returns a pool on it.
+// each recovery test uses a fresh database with jobs, leases and the dispatch outbox.
 func recoveryDB(t *testing.T, name string) *pgxpool.Pool {
 	t.Helper()
 	ctx := context.Background()
@@ -76,6 +75,9 @@ func recoveryDB(t *testing.T, name string) *pgxpool.Pool {
 	}
 	if err := applyMigrationFile(ctx, dsn, "000003_job_leases.up.sql"); err != nil {
 		t.Fatalf("apply migration 000003: %v", err)
+	}
+	if err := applyMigrationFile(ctx, dsn, "000008_scheduled_dispatch.up.sql"); err != nil {
+		t.Fatalf("apply dispatch outbox: %v", err)
 	}
 
 	pool, err := database.NewPool(ctx, dsn)

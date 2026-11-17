@@ -54,6 +54,9 @@ func TestJobsWorkerLifecycle(t *testing.T) {
 	if err := applyMigrationFile(ctx, dsn, "000003_job_leases.up.sql"); err != nil {
 		t.Fatalf("apply migration 000003: %v", err)
 	}
+	if err := applyMigrationFile(ctx, dsn, "000008_scheduled_dispatch.up.sql"); err != nil {
+		t.Fatalf("apply dispatch outbox: %v", err)
+	}
 
 	redisURL, err := env.redisContainer.ConnectionString(ctx)
 	if err != nil {
@@ -381,6 +384,12 @@ func TestJobsWorkerLifecycle(t *testing.T) {
 // startTestBroker boots an in-process broker on a random port.
 func startTestBroker(t *testing.T) (addr string, stop func()) {
 	t.Helper()
+	b, stop := startTestBrokerNode(t)
+	return b.Addr(), stop
+}
+
+func startTestBrokerNode(t *testing.T) (*broker.Broker, func()) {
+	t.Helper()
 	b, err := broker.New(broker.Config{
 		TCPAddr:        "127.0.0.1:0",
 		DataDir:        t.TempDir(),
@@ -401,7 +410,7 @@ func startTestBroker(t *testing.T) (addr string, stop func()) {
 			c, err := net.DialTimeout("tcp", a, 200*time.Millisecond)
 			if err == nil {
 				c.Close()
-				return a, func() {
+				return b, func() {
 					cancel()
 					select {
 					case <-done:
